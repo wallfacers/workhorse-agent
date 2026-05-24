@@ -12,6 +12,7 @@ type Tool interface {
     IsReadOnly(input json.RawMessage) bool
     CanRunInParallel(input json.RawMessage) bool
     PermissionPreview(input json.RawMessage) string
+    DefaultTimeout() time.Duration
     Run(ctx context.Context, input json.RawMessage, env *ToolEnv) (*ToolResult, error)
 }
 ```
@@ -24,6 +25,45 @@ type Tool interface {
 
 - **WHEN** 工具正在执行时其 `ctx` 被 cancel
 - **THEN** 工具在 100ms 内返回；返回的 error 可以为 `context.Canceled`
+
+<!-- 来源：AI #2 复审 (2026-05-24) M-7：除 Bash 外其他工具无全局超时保护，大文件/网络文件系统/慢 MCP 工具可能阻塞数分钟。 -->
+
+### Requirement: 工具执行全局超时
+
+Agent orchestrator 在调用 `tool.Run(ctx, ...)` 前 SHALL 用 `context.WithTimeout` 套一层超时上限，按以下优先级取超时值：
+
+1. 工具自身声明的 `DefaultTimeout()`（每个内置工具实现自报）
+2. 配置 `tools.<tool_name>.timeout_seconds`（用户级覆盖）
+3. 全局默认 `tools.default_timeout_seconds`（默认 60 秒）
+
+内置 5 工具的默认超时：
+
+| 工具 | DefaultTimeout | 备注 |
+|---|---|---|
+| `Read` | 30s | 大文件读用 offset/limit 控制 |
+| `Grep` | 60s | 大目录搜索可能慢 |
+| `Write` | 30s | 通常很快 |
+| `Edit` | 30s | 通常很快 |
+| `Bash` | 取 input.timeout 参数（默认 `tools.bash.timeout_seconds` = 120s） | Bash 自管，不被这条 wrapping 二次包；orchestrator 仍 wrap 以保护 Bash 实现 bug 卡死 |
+
+MCP 工具与 LoadSkill 等动态工具 SHALL 使用全局 `tools.default_timeout_seconds`，除非 MCP server 在 tool metadata 中声明 `timeout_seconds`。
+
+超时触发时 SHALL 包装为 `tool_result { is_error: true, output: "tool execution timed out after Ns" }`，与正常工具失败同样回灌 LLM。
+
+#### Scenario: Read 超时
+
+- **WHEN** Read 工具在网络文件系统上读取慢文件，60s 仍未完成
+- **THEN** orchestrator 触发 ctx 超时；Read 100ms 内返回；tool_result 含 `{ is_error: true, output: "tool execution timed out after 30s" }`
+
+#### Scenario: 配置覆盖默认超时
+
+- **WHEN** `tools.grep.timeout_seconds: 300`，Grep 工具被调用
+- **THEN** orchestrator 用 300s 超时（覆盖默认 60s）
+
+#### Scenario: MCP 工具 metadata 声明优先
+
+- **WHEN** MCP server 在 tools/list 中声明某工具 `timeout_seconds: 600`
+- **THEN** orchestrator 用 600s 超时调该 MCP 工具
 
 ### Requirement: 内置 5 工具
 

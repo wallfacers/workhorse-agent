@@ -45,6 +45,8 @@
 - [ ] 5.8 实现 `internal/tools/bash/danger.go` DangerousCommandGuard（8 类正则模式 + 已知绕过明示）
 - [ ] 5.9 单元测试：5 工具各自的 happy path + workdir 越界 + ctx 取消 + Bash danger 模式命中 + Bash 进程组取消的孙进程清理（`bash -c 'sleep 60 & sleep 60'` 场景）
 - [ ] 5.10 单元测试：DangerousCommandGuard 已知绕过测试（hex 转义、绝对路径、bash -c 包装、alias、base64 解码至少各一例，验证 MVP 不防的行为符合 spec）
+- [ ] 5.11 实现路径校验工具 `internal/tools/pathguard`：filepath.Clean → EvalSymlinks（含父目录退路）→ filepath.Rel 越界检查 → `O_NOFOLLOW` open（Linux/macOS）/ Lstat 复检（其他平台）。所有读写文件的内置工具与 MCP 工具适配层 SHALL 调用此模块。**来源：AI #2 复审 H-6**
+- [ ] 5.12 单元测试：pathguard 拒绝 `..` 穿越、symlink 逃逸、非工作目录路径；TOCTOU 场景（Linux/macOS O_NOFOLLOW）
 
 ## 6. 工具并行编排器
 
@@ -53,6 +55,8 @@
 - [ ] 6.3 实现 ContextModifier 延迟应用（批后顺序 apply）
 - [ ] 6.4 实现并发批内单工具失败不取消整批（仅 ctx 取消触发整批停）
 - [ ] 6.5 单元测试：表驱动覆盖混合切批、全并发、全串行、单工具 panic、ctx 取消
+- [ ] 6.6 实现工具执行全局超时 wrapper：调用 `tool.Run` 前 `context.WithTimeout`；优先级 DefaultTimeout → config.tools.<name>.timeout_seconds → tools.default_timeout_seconds；超时包装为 `{is_error:true, output:"tool execution timed out after Ns"}`。**来源：AI #2 复审 M-7**
+- [ ] 6.7 单元测试：超时触发返回正确 tool_result；配置覆盖默认；MCP metadata timeout_seconds 优先
 
 ## 7. 权限模型
 
@@ -75,6 +79,8 @@
 - [ ] 8.8 集成测试：触发压缩 → 验证 history 缩短 + 保留 error + emit compaction 事件
 - [ ] 8.9 集成测试：跑中状态 cancel → 验证级联 + 合成 cancelled tool_result + 状态回 Idle + 会话可立即接新消息
 - [ ] 8.10 集成测试：工具内部 panic → 验证 recover + emit internal_panic + 合成 cancelled + 会话不死 + 其他 session 不受影响
+- [ ] 8.11 实现取消收尾超时：`agent.cancel_drain_timeout_seconds`（默认 5s）；超时仍未完成则强制 Idle + emit `error { code: "cancel_timeout", details: { phase, elapsed_ms } }`；卡死的 goroutine 不阻塞会话。**来源：AI #2 复审 H-9**
+- [ ] 8.12 集成测试：模拟 MCP 工具不响应 cancel → 5s 后强制 Idle + emit cancel_timeout + session 可立即接新消息
 
 ## 9. HTTP + Streamable HTTP API
 
@@ -100,6 +106,10 @@
 - [ ] 9.20 E2E 测试：SSE event data 含换行的 JSON 编码正确（客户端 `EventSource` onmessage 收到完整对象）
 - [ ] 9.21 E2E 测试：Graceful shutdown——SIGTERM 期间活跃 session 收到 server_shutdown + cancelled tool_result，进程在 timeout 内退出
 - [ ] 9.22 集成测试：nginx 反代 + `proxy_buffering off` 场景下 SSE 流正常推送（参考 `docs/deployment.md`）
+- [ ] 9.23 实现 POST body 大小限制：所有 POST 端点用 `http.MaxBytesReader` 包裹；超 `server.max_request_body_bytes`（默认 1 MiB）返 `413` 含 `{code:"request_too_large", limit}`。**来源：AI #2 复审 M-3**
+- [ ] 9.24 单元/集成测试：POST 1 MiB 通过、5 MiB 拒；配置覆盖（设 512 KiB 时在该阈值处拒）
+- [ ] 9.25 实现 `error` 事件完整 JSON schema 与 code 枚举（含 14 种 code、recoverable 标志、details 子字段）；event 序列化器与单元测试。**来源：AI #2 复审 M-10**
+- [ ] 9.26 单元测试：14 种 error code 各自的 details 结构正确；recoverable 标志符合 spec 表格
 
 ## 10. 多 agent 协作
 

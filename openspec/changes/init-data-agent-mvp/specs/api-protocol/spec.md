@@ -232,6 +232,55 @@ SSE 帧的 `id:` 字段值 SHALL 为 `idx` 的十进制字符串表示（如 `id
 - **WHEN** provider 返回 429，Agent 触发指数退避
 - **THEN** 服务 emit `provider_retry { attempt: 1, after_ms: 500 }`；若仍失败再 emit `provider_retry { attempt: 2, after_ms: 2000 }`
 
+<!-- 来源：AI #2 复审 (2026-05-24) M-10：error 事件 schema 未定义，仅列了名字，实现者无契约可依。 -->
+
+### Requirement: error 事件 JSON schema
+
+`error` 事件 SHALL 遵循以下完整 schema：
+
+```json
+{
+  "type": "error",
+  "idx": <int64>,
+  "session_id": "<ULID>",
+  "code": "<machine-readable code from enum below>",
+  "message": "<human-readable message, safe for display>",
+  "details": { /* optional, code-specific structured fields */ },
+  "recoverable": <bool>
+}
+```
+
+`code` 字段 SHALL 是以下枚举之一（实现 SHALL 持续维护此清单；新增 code 必须先入 spec）：
+
+| code | 触发场景 | recoverable | details 字段 |
+|---|---|---|---|
+| `session_busy` | session 在 Compacting/Executing/AwaitPerm 等状态拒收 POST | true | `{ "state": "<current session state>" }` |
+| `unknown_message_type` | POST body 含未知 ClientEvent type | false | `{ "received_type": "<what client sent>" }` |
+| `history_token_limit` | history 超过 `agent.max_history_tokens` 硬上限 | false | `{ "limit": <int>, "current": <int> }` |
+| `tool_not_allowed` | LLM 试图调用 AllowedTools 之外的工具 | true | `{ "tool": "<name>" }` |
+| `permission_denied` | 权限规则 deny 或用户拒绝 | true | `{ "tool": "<name>", "pattern": "<rule pattern>" }` |
+| `provider_auth_failed` | provider 返 401 | false | `{ "provider": "anthropic" }` |
+| `provider_invalid_request` | provider 返 400 | false | `{ "provider": "...", "upstream_message": "..." }` |
+| `provider_context_length_exceeded` | LLM 拒绝过长请求 | false | `{ "provider": "...", "tokens": <int> }` |
+| `provider_insufficient_quota` | OpenAI 配额耗尽 | false | `{ "provider": "openai" }` |
+| `provider_unrecoverable` | 其他不可重试 provider 错 | false | `{ "provider": "...", "upstream_code": "..." }` |
+| `cancel_timeout` | 取消收尾超时（见 session-management） | true | `{ "phase": "...", "elapsed_ms": <int> }` |
+| `internal_panic` | session goroutine 顶层 recover | true | `{}` (stack trace 仅入日志，不暴露给客户端) |
+| `server_shutdown` | graceful shutdown 触发 | false | `{}` |
+| `request_too_large` | POST body 超 `max_request_body_bytes` | true | `{ "limit": <int> }` |
+
+`recoverable: true` 表示客户端可以继续在该 session 上发新 user_message；`false` 表示 session 已不可继续使用（多数情况下 session 已转 Idle 但实质功能受阻，客户端通常应 DELETE 该 session 或修复底层问题——如换 provider key——后新建 session）。
+
+#### Scenario: session_busy 含完整 details
+
+- **WHEN** Compacting 状态时 POST user_message
+- **THEN** SSE 流 emit `{"type":"error","idx":42,"session_id":"...","code":"session_busy","message":"session is currently compacting","details":{"state":"Compacting"},"recoverable":true}`
+
+#### Scenario: provider_auth_failed 标 unrecoverable
+
+- **WHEN** Anthropic 返 401
+- **THEN** SSE emit `{"type":"error","code":"provider_auth_failed","details":{"provider":"anthropic"},"recoverable":false}`；客户端 UI 应提示"修复 API key 后新建 session"
+
 ### Requirement: 事件排序保证
 
 同一 session 的所有 Server→Client 事件 SHALL 按 `idx` 全局单调递增顺序写入 SSE 流，**绝不并发交错**。实现层面 SHALL 用 session 级 mutex / 单消费者 channel 保护事件发布，避免多 goroutine 同时写同一 `http.ResponseWriter` 触发 panic 或乱序。
@@ -308,6 +357,26 @@ SSE 流上 `id:` 字段携带的是事件 `idx`（十进制字符串），不是
 
 - **WHEN** 客户端关闭浏览器（HTTP 连接断开），此时 LLM 推理仍在进行
 - **THEN** 服务在 1 秒内检测到 `r.Context().Done()`，停止 SSE 写；session goroutine 继续；新事件正常入 events 表
+
+<!-- 来源：AI #2 复审 (2026-05-24) M-3：POST 请求体大小限制缺失，恶意/异常客户端可发超大 JSON 导致 OOM。 -->
+
+### Requirement: 请求体大小限制
+
+所有 POST 端点 SHALL 在读取 body 前强制大小上限 `server.max_request_body_bytes`（默认 1 MiB = 1048576）：
+
+- 用 `http.MaxBytesReader` 包裹 `r.Body`，读取超限时立刻返回 `413 Payload Too Large`
+- 响应 body 含 `{ "code": "request_too_large", "limit": <N>, "message": "..." }`
+- 大附件场景（如未来 attachments 字段）SHALL 经独立的 chunked upload 端点（V2），不在 `/v1/sessions/{id}/stream` POST 上塞大 body
+
+#### Scenario: 拒绝超大 POST
+
+- **WHEN** 客户端 POST `/v1/sessions/<id>/stream` body 为 5 MiB JSON
+- **THEN** 服务读到 1 MiB 上限即停，返回 `413 Payload Too Large` 含 `{"code":"request_too_large","limit":1048576}`
+
+#### Scenario: 默认上限可配
+
+- **WHEN** 配置 `server.max_request_body_bytes: 524288`（512 KiB），客户端 POST 1 MiB body
+- **THEN** 服务返回 `413` 在 512 KiB 处
 
 ### Requirement: HTTP server 超时配置
 

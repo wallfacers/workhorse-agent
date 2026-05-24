@@ -34,6 +34,7 @@ server:
   read_timeout_seconds: 60
   idle_timeout_seconds: 120
   max_header_bytes: 1048576        # 1 MiB
+  max_request_body_bytes: 1048576  # 1 MiB；POST body 上限，超限返 413
   graceful_shutdown_timeout_seconds: 30
   sse_keepalive_seconds: 25
   allowed_origins:                 # 精确 origin 字符串列表，扩展默认白名单
@@ -71,13 +72,19 @@ agent:
   compact_recent_keep: 8           # 压缩时保留最近 K 条
   max_history_tokens: 200000       # 单 session history 硬上限；超过拒绝新 user_message
   permission_request_timeout_seconds: 300  # 5 分钟无决策视为 deny
+  cancel_drain_timeout_seconds: 5          # 取消后等待工具/子 session 收尾的上限
   provider_retry_attempts: 3
   provider_retry_backoff_ms: [500, 2000, 8000]
 
 # === 工具 ===
 tools:
+  default_timeout_seconds: 60      # 工具执行全局超时（除 Bash 用自己的）
   bash:
     timeout_seconds: 120           # 单次 Bash 命令默认超时
+  read:
+    timeout_seconds: 30            # 可选覆盖；缺省取 DefaultTimeout
+  grep:
+    timeout_seconds: 60
   default_allowed_tools: []        # 全局工具白名单；空表示全部启用
 
 # === 持久化 ===
