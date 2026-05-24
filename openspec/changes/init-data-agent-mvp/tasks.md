@@ -53,13 +53,13 @@
 
 ## 6. 工具并行编排器
 
-- [ ] 6.1 实现 `internal/agent/orchestrator.go` 的 `batchTools(toolUses []) []ToolBatch` 切批算法
-- [ ] 6.2 实现 `runToolBatch`：并发批用 `errgroup + semaphore(MaxParallelTools)`，串行批顺序执行
-- [ ] 6.3 实现 ContextModifier 延迟应用（批后顺序 apply）
-- [ ] 6.4 实现并发批内单工具失败不取消整批（仅 ctx 取消触发整批停）
-- [ ] 6.5 单元测试：表驱动覆盖混合切批、全并发、全串行、单工具 panic、ctx 取消
-- [ ] 6.6 实现工具执行全局超时 wrapper：调用 `tool.Run` 前 `context.WithTimeout`；优先级 DefaultTimeout → config.tools.<name>.timeout_seconds → tools.default_timeout_seconds；超时包装为 `{is_error:true, output:"tool execution timed out after Ns"}`。**来源：AI #2 复审 M-7**
-- [ ] 6.7 单元测试：超时触发返回正确 tool_result；配置覆盖默认；MCP metadata timeout_seconds 优先
+- [x] 6.1 实现 `internal/agent/orchestrator.go` 的 `batchTools(toolUses []) []ToolBatch` 切批算法
+- [x] 6.2 实现 `runToolBatch`：并发批用 `errgroup + semaphore(MaxParallelTools)`，串行批顺序执行
+- [x] 6.3 实现 ContextModifier 延迟应用（批后顺序 apply）
+- [x] 6.4 实现并发批内单工具失败不取消整批（仅 ctx 取消触发整批停）
+- [x] 6.5 单元测试：表驱动覆盖混合切批、全并发、全串行、单工具 panic、ctx 取消
+- [x] 6.6 实现工具执行全局超时 wrapper：调用 `tool.Run` 前 `context.WithTimeout`；优先级 DefaultTimeout → config.tools.<name>.timeout_seconds → tools.default_timeout_seconds；超时包装为 `{is_error:true, output:"tool execution timed out after Ns"}`。**来源：AI #2 复审 M-7**
+- [x] 6.7 单元测试：超时触发返回正确 tool_result；配置覆盖默认；MCP metadata timeout_seconds 优先
 
 ## 7. 权限模型
 
