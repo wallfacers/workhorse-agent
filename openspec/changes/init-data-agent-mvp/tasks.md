@@ -18,10 +18,10 @@
 
 ## 3. 持久化层
 
-- [ ] 3.1 引入 `modernc.org/sqlite`，在 `internal/store/sqlite` 实现 Store interface
-- [ ] 3.2 编写 migrations：5 张表（sessions、messages、events、tool_calls、permissions）
-- [ ] 3.3 实现 Session/Message/Event/ToolCall/Permission 的 CRUD + 增量查询（events `idx > N`）
-- [ ] 3.4 单元测试：内存模式（`:memory:`）覆盖所有 CRUD + 增量查询路径
+- [x] 3.1 引入 `modernc.org/sqlite`，在 `internal/store/sqlite` 实现 Store interface
+- [x] 3.2 编写 migrations：5 张表（sessions、messages、events、tool_calls、permissions）
+- [x] 3.3 实现 Session/Message/Event/ToolCall/Permission 的 CRUD + 增量查询（events `idx > N`）
+- [x] 3.4 单元测试：内存模式（`:memory:`）覆盖所有 CRUD + 增量查询路径
 
 ## 4. Provider 抽象与内部 Message
 
