@@ -6,14 +6,14 @@
 
 - 新建 Go 单进程服务 `dataagent`，绑 `127.0.0.1`，单二进制分发
 - HTTP REST 提供会话 CRUD、取消、压缩、健康检查
-- MCP Streamable HTTP 传输层提供事件流：POST `/v1/sessions/{id}/stream` 提交客户端消息（5 种，默认 `202 Accepted`），GET `/v1/sessions/{id}/stream` 开启长连接 SSE 接收服务端事件（10 种），每个 SSE event 含 `id:` 字段（值为单调递增 `idx`），断线重连用标准 `Last-Event-ID` HTTP header 增量同步
+- MCP Streamable HTTP 传输层提供事件流：POST `/v1/sessions/{id}/stream` 提交客户端消息（5 种，默认 `202 Accepted`；状态冲突时 `409 Conflict` + SSE error 双通道一致），GET `/v1/sessions/{id}/stream` 开启长连接 SSE 接收服务端事件（11 种），每个 SSE event 含 `id:` 字段（值为单调递增 int64 `idx`），断线重连用标准 `Last-Event-ID` HTTP header 增量同步；强制 Origin 校验（exact host match）；405/406/415 HTTP 协商
 - 内置 5 个工具：Read / Write / Edit / Bash / Grep
 - 工具并行执行：按 `CanRunInParallel` 把同轮 tool_use 分批，并发批内 `errgroup + semaphore`
 - Bash 危险命令防护：仅对 `rm -rf /`、`dd of=/dev/`、`mkfs`、fork bomb、`shutdown` 等模式强制询问，绕过任何 permanent 允许规则
 - Provider 抽象：官方支持 Anthropic Messages + OpenAI Chat Completions；OpenAI-兼容国内模型可接但不维护
 - 多 agent 协作：Dispatch 工具 `CanRunInParallel=true`，父 session 可一轮启动多个子 session 并发执行
 - 上下文自动压缩：阈值 0.85；保留近 K=8 条 + 所有 `is_error` 的 tool_result；用 Fast 模型（同家原则）
-- 会话持久化：SQLite（modernc.org/sqlite，纯 Go）；events 表 append-only，支持断线重连按 SSE 标准 `Last-Event-ID` HTTP header（或备用 `?last_event_id=N` query）增量拉取
+- 会话持久化：SQLite（modernc.org/sqlite，纯 Go）；events 表 append-only，主键为 int64 单调递增 idx；支持断线重连按 SSE 标准 `Last-Event-ID` HTTP header（或备用 `?last_event_id=N` query）增量拉取，回放期间用 session 级写锁保证无重复无遗漏
 - 会话隔离：每 session 独立 workdir / env / history；取消级联到工具、子进程、子 session
 - 权限模型：`allow_once / allow_session / allow_permanent / deny / deny_permanent`，匹配 tool+pattern
 - MCP 客户端：stdio + Streamable HTTP；MCP tool 适配进内部 Tool 注册表
@@ -24,15 +24,16 @@
 
 ### New Capabilities
 
-- `api-protocol`: HTTP REST 端点 + MCP Streamable HTTP 传输（POST + GET SSE）+ Origin 校验 + 事件日志格式 + `Last-Event-ID` 断线重连
-- `session-management`: 会话 CRUD、持久化、状态机（Idle/Thinking/AwaitPerm/Executing/Compacting/Cancelled）、隔离（workdir/env/history）
-- `agent-loop`: LLM 调用循环、消息结构、上下文压缩触发与执行
-- `tool-system`: Tool 接口、并行执行编排器、5 个内置工具
-- `provider-abstraction`: Provider 接口、Anthropic adapter、OpenAI adapter、内部统一 Message 格式、模型选择策略
-- `permission-control`: 权限规则匹配、询问/允许/拒绝流程、Bash 危险命令防护
+- `api-protocol`: HTTP REST 端点 + MCP Streamable HTTP 传输（POST + GET SSE）+ Origin 校验 + 405/406/415 HTTP 协商 + 事件日志格式 + `Last-Event-ID` 断线重连 + Bearer Token 鉴权 + Graceful shutdown
+- `session-management`: 会话 CRUD、持久化、状态机（6 状态：Idle/Thinking/AwaitPerm/Executing/Compacting/Cancelled）、Panic 恢复、隔离（workdir/env/history）
+- `agent-loop`: LLM 调用循环、消息结构、上下文压缩触发与执行、依赖 ProviderError 的重试分类
+- `tool-system`: Tool 接口、并行执行编排器、5 个内置工具、事件排序保证
+- `provider-abstraction`: Provider 接口、ProviderError 与可重试分类、Anthropic adapter（含 8→5 事件映射）、OpenAI adapter（含并发 tool_calls 累积）、内部统一 Message 格式、模型选择策略
+- `permission-control`: 权限规则匹配（glob 语法）、询问/允许/拒绝流程、Bash 危险命令防护（8 类模式，已知绕过明示）
 - `multi-agent`: Dispatch 工具、子 session 隔离、Agent 角色配置（yaml 热加载）、事件透传（streaming / blocking）
-- `mcp-integration`: stdio / Streamable HTTP transport、JSON-RPC 客户端、MCP tool 适配
+- `mcp-integration`: stdio / Streamable HTTP transport、JSON-RPC 客户端、MCP tool 适配、跨 session 生命周期、客户端 SSE 重连
 - `skills-loader`: skill 发现与 frontmatter 解析、按需注入 system prompt、LoadSkill 工具
+- `configuration`: config.yaml 完整 schema、加载顺序（CLI > env > yaml > defaults）、会话并发上限、history token 硬上限、热加载范围
 
 ### Modified Capabilities
 

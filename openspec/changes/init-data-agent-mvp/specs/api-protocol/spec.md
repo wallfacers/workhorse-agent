@@ -1,5 +1,18 @@
 ## ADDED Requirements
 
+### Requirement: 与 MCP 2025-11-25 Streamable HTTP 的关系
+
+服务 SHALL 在 `docs/protocol.md` 与本 spec 顶部明确声明：
+
+- 本服务**借鉴** MCP 2025-11-25 Streamable HTTP 的**传输层模型**（单端点 POST + GET、SSE `id:` 字段 + `Last-Event-ID` 重连、`Origin` 校验、绑定 localhost）
+- 本服务**不是** MCP server，**不**使用 JSON-RPC 2.0 信封；消息体是应用层 ClientEvent / ServerEvent JSON 对象
+- 通用 MCP 客户端误向本服务发起 `initialize` 等 JSON-RPC 调用时 SHALL 收到 `400 Bad Request` 含 `{ "code": "unknown_message_type" }`，不会触发不可控行为
+
+#### Scenario: MCP 客户端误调用得到清晰错误
+
+- **WHEN** 通用 MCP 客户端向 `POST /v1/sessions/<id>/stream` 提交 JSON-RPC `{ "jsonrpc": "2.0", "method": "initialize", ... }`
+- **THEN** 服务返回 `400 Bad Request` 含 `{ "code": "unknown_message_type", "message": "this server uses application-level ClientEvent, not JSON-RPC; see docs/protocol.md" }`
+
 ### Requirement: HTTP REST 端点集合
 
 服务 SHALL 在 `127.0.0.1:7821`（默认，可配）暴露以下 HTTP 端点：
@@ -31,15 +44,43 @@
 - **WHEN** 客户端 GET `/health`
 - **THEN** 服务返回 `200 OK` 和 `{ "ok": true, "version": "<semver>", "uptime_sec": <int>, "sessions_active": <int> }`
 
+#### Scenario: Debug events 回放
+
+- **WHEN** 客户端 GET `/debug/sessions/<id>/events?since=42`
+- **THEN** 服务返回 `200 OK` + `application/x-ndjson` 流，每行一条 idx>42 的事件 JSON
+
+### Requirement: HTTP 方法与 Content Negotiation
+
+服务 SHALL 对 `/v1/sessions/{id}/stream` 端点强制以下 HTTP 协商规则（对齐 MCP 2025-11-25）：
+
+- 仅接受 `GET` 与 `POST`；其他方法（PUT/DELETE/PATCH/HEAD/OPTIONS 等）SHALL 返回 `405 Method Not Allowed` 含 `Allow: GET, POST` header
+- `POST` 的 `Content-Type` 必须为 `application/json`；否则 SHALL 返回 `415 Unsupported Media Type`
+- `GET` 的 `Accept` header 必须包含 `text/event-stream`（或 `*/*`、缺失视为允许）；否则 SHALL 返回 `406 Not Acceptable`
+
+#### Scenario: 拒绝 PUT 方法
+
+- **WHEN** 客户端 PUT `/v1/sessions/<id>/stream`
+- **THEN** 服务返回 `405 Method Not Allowed`，响应 header 含 `Allow: GET, POST`
+
+#### Scenario: 拒绝非 JSON POST
+
+- **WHEN** 客户端 POST `/v1/sessions/<id>/stream` 带 `Content-Type: text/plain`
+- **THEN** 服务返回 `415 Unsupported Media Type`
+
+#### Scenario: 拒绝不接受 SSE 的 GET
+
+- **WHEN** 客户端 GET `/v1/sessions/<id>/stream` 带 `Accept: application/json`
+- **THEN** 服务返回 `406 Not Acceptable`
+
 ### Requirement: Streamable HTTP 传输
 
 服务 SHALL 在 `/v1/sessions/{id}/stream` 实现 MCP 2025-11-25 Streamable HTTP 传输模型：
 
-- `POST /v1/sessions/{id}/stream` SHALL 接受 `Content-Type: application/json` 的请求体（单个 ClientEvent JSON 对象，见下一 Requirement）
-- `GET /v1/sessions/{id}/stream` SHALL 返回 `Content-Type: text/event-stream`，开启长连接 SSE 流，按 SSE 格式（`id: <idx>\nevent: <type>\ndata: <json>\n\n`）推送该 session 的所有 Server→Client 事件
-- POST 默认 SHALL 以 `202 Accepted` 无 body 响应；事件流走 GET 通道
-- GET SSE 流 SHALL 每 25 秒（可配）发送 `: keep-alive\n\n` SSE 注释作为心跳
-- 同一 session 同一时刻 SHALL 最多保持一条活跃 GET SSE 流；新的 GET 请求到来时服务器 SHALL 关闭旧流（向旧流发 SSE comment `: superseded`）
+- **POST** SHALL 接受 `Content-Type: application/json` 的请求体（单个 ClientEvent JSON 对象）；正常受理时 SHALL 返回 `202 Accepted` 无 body；session 状态拒绝时按"POST 与会话状态冲突"requirement 处理
+- **GET** SHALL 返回 `Content-Type: text/event-stream`，开启长连接 SSE 流；响应 header 还 SHALL 包含 `Cache-Control: no-cache`、`Connection: keep-alive`、`X-Accel-Buffering: no`（对 nginx 透明）
+- SSE 帧格式 SHALL 为 `id: <idx>\nevent: <type>\ndata: <json>\n\n`；JSON `data` SHALL 序列化为**紧凑单行**（无嵌入换行符），若值字段含 `\n`，序列化器 SHALL 使用 JSON `\n` 转义而非真换行
+- GET SSE 流 SHALL 每 25 秒（可配 `sse_keepalive_seconds`）发送 `: keep-alive\n\n` SSE 注释作为心跳
+- 同一 session 同一时刻 SHALL 最多保持一条活跃 GET SSE 流；新 GET 到来时服务器 SHALL 在 session 级写锁保护下：(1) 向旧流发 SSE 注释 `: superseded`、(2) 关闭旧响应 writer、(3) 把控制权交给新 GET handler，整个切换期间 SHALL 不写任何业务事件到 outbox（事件继续入 events 表，新流通过 Last-Event-ID 回放）
 
 #### Scenario: POST 客户端消息默认返回 202
 
@@ -48,38 +89,104 @@
 
 #### Scenario: GET SSE 流推送事件
 
-- **WHEN** 客户端已 GET `/v1/sessions/<id>/stream` 开启 SSE，随后 LLM 产生一个 text delta
-- **THEN** 服务在 SSE 流上写出 `id: <idx>\nevent: assistant_text_delta\ndata: {"delta":"...","session_id":"..."}\n\n`
+- **WHEN** 客户端已 GET `/v1/sessions/<id>/stream` 开启 SSE，随后 LLM 产生一个 text delta（含换行符的文本，如 `"line1\nline2"`）
+- **THEN** 服务在 SSE 流上写出 `id: <idx>\nevent: assistant_text_delta\ndata: {"delta":"line1\\nline2","session_id":"..."}\n\n`（`\n` 在 JSON 中被转义为字面两字符 `\` + `n`，整个 data 仍是单行）
+
+#### Scenario: SSE 响应头完整
+
+- **WHEN** 客户端 GET `/v1/sessions/<id>/stream` 成功开启 SSE
+- **THEN** 响应 header 含 `Content-Type: text/event-stream`、`Cache-Control: no-cache`、`Connection: keep-alive`、`X-Accel-Buffering: no`
 
 #### Scenario: POST 到不存在会话
 
 - **WHEN** 客户端 POST `/v1/sessions/<不存在的 id>/stream`
 - **THEN** 服务返回 `404 Not Found`
 
-#### Scenario: 并发 GET 关闭旧流
+#### Scenario: 并发 GET 关闭旧流且无事件丢失
 
-- **WHEN** 客户端 A 已对 session X 开启 GET SSE，客户端 B 对同一 session X 发起新 GET
-- **THEN** 服务向 A 的 SSE 流写 `: superseded` 注释并关闭该响应；新流服务客户端 B
+- **WHEN** 客户端 A 已对 session X 开启 GET SSE，工具正在产生事件流；客户端 B 对同一 session X 发起新 GET，期间又有 3 个事件被生成
+- **THEN** 服务在 session 级写锁内向 A 写 `: superseded` 并关闭；新 GET 进入后通过 `Last-Event-ID`（B 提供）回放包括切换期间的 3 个事件，B 不漏事件
+
+### Requirement: POST 与会话状态冲突
+
+服务 SHALL 在 session 处于以下状态时拒绝 `user_message` / `permission_decision` / `context_update` POST：
+
+| Session 状态 | 接受的 POST type | 拒绝的 POST type | 拒绝响应 |
+|---|---|---|---|
+| `Idle` | 全部 | 无 | - |
+| `Thinking` | `interrupt`、`ping` | `user_message`、`permission_decision`（无待决）、`context_update` | `409 Conflict` |
+| `AwaitPerm` | `permission_decision`（匹配 request_id）、`interrupt`、`ping` | 其他 | `409 Conflict` |
+| `Executing` | `interrupt`、`ping` | 其他 | `409 Conflict` |
+| `Compacting` | `interrupt`、`ping` | 其他 | `409 Conflict` |
+
+拒绝时 SHALL 返回 `409 Conflict` 含 body `{ "code": "session_busy", "message": "...", "state": "<current>" }`；同时服务 SHALL 在 GET SSE 流上 emit 一条 `error` 事件 `{ "code": "session_busy", "state": "<current>" }`（双通道一致），确保不看 POST 响应的 SSE-only 客户端也能感知。
+
+#### Scenario: Compacting 期间拒绝 user_message
+
+- **WHEN** session 处于 `Compacting`，客户端 POST `{"type":"user_message","content":"foo"}`
+- **THEN** 服务返回 `409 Conflict` 含 `{"code":"session_busy","state":"Compacting"}`；同时在 GET SSE 流上 emit 一条 `error` 事件 `{"code":"session_busy","state":"Compacting"}`
+
+#### Scenario: Thinking 期间允许 interrupt
+
+- **WHEN** session 处于 `Thinking`，客户端 POST `{"type":"interrupt"}`
+- **THEN** 服务返回 `202 Accepted`，开始取消流程
+
+### Requirement: 中断到达时清空 SSE 积压
+
+服务 SHALL 在收到 `interrupt` POST 后：
+
+1. 立即触发 session ctx 取消
+2. 在写入合成 cancelled tool_result 与 `interrupted` 事件之前，**清空 session outbox channel**（任何尚未推送到 SSE 流但属于"被中断那一轮"的事件 SHALL 不再推送）
+3. 已写入 `events` 表的事件 SHALL **保留**（客户端通过 `Last-Event-ID` 重连可拉回，确保 events 表是完整审计日志）
+4. SSE 流上立即 emit `interrupted` 事件作为该轮终点
+
+#### Scenario: 中断后 SSE 不再推积压
+
+- **WHEN** LLM 正在快速 stream 大量 text_delta，客户端 POST interrupt 时 outbox 中还积压了 15 条 text_delta 未推
+- **THEN** 服务停止推送这 15 条 text_delta；SSE 流直接 emit `interrupted` 事件；events 表中保留全部 15 条 text_delta + 1 条 interrupted
+
+#### Scenario: 中断后 Last-Event-ID 重连能拉回被丢的事件
+
+- **WHEN** 上述中断后客户端用 `Last-Event-ID: <被丢前最后 idx>` 重新 GET
+- **THEN** 服务按 idx 顺序回放包括"实时被丢"的 15 条 text_delta 与 interrupted 事件
 
 ### Requirement: Origin 校验
 
 服务 SHALL 在所有 `/v1/sessions/{id}/stream` 的 POST 与 GET 请求上校验 `Origin` header：
 
-- 默认白名单：缺失 `Origin`（同源 / file:// / curl 等）、`http://127.0.0.1:*`、`http://localhost:*`、`https://127.0.0.1:*`、`https://localhost:*`
-- 不在白名单的 `Origin` SHALL 拒绝 `403 Forbidden`
-- 白名单 SHALL 可通过 config.yaml 的 `allowed_origins` 字段扩展
+- 校验算法 SHALL 用标准 URL parser 解析 Origin，取 `scheme` + `hostname` + `port` 三元组做 **exact match**，禁止前缀/子串/正则匹配（防 `http://127.0.0.1.evil.com` 同形异义攻击）
+- 默认白名单（精确 host）：
+  - 缺失 `Origin`（curl、Node fetch、同源 file://）—— 仅在服务绑定 `127.0.0.1` 时允许（公网绑定时 SHALL 拒绝）
+  - `http://127.0.0.1:<任意端口>`、`http://localhost:<任意端口>`、`https://` 同上
+  - `null`（sandboxed iframe / file:// 触发）—— 仅在配置 `allow_null_origin: true` 时允许（默认 false）
+- 白名单 SHALL 可通过 `configuration` capability 中的 `allowed_origins` 字段精确扩展（列表中每项均为完整 origin 字符串如 `http://localhost:5173`）
 
-此校验目的是防 DNS rebinding 攻击（MCP 2025-11-25 spec 强制要求）。
+校验目的是防 DNS rebinding 攻击（MCP 2025-11-25 spec MUST 要求）。
 
 #### Scenario: 拒绝跨站 Origin
 
 - **WHEN** 浏览器从 `https://evil.com` 通过 XHR 调 `POST http://127.0.0.1:7821/v1/sessions/<id>/stream`
 - **THEN** 服务返回 `403 Forbidden`，不处理请求
 
+#### Scenario: 拒绝同形异义 Origin
+
+- **WHEN** 请求 Origin 为 `http://127.0.0.1.evil.com`
+- **THEN** 服务用 URL parser 解析，hostname 是 `127.0.0.1.evil.com`，不命中白名单的精确 `127.0.0.1`，返回 `403 Forbidden`
+
 #### Scenario: 同源与本地允许
 
 - **WHEN** 请求 Origin 为 `http://localhost:5173`（用户自定义 UI 开发服）
 - **THEN** 服务正常处理请求
+
+#### Scenario: 缺失 Origin 在 localhost 绑定下允许
+
+- **WHEN** 服务绑定 `127.0.0.1:7821`，客户端 `curl` 不发 `Origin` header
+- **THEN** 服务允许请求
+
+#### Scenario: 缺失 Origin 在公网绑定下拒绝
+
+- **WHEN** 服务被配置绑定 `0.0.0.0:7821`（非默认），客户端 `curl` 不发 `Origin`
+- **THEN** 服务返回 `403 Forbidden`
 
 ### Requirement: Client → Server 消息类型
 
@@ -102,11 +209,13 @@
 
 ### Requirement: Server → Client 事件类型
 
-服务 SHALL 以以下 10 种事件向客户端推送：
+服务 SHALL 以以下 **11 种**事件向客户端推送：
 
-`assistant_text_delta`、`assistant_text_done`、`tool_call_start`、`tool_call_done`、`permission_request`、`subagent_event`、`compaction`、`error`、`interrupted`、`pong`。
+`assistant_text_delta`、`assistant_text_done`、`tool_call_start`、`tool_call_done`、`permission_request`、`subagent_event`、`compaction`、`provider_retry`、`error`、`interrupted`、`pong`。
 
-所有事件 SHALL 包含 `idx`（事件序号，单调递增）、`session_id`，并在持久化模式下写入 `events` 表。
+所有事件 SHALL 包含 `idx`（事件序号，**int64 单调递增**）、`session_id`，并在持久化模式下写入 `events` 表。
+
+SSE 帧的 `id:` 字段值 SHALL 为 `idx` 的十进制字符串表示（如 `id: 42`）；客户端 `Last-Event-ID` SHALL 同样为 int64 字符串。
 
 #### Scenario: 文本流式推送
 
@@ -118,13 +227,33 @@
 - **WHEN** Agent 调用 `Bash` 工具执行 `"ls"`
 - **THEN** 服务先 emit `tool_call_start { id, tool:"Bash", input }`，工具完成后 emit `tool_call_done { id, output, ok: true, took_ms }`
 
+#### Scenario: provider_retry 事件
+
+- **WHEN** provider 返回 429，Agent 触发指数退避
+- **THEN** 服务 emit `provider_retry { attempt: 1, after_ms: 500 }`；若仍失败再 emit `provider_retry { attempt: 2, after_ms: 2000 }`
+
+### Requirement: 事件排序保证
+
+同一 session 的所有 Server→Client 事件 SHALL 按 `idx` 全局单调递增顺序写入 SSE 流，**绝不并发交错**。实现层面 SHALL 用 session 级 mutex / 单消费者 channel 保护事件发布，避免多 goroutine 同时写同一 `http.ResponseWriter` 触发 panic 或乱序。
+
+`idx` SHALL 在事件**写入 events 表的同一事务**中分配（用 SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`），保证 events 表与 SSE 流上看到的 `idx` 完全一致。
+
+#### Scenario: 多 goroutine 并发产生事件
+
+- **WHEN** Agent 主 goroutine 在 stream text_delta，同时一个工具 goroutine 完成发 tool_call_done
+- **THEN** 两个事件按发起顺序串行进入 outbox；SSE 流上看到的 idx 严格递增；事件不交错
+
 ### Requirement: 断线重连按 Last-Event-ID 增量同步
 
-服务 SHALL 在 GET `/v1/sessions/{id}/stream` 请求 header 中接受标准 SSE `Last-Event-ID: <idx>`；若给定，服务在打开新 SSE 流后 SHALL 先按 `idx` 升序回放 `events` 表中 `idx > Last-Event-ID` 的所有事件，再切入实时事件转发。
+服务 SHALL 在 GET `/v1/sessions/{id}/stream` 请求 header 中接受标准 SSE `Last-Event-ID: <idx>`；若给定，服务 SHALL 按以下原子流程处理：
 
-每条 SSE event 的 `id:` 字段 SHALL 等于该事件在 `events` 表中的 `idx`（单调递增整数）。
+1. 在 session 级写锁内打开新 SSE 流
+2. 记录当前 events 表的 `max_idx_snapshot = MAX(idx)`
+3. 按 idx 升序查询 `idx > Last-Event-ID AND idx <= max_idx_snapshot` 的所有事件，依次写到 SSE 流
+4. **回放期间**，session 实时产生的新事件正常写入 events 表，但**不**写到该 SSE 流（仍受 session 写锁保护）
+5. 回放完成后释放写锁，切换到实时模式：从 outbox channel 消费新事件写到 SSE 流（包括回放期间产生的 idx > max_idx_snapshot 的事件）
 
-为兼容部分客户端，服务 SHALL 同时接受查询参数 `?last_event_id=N` 作为 header 缺失时的备选；header 与 query 同时给定时以 header 为准。
+为兼容部分客户端（如 curl 无法设 header），服务 SHALL 同时接受查询参数 `?last_event_id=N` 作为 header 缺失时的备选；header 与 query 同时给定时以 header 为准。
 
 LLM 推理 SHALL 在客户端断开期间继续进行，不被打断。
 
@@ -143,11 +272,99 @@ LLM 推理 SHALL 在客户端断开期间继续进行，不被打断。
 - **WHEN** 客户端触发 `user_message` 后立即关闭 GET SSE 流，5 秒后再次 GET 并带 `Last-Event-ID`
 - **THEN** 在客户端断开的 5 秒内，session 继续 LLM 推理与工具执行；事件正常写入 `events` 表；重连后客户端按 `idx` 顺序拿到完整事件流
 
+#### Scenario: 回放与实时事件无重复无遗漏
+
+- **WHEN** 客户端重连带 `Last-Event-ID: 42`，max_idx 当前为 50；回放 idx=43..50 期间 session 又产生 idx=51,52
+- **THEN** 客户端先收到 43..50，回放完成后立即收到 51,52；不丢、不重
+
 ### Requirement: ID 格式
 
-所有外部可见的 ID（`session_id`、`message_id`、`request_id`、`agent_id`、事件 `id`）SHALL 为 ULID（128-bit，时间有序，Crockford Base32 编码 26 字符）。
+服务 SHALL 区分以下两类 ID：
+
+- **session/message/request/agent ID** SHALL 为 ULID（128-bit，时间有序，Crockford Base32 编码 26 字符）
+- **事件 idx** SHALL 为 int64 单调递增整数（SQLite `INTEGER PRIMARY KEY AUTOINCREMENT`）
+
+SSE 流上 `id:` 字段携带的是事件 `idx`（十进制字符串），不是 ULID。
 
 #### Scenario: 创建的 session ID 是 ULID
 
 - **WHEN** POST `/v1/sessions` 创建一个会话
 - **THEN** 响应的 `id` 字段匹配正则 `^[0-9A-HJKMNP-TV-Z]{26}$`
+
+#### Scenario: SSE id 是整数
+
+- **WHEN** GET SSE 流推送任意事件
+- **THEN** SSE 帧 `id:` 字段值匹配 `^[1-9][0-9]*$`（int64 十进制）
+
+### Requirement: 客户端断开检测
+
+服务 SHALL 通过 `r.Context().Done()` 或 `http.ResponseController.SetWriteDeadline` 检测 GET SSE 客户端断开：
+
+- 断开后 SHALL 停止向该响应写事件
+- session goroutine SHALL **继续**运行（推理继续，事件继续入 events 表）
+- 服务 SHALL 释放对应的 session-stream 写锁，允许后续 GET 重连
+
+#### Scenario: 客户端关闭浏览器但推理继续
+
+- **WHEN** 客户端关闭浏览器（HTTP 连接断开），此时 LLM 推理仍在进行
+- **THEN** 服务在 1 秒内检测到 `r.Context().Done()`，停止 SSE 写；session goroutine 继续；新事件正常入 events 表
+
+### Requirement: HTTP server 超时配置
+
+服务 HTTP server SHALL 配置以下超时：
+
+- `ReadHeaderTimeout`：10 秒（防 slowloris）
+- `ReadTimeout`：60 秒（POST body 必须 60 秒内完整收完）
+- `WriteTimeout`：**0**（SSE 长连接禁用写超时；非 SSE 端点由 handler 自行管理）
+- `IdleTimeout`：120 秒
+- `MaxHeaderBytes`：1 MiB
+
+非 SSE 的 REST 端点 SHALL 在 handler 内用 `http.ResponseController.SetWriteDeadline` 设置 30 秒写超时。
+
+#### Scenario: SSE 长连接不被超时砍
+
+- **WHEN** GET SSE 连接保持 10 分钟无任何事件（仅 keep-alive 注释）
+- **THEN** 连接不被服务端超时关闭；客户端持续收到 25 秒一次的 `: keep-alive`
+
+### Requirement: Graceful Shutdown
+
+服务收到 `SIGTERM` 或 `SIGINT` 时 SHALL 执行以下流程：
+
+1. 立即停止接受新的 HTTP 连接（`http.Server.Shutdown`）
+2. 对所有活跃 GET SSE 流，emit 一条 `error { code: "server_shutdown" }` 事件后关闭
+3. 对所有 Thinking/Executing/AwaitPerm/Compacting 状态的 session 触发取消（与用户 interrupt 同流程，含合成 cancelled tool_result）
+4. 等待所有 session goroutine 退出（最长 `graceful_shutdown_timeout` 秒，默认 30）
+5. 关闭 SQLite 连接、MCP host 子进程
+6. 进程退出码 0
+
+#### Scenario: SIGTERM 优雅退出
+
+- **WHEN** 进程收到 SIGTERM，当前有 3 个 Thinking session、1 个 Idle session
+- **THEN** 服务对所有 SSE 流写 `error { code: "server_shutdown" }`；3 个 Thinking session 收到取消、合成 cancelled tool_result 入 history；进程在 30 秒内退出
+
+### Requirement: Bearer Token 鉴权（可选）
+
+服务 SHALL 支持可选的 Bearer Token 鉴权（开关与 token 值见 `configuration` capability）：
+
+- 鉴权启用时 SHALL 对所有 `/v1/*` 端点（含 REST 与 Streamable HTTP 的 POST/GET）验证 `Authorization: Bearer <token>` header
+- `/health` SHALL **不**鉴权（监控用）
+- `/ui` SHALL **不**鉴权（静态资源；UI 内部调 API 仍需 token，通过 query 或自定义机制传递）
+- `/debug/*` SHALL 鉴权
+- 缺失或错误 token SHALL 返回 `401 Unauthorized` 含 body `{ "code": "auth_required" }` 或 `{ "code": "invalid_token" }`
+- Token 比较 SHALL 使用 constant-time 比较（`crypto/subtle.ConstantTimeCompare`）防 timing attack
+- Token 值 SHALL **不**写入任何日志（即使 DEBUG 级别）
+
+#### Scenario: 启用鉴权后无 token POST 被拒
+
+- **WHEN** 配置启用 bearer auth，客户端 POST `/v1/sessions` 不带 `Authorization` header
+- **THEN** 服务返回 `401 Unauthorized` 含 `{"code":"auth_required"}`
+
+#### Scenario: 错误 token
+
+- **WHEN** 客户端 GET `/v1/sessions/<id>/stream` 带 `Authorization: Bearer wrong-token`
+- **THEN** 服务返回 `401 Unauthorized` 含 `{"code":"invalid_token"}`
+
+#### Scenario: health 不鉴权
+
+- **WHEN** 启用鉴权后，客户端 GET `/health` 不带 token
+- **THEN** 服务返回 `200 OK`

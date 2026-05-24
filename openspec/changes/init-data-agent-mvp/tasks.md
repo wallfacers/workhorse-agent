@@ -9,10 +9,12 @@
 
 ## 2. 配置与启动
 
-- [ ] 2.1 实现 `internal/config`：yaml + env 双源加载；默认值（port=7821、MaxParallelTools=10、max_depth=5、auto_compact_ratio=0.85）
+- [ ] 2.1 实现 `internal/config`：按 `configuration` capability 落地完整 schema；4 源加载（CLI > env > yaml > defaults）；数值与字符串校验（非法配置启动失败 + 明确错误消息）
 - [ ] 2.2 实现 `cmd/dataagent/main.go`：`init` / `serve` / `version` 三个子命令
 - [ ] 2.3 `dataagent init`：交互式生成 `~/.dataagent/{config.yaml,mcp.json,skills/,agents/}` 与空 `state.db`
-- [ ] 2.4 `dataagent serve`：装配所有模块、绑 `127.0.0.1:port`、注册 SIGTERM graceful shutdown
+- [ ] 2.4 `dataagent serve`：装配所有模块、按 config.server.host:port 绑定、注册 SIGTERM/SIGINT；按 §9.10 graceful shutdown 流程退出
+- [ ] 2.5 实现会话并发上限（`sessions.max_concurrent`）：POST `/v1/sessions` 检查活跃 session 数，超限返 429
+- [ ] 2.6 实现 history token 硬上限（`agent.max_history_tokens`）：每次 LLM 调用前检查，超限拒绝 user_message
 
 ## 3. 持久化层
 
@@ -39,9 +41,10 @@
 - [ ] 5.4 实现 `Write` 工具：原子写（temp + rename）、workdir 路径检查
 - [ ] 5.5 实现 `Edit` 工具：exact-match 替换、`old_string` 不存在返回 error
 - [ ] 5.6 实现 `Grep` 工具：纯 Go regex 实现（不依赖 rg）
-- [ ] 5.7 实现 `Bash` 工具：`exec.CommandContext` + 进程组、1.5s SIGTERM → SIGKILL；超时配置
-- [ ] 5.8 实现 `internal/tools/bash/danger.go` DangerousCommandGuard（8 个正则模式）
-- [ ] 5.9 单元测试：5 工具各自的 happy path + workdir 越界 + ctx 取消 + Bash danger 模式命中
+- [ ] 5.7 实现 `Bash` 工具：`exec.CommandContext` + `SysProcAttr{Setpgid: true}` 创建进程组；取消时 `syscall.Kill(-pgid, SIGTERM)` → 1.5s 后 SIGKILL 兜底，确保孙进程也被杀；超时配置取 `tools.bash.timeout_seconds`；env 过滤掉危险变量（LD_PRELOAD、LD_LIBRARY_PATH 等）
+- [ ] 5.8 实现 `internal/tools/bash/danger.go` DangerousCommandGuard（8 类正则模式 + 已知绕过明示）
+- [ ] 5.9 单元测试：5 工具各自的 happy path + workdir 越界 + ctx 取消 + Bash danger 模式命中 + Bash 进程组取消的孙进程清理（`bash -c 'sleep 60 & sleep 60'` 场景）
+- [ ] 5.10 单元测试：DangerousCommandGuard 已知绕过测试（hex 转义、绝对路径、bash -c 包装、alias、base64 解码至少各一例，验证 MVP 不防的行为符合 spec）
 
 ## 6. 工具并行编排器
 
@@ -53,34 +56,50 @@
 
 ## 7. 权限模型
 
-- [ ] 7.1 实现 `internal/permission` 的 Permission struct + 匹配器（tool + pattern）
+- [ ] 7.1 实现 `internal/permission` 的 Permission struct + 匹配器（tool exact + pattern glob，基于 `path/filepath.Match` 扩展支持 `**`）
 - [ ] 7.2 实现 PermissionStore：scope=permanent 持久化到 SQLite；session/once 仅内存
-- [ ] 7.3 实现询问流程：emit `permission_request` → 阻塞 channel 等 `permission_decision` → 5 分钟超时视为 deny
+- [ ] 7.3 实现询问流程：emit `permission_request` → 阻塞 channel 等 `permission_decision` → `agent.permission_request_timeout_seconds` 秒超时视为 deny
 - [ ] 7.4 接入 DangerousCommandGuard：命中即强制询问，绕过 allow 规则
 - [ ] 7.5 单元测试：5 种 decision 值的行为、permanent 跨会话生效、deny 阻断、超时
+- [ ] 7.6 单元测试：glob pattern 匹配（`*` 单段、`**` 多段、字面、`?`）+ Bash/Read/Edit 各自 pattern 语义
 
 ## 8. Session 管理与 Agent 循环
 
-- [ ] 8.1 实现 `internal/session/session.go` Session struct + 状态机 + inbox/outbox channel
-- [ ] 8.2 实现 `internal/session/manager.go` SessionManager：CreateSession、GetSession、ListSessions、DeleteSession（含取消级联）
-- [ ] 8.3 实现 `internal/agent/loop.go` 主循环：LLM 调用 → 工具批 → 回灌 → 再 LLM
-- [ ] 8.4 实现取消时的合成 cancelled tool_result（保留 LLM history 配对完整）
-- [ ] 8.5 实现 `internal/agent/compaction.go`：阈值 0.85 触发；用 Fast 模型同家原则总结；保留近 K=8 + 所有 error tool_result
-- [ ] 8.6 集成测试：mock provider 跑通"用户提问 → 工具调用 → 回灌 → 文本输出"完整循环
-- [ ] 8.7 集成测试：触发压缩 → 验证 history 缩短 + 保留 error + emit compaction 事件
-- [ ] 8.8 集成测试：跑中状态 cancel → 验证级联 + 合成 cancelled tool_result + 状态回 Idle
+- [ ] 8.1 实现 `internal/session/session.go` Session struct + 状态机（6 状态）+ inbox/outbox channel + session 级写锁（保护 outbox 写入与 GET 流切换）
+- [ ] 8.2 实现 `internal/session/manager.go` SessionManager：CreateSession、GetSession、ListSessions、DeleteSession（含取消级联）；活跃 session 计数对接 `sessions.max_concurrent`
+- [ ] 8.3 实现 `internal/agent/loop.go` 主循环：LLM 调用 → 工具批 → 回灌 → 再 LLM；顶层 `recover()` 包裹（panic → 合成 cancelled tool_result + emit `error{code:"internal_panic"}` + 状态回 Idle，会话可继续）
+- [ ] 8.4 实现取消时的合成 cancelled tool_result（output 用 `[CANCELLED] Tool execution was interrupted by user`）；system prompt 中加该前缀语义说明
+- [ ] 8.5 实现 `internal/agent/compaction.go`：阈值 `agent.auto_compact_ratio` 触发；用 Fast 模型同家原则总结；保留近 `agent.compact_recent_keep` + 所有 error tool_result；ephemeral session 仅内存压缩
+- [ ] 8.6 实现重试逻辑：依赖 ProviderError.IsRetryable() 判断；指数退避按 `agent.provider_retry_backoff_ms`；emit `provider_retry` 事件
+- [ ] 8.7 集成测试：mock provider 跑通"用户提问 → 工具调用 → 回灌 → 文本输出"完整循环
+- [ ] 8.8 集成测试：触发压缩 → 验证 history 缩短 + 保留 error + emit compaction 事件
+- [ ] 8.9 集成测试：跑中状态 cancel → 验证级联 + 合成 cancelled tool_result + 状态回 Idle + 会话可立即接新消息
+- [ ] 8.10 集成测试：工具内部 panic → 验证 recover + emit internal_panic + 合成 cancelled + 会话不死 + 其他 session 不受影响
 
 ## 9. HTTP + Streamable HTTP API
 
-- [ ] 9.1 实现 `internal/api/server.go` chi router + middleware（recovery、structured logging、optional bearer auth、**Origin 校验**）
-- [ ] 9.2 实现 sessions CRUD handlers（POST/GET/DELETE/cancel/compact）
-- [ ] 9.3 实现 `internal/api/protocol` 的 ClientEvent / ServerEvent JSON 类型 + 校验（含 `event` 名 → ServerEvent 类型映射）
-- [ ] 9.4 实现 `POST /v1/sessions/{id}/stream` handler：JSON 解析 → 校验 type → 入 session.Inbox → 默认返回 `202 Accepted`；未知 type 返回 `400`
-- [ ] 9.5 实现 `GET /v1/sessions/{id}/stream` SSE handler：用 std `net/http` Flusher，按 `id: <idx>\nevent: <type>\ndata: <json>\n\n` 格式写；每 25s 写 `: keep-alive\n\n`；并发新 GET 时关旧流并写 `: superseded`
-- [ ] 9.6 实现 `Last-Event-ID` header / `?last_event_id=N` query 双路径解析；GET 流先从 events 表回放 `idx > N` 再切实时
-- [ ] 9.7 实现 `/health` 与 `/debug/sessions/{id}/events`
-- [ ] 9.8 E2E 测试：启动真二进制 + mock LLM → 创建会话 → 浏览器 `EventSource` 接事件 + curl `POST` 发消息 → 多轮对话 → 模拟断线后 EventSource 自动重连验证不漏事件
-- [ ] 9.9 E2E 测试：Origin 校验——非白名单 Origin 返 403；白名单通过
+- [ ] 9.1 实现 `internal/api/server.go` chi router + middleware（recovery、structured logging、Origin 校验、Bearer auth 可选、405 Method Not Allowed for non-GET/POST on /stream）；HTTP server 超时按 `server.*_timeout_seconds` 配置；SSE 端点 WriteTimeout=0
+- [ ] 9.2 实现 sessions CRUD handlers（POST/GET/DELETE/cancel/compact）；POST `/v1/sessions` 受 `max_concurrent` 限
+- [ ] 9.3 实现 `internal/api/protocol` 的 ClientEvent / ServerEvent JSON 类型 + 校验（含 `event` 名 → ServerEvent 类型映射，11 种事件）
+- [ ] 9.4 实现 `POST /v1/sessions/{id}/stream` handler：校验 `Content-Type: application/json`（否则 415）→ JSON 解析 → 校验 type（未知返 400 `unknown_message_type`）→ 状态机检查（冲突返 409 + SSE error 双通道）→ 入 session.Inbox → 默认返回 `202 Accepted`
+- [ ] 9.5 实现 `GET /v1/sessions/{id}/stream` SSE handler：校验 `Accept: text/event-stream`（否则 406）；写完整响应 header（Content-Type/Cache-Control/Connection/X-Accel-Buffering）；用 std `net/http` `http.Flusher`，按 `id: <idx>\nevent: <type>\ndata: <compact-json>\n\n` 格式写；JSON 序列化用紧凑模式，含换行的值用 JSON `\n` 转义；每 `sse_keepalive_seconds` 秒写 `: keep-alive\n\n`
+- [ ] 9.6 实现 GET 单流切换：session 级写锁内 (1) 旧流写 `: superseded` (2) 关旧 writer (3) 服务新 GET；切换期间事件继续入 events 表，新流通过 Last-Event-ID 回放
+- [ ] 9.7 实现 `Last-Event-ID` header / `?last_event_id=N` query 双路径解析；GET 流原子回放算法：写锁内取 `max_idx_snapshot` → 回放 `idx > Last-Event-ID AND idx <= snapshot` → 释放锁 → 切实时通道
+- [ ] 9.8 实现 interrupt 到达时清空 outbox 但不删 events 表行
+- [ ] 9.9 实现客户端断开检测（`r.Context().Done()`）：停 SSE 写、释放写锁、session goroutine 继续
+- [ ] 9.10 实现 Graceful shutdown：收 SIGTERM → 停接新连接 → 所有 SSE emit `error{code:"server_shutdown"}` → 触发所有活跃 session 取消（合成 cancelled）→ 等 session goroutine 退出（`graceful_shutdown_timeout` 上限）→ 关 SQLite/MCP host → exit
+- [ ] 9.11 实现 `/health` 与 `/debug/sessions/{id}/events`（debug 端点受 `debug.enabled` 与 bearer auth 双重控制）
+- [ ] 9.12 实现 Bearer token 鉴权：constant-time 比较（`crypto/subtle`）；token 永不写日志
+- [ ] 9.13 E2E 测试：启动真二进制 + mock LLM → 创建会话 → 浏览器 `EventSource` 接事件 + curl `POST` 发消息 → 多轮对话 → 模拟断线后 EventSource 自动重连验证不漏事件
+- [ ] 9.14 E2E 测试：Origin 校验——非白名单/同形异义/null/缺失 origin 各场景；405/406/415 协商
+- [ ] 9.15 E2E 测试：POST 到 Compacting/Thinking 等忙状态返 409；SSE 流同时收到 error 事件（双通道一致性）
+- [ ] 9.16 E2E 测试：interrupt 后 SSE 不再推积压事件；events 表保留全部；重连按 Last-Event-ID 拉回
+- [ ] 9.17 E2E 测试：Last-Event-ID 回放 + 期间新事件无重复无遗漏（race detector 下）
+- [ ] 9.18 E2E 测试：GET 单流切换并发安全（race detector + 100 次切换）
+- [ ] 9.19 E2E 测试：Bearer auth 在所有端点的行为（含 health 不验、ui 不验、其他都验）
+- [ ] 9.20 E2E 测试：SSE event data 含换行的 JSON 编码正确（客户端 `EventSource` onmessage 收到完整对象）
+- [ ] 9.21 E2E 测试：Graceful shutdown——SIGTERM 期间活跃 session 收到 server_shutdown + cancelled tool_result，进程在 timeout 内退出
+- [ ] 9.22 集成测试：nginx 反代 + `proxy_buffering off` 场景下 SSE 流正常推送（参考 `docs/deployment.md`）
 
 ## 10. 多 agent 协作
 
@@ -95,12 +114,14 @@
 
 ## 11. MCP 客户端
 
-- [ ] 11.1 实现 `internal/mcp/client.go` JSON-RPC 2.0 客户端（含 initialize、tools/list、tools/call、cancel）
+- [ ] 11.1 实现 `internal/mcp/client.go` JSON-RPC 2.0 客户端（含 initialize 握手、tools/list、tools/call、notifications/cancelled）
 - [ ] 11.2 实现 `internal/mcp/transport_stdio.go`：启子进程、stdin/stdout 行模式、stderr 进日志
-- [ ] 11.3 实现 `internal/mcp/transport_http.go`：Streamable HTTP（POST + SSE 配对）
-- [ ] 11.4 实现 `internal/mcp/host.go`：生命周期、健康监测、退出后自动重启（最多 3 次）
-- [ ] 11.5 实现 `internal/mcp/adapter.go`：MCP tool → 内部 Tool 接口（命名空间 `<server>__<tool>`、保守 IsReadOnly/CanRunInParallel=false）
+- [ ] 11.3 实现 `internal/mcp/transport_http.go`：Streamable HTTP（POST endpoint + GET SSE 长连接 + Last-Event-ID 重连，1s/3s/10s/30s 退避）
+- [ ] 11.4 实现 `internal/mcp/host.go`：生命周期与 session 解耦（进程级共享）；健康监测；stdio server 退出后自动重启（最多 3 次）；进程退出时 graceful shutdown 所有 server
+- [ ] 11.5 实现 `internal/mcp/adapter.go`：MCP tool → 内部 Tool 接口（命名空间 `<server>__<tool>`、保守 IsReadOnly/CanRunInParallel=false 除非 metadata 声明）
 - [ ] 11.6 集成测试：用一个简单的 echo MCP server（Go 实现）验证 stdio transport + 工具注册 + 调用 + 取消
+- [ ] 11.7 集成测试：HTTP transport 验证 initialize 握手取回 Mcp-Session-Id；POST/GET 流共用 endpoint
+- [ ] 11.8 集成测试：HTTP MCP client SSE 断线自动重连（mock server 主动断开，验证客户端按退避重连）
 
 ## 12. Skills 加载器
 
@@ -122,12 +143,13 @@
 - [ ] 14.2 写 `docs/protocol.md`：HTTP REST + Streamable HTTP（POST + GET SSE + Last-Event-ID）完整协议规范，含与 MCP 2025-11-25 spec 对应关系说明
 - [ ] 14.3 写 `docs/architecture.md`：模块图与责任清单
 - [ ] 14.4 配置 GitHub Actions 的 release workflow：tag 触发 multi-arch binary + checksums
-- [ ] 14.5 实际跑一遍端到端：`dataagent init` → `dataagent serve` → curl 创建会话 → wscat 发消息 → 观察事件流
+- [ ] 14.5 实际跑一遍端到端：`dataagent init` → `dataagent serve` → curl 创建会话 → `curl -X POST .../stream` 发 user_message → `curl -N .../stream` 观察 SSE 事件流
 
 ## 15. 上线验证
 
 - [ ] 15.1 跑完整 `go test -race ./...` 必须全绿
 - [ ] 15.2 跑 `golangci-lint run` 必须 0 issues
 - [ ] 15.3 多平台二进制本地启动验证（Linux amd64 / macOS arm64 至少 2 个平台）
-- [ ] 15.4 手工验证 9 个 capability 的所有 Scenario（参照各 spec）
-- [ ] 15.5 archive change：`openspec archive init-data-agent-mvp`（将 specs 移到 `openspec/specs/`）
+- [ ] 15.4 手工验证 **10 个 capability** 的所有 Scenario（参照各 spec）
+- [ ] 15.5 长期运行测试：创建/销毁 100 个 session 后 `runtime.NumGoroutine()` 回到基线（goroutine 泄漏检测）
+- [ ] 15.6 archive change：`openspec archive init-data-agent-mvp`（将 specs 移到 `openspec/specs/`）

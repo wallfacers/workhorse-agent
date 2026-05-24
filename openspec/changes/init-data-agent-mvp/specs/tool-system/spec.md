@@ -84,14 +84,23 @@ Agent SHALL 对 LLM 一轮返回的 `tool_use[]` 按以下规则切批：
 
 并发批内多个工具的 `ToolResult.ContextModifier` SHALL 在整批完成后按工具的原始顺序顺序 apply 到 `ToolEnv`，避免并发写竞争。
 
+子 agent 通过 `Dispatch` 工具返回的 `ToolResult` SHALL **不**含 `ContextModifier`（子 session 独立 ToolEnv，理论上不应修改父）；若子 session 内部产生了 ContextModifier，它们仅在子 ToolEnv 内 apply，不传播到父。
+
 #### Scenario: 并发工具的 modifier 顺序应用
 
 - **WHEN** 并发批中工具 1 和工具 2 都返回 ContextModifier，两 modifier 都修改 `env.SessionEnv["KEY"]`
 - **THEN** 批完成后先 apply 工具 1 的 modifier，再 apply 工具 2 的 modifier；最终 `env.SessionEnv["KEY"]` 取工具 2 的修改值
 
+#### Scenario: 子 agent 的 ContextModifier 不传播到父
+
+- **WHEN** 父 agent 并发 dispatch 2 个子 agent，子 agent 内部工具产生 ContextModifier 修改了子的 SessionEnv
+- **THEN** 父的 ToolEnv 不受影响；Dispatch 返回的 tool_result 的 ContextModifier 字段为 nil
+
 ### Requirement: 工具注册表与动态发现
 
 服务 SHALL 维护全局 ToolRegistry，启动时注册 5 个内置工具；MCP 工具与 Skills 触发的 LoadSkill 注入工具 SHALL 通过同一接口注册。
+
+ToolRegistry 的注册、查询、删除操作 SHALL 用 `sync.RWMutex` 保护，确保运行时多 goroutine（MCP server 启动/重启、LoadSkill 动态注入、session lookup）并发访问安全。Lookup 是高频读操作 SHALL 用 RLock。
 
 会话级 SHALL 支持工具子集：通过 `AllowedTools` 配置可限制本会话可调工具范围。
 

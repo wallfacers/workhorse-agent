@@ -46,14 +46,30 @@
 - **WHEN** stdio MCP server 子进程意外退出（exit code ≠ 0）
 - **THEN** host 等待 1s 后自动重启该 server，最多重试 3 次；3 次失败后标记为 `unhealthy` 并 emit `error` 事件
 
-### Requirement: Streamable HTTP transport
+### Requirement: Streamable HTTP transport（作为 MCP 客户端）
 
-`transport: "http"` 时 SHALL 按 MCP Streamable HTTP 规范（POST + SSE 配对）与 server 通讯。`auth_header` 字段值附加到 HTTP 请求 Authorization。
+`transport: "http"` 时 data-agent SHALL 作为 MCP 客户端按 MCP 2025-11-25 Streamable HTTP 规范与 MCP server 通讯：
+
+1. **Initialize**：客户端 POST `<url>` 发 `initialize` JSON-RPC 请求；从 `result.capabilities` 获取 server 能力；从响应 header 读 `Mcp-Session-Id`（如有）；记录 server 声明的 endpoint URI 与 protocol version
+2. **POST 调用**：所有后续 `tools/list` / `tools/call` 等都 POST 到同一 endpoint；带 `Mcp-Session-Id` header（若 server 返过）
+3. **GET SSE 订阅**：客户端 GET 同 endpoint 开 SSE 流接收 server 主动通知（`notifications/*`）
+4. **断线重连**：data-agent 作为客户端 SHALL 在 GET SSE 断开后自动重连，带上 `Last-Event-ID` header；初次重连立即，后续指数退避（1s/3s/10s/30s 封顶）
+5. **`auth_header`** 字段值附加到所有 HTTP 请求的 Authorization header
+
+#### Scenario: HTTP MCP 初始化流程
+
+- **WHEN** 启动配置了 HTTP transport 的 MCP server
+- **THEN** data-agent 先 POST `initialize`；收到 `result` 后保存 `Mcp-Session-Id`；GET endpoint 开 SSE 流；POST `tools/list`；把每个工具适配并注册
 
 #### Scenario: HTTP MCP 工具调用
 
 - **WHEN** LLM 调用一个 HTTP MCP 暴露的工具
-- **THEN** 服务向 `<url>/messages` POST `tools/call` JSON-RPC 请求；服务等待对应 SSE 事件返回；翻译为 ToolResult
+- **THEN** data-agent 向 endpoint POST `tools/call` JSON-RPC 请求，带 `Mcp-Session-Id`；等响应或在 SSE 流上的对应 request_id 结果；翻译为 ToolResult
+
+#### Scenario: MCP client SSE 断线自动重连
+
+- **WHEN** data-agent 与 HTTP MCP server 的 GET SSE 流网络中断
+- **THEN** 1 秒后自动重连带 `Last-Event-ID`；连续 3 次失败后退避 3s/10s/30s 重试；期间已发出的 POST 请求按超时配置正常处理
 
 ### Requirement: JSON-RPC 2.0 客户端
 
@@ -85,3 +101,17 @@
 
 - **WHEN** server `filesystem` 暴露工具 `read_file`
 - **THEN** 内部注册名为 `filesystem__read_file`，LLM 看到的 schema 名相同
+
+### Requirement: MCP Host 跨 session 生命周期
+
+MCP server 子进程 SHALL 由全局 MCP Host 管理，与单个 session 生命周期解耦：
+
+- MCP server 在 data-agent 服务启动时按 mcp.json 启动一次；所有 session 共享同一组 server
+- MCP server 在 data-agent **进程退出**时统一 graceful shutdown（不在 session DELETE 时关闭）
+- MCP server 内部状态（如 filesystem cache）跨 session 共享——这是已知行为，不视为 session 隔离破坏（因为 MCP server 在 process 边界外，本就是共享资源）
+- 用户通过编辑 mcp.json 并重启 data-agent 修改 MCP server 集合（MVP 不支持 SIGHUP 热重载，V2 加）
+
+#### Scenario: session DELETE 不关闭 MCP server
+
+- **WHEN** 仅有的 1 个活跃 session 被 DELETE，data-agent 服务继续运行
+- **THEN** MCP server 子进程**保持运行**，不被关闭；下一次新建 session 时立即可用

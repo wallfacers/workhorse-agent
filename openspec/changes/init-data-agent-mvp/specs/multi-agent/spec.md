@@ -47,7 +47,7 @@ type DispatchInput struct {
 
 ### Requirement: Agent 角色配置
 
-服务 SHALL 在启动时及每次 Dispatch 调用前扫描 `~/.dataagent/agents/*.yaml`（热加载），加载 Agent 角色配置：
+服务 SHALL 在启动时及每次 Dispatch 调用前扫描 `~/.dataagent/agents/<name>.yaml`（目录与文件命名约定：每个角色一个 yaml 文件，文件名 stem 即角色 name；热加载），加载 Agent 角色配置：
 
 ```yaml
 name: <kebab-case>

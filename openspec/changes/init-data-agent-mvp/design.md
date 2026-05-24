@@ -76,7 +76,7 @@
 - 批内 `errgroup` + `semaphore(MaxParallelTools=10)` 并发执行；批与批之间顺序
 - 单工具失败 ≠ 整批取消；ctx 取消 = 全批一起停
 - 上下文修改延迟应用：并发批内的 ContextModifier 排队，批完成后顺序 apply，避免 ToolEnv 并发写竞争
-- Dispatch 工具 `CanRunInParallel=true` —— 这是"小龙虾模式"的开关，父 agent 一轮可并发派多个子 agent
+- Dispatch 工具 `CanRunInParallel=true` —— 这是**并发派发模式**（用户口语称"小龙虾模式"——多个独立个体并发干活）的开关，父 agent 一轮可并发派多个子 agent
 
 ### D6 · Provider 抽象：Anthropic 语义为模板
 

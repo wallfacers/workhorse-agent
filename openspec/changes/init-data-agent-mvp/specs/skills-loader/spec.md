@@ -4,6 +4,8 @@
 
 服务 SHALL 在每次创建会话时扫描 `~/.dataagent/skills/*/skill.yaml`，加载所有 skill 定义。
 
+**已知限制（V2 增强）**：会话运行中新增的 skill 对已存在的 session **不可见**；用户需销毁重建 session 才能看到。V2 计划加文件监听 + 手动 `POST /v1/sessions/{id}/refresh-skills` API。
+
 skill.yaml 格式：
 
 ```yaml

@@ -11,7 +11,22 @@ type Provider interface {
 }
 ```
 
-`Stream` 返回事件 channel，依次产生 `text_delta`、`tool_use`、`stop`、`usage`、`error` 事件。channel 在响应完成或 ctx 取消后 close。
+`Stream` 的返回值语义 SHALL 严格区分：
+
+- 返回的 **`error` ≠ nil**：表示"请求**未发出**"或"HTTP 请求即失败"（如 ctx 已 cancel、URL 配置错误、TLS 握手失败、HTTP 4xx 在第一字节前返回）。此时 channel 为 nil 或已关闭。调用方 SHALL 把这类 error 直接 wrap 成 `ProviderError` 判断重试。
+- 返回的 **error == nil**：表示"请求已发出且 HTTP 200，正在 stream"。后续错误通过 channel 上的 `error` 事件传递。调用方 SHALL 通过 channel range 消费事件。
+
+channel 在以下任一情况后 SHALL close：(a) Provider 收到 `stop` 事件、(b) ctx 被 cancel、(c) HTTP 连接断开。close 前 SHALL emit 一条对应的 `stop` 或 `error` 事件作为流终点。
+
+#### Scenario: Stream 直接返回 error（请求未发出）
+
+- **WHEN** 调用 Stream 时 ctx 已 cancel
+- **THEN** 返回 `(nil, context.Canceled)`；调用方知道请求根本未发出
+
+#### Scenario: HTTP 200 后 SSE 中错误
+
+- **WHEN** Provider 返回 200 + SSE 流，stream 中途网络断开
+- **THEN** Stream 已返回 `(channel, nil)`；channel 上 emit `error { Type: "stream_broken", Err: ... }` 后 close
 
 #### Scenario: provider channel 在响应结束后 close
 
@@ -21,7 +36,50 @@ type Provider interface {
 #### Scenario: ctx 取消时 channel close
 
 - **WHEN** Stream 进行中 ctx 被 cancel
-- **THEN** Provider 中止 HTTP 请求，channel 立即 close（可能伴随一个 `error { Err: ctx.Err() }` 事件）
+- **THEN** Provider 中止 HTTP 请求，channel emit `error { Err: ctx.Err() }` 后 close
+
+### Requirement: ProviderError 与可重试分类
+
+服务 SHALL 在 `internal/provider` 定义统一 ProviderError 类型与可重试分类，集中在 provider 层而非 agent 层判断：
+
+```go
+type ProviderError struct {
+    Provider   string  // "anthropic" | "openai"
+    StatusCode int     // HTTP 状态码（0 表示非 HTTP 错误）
+    Code       string  // "rate_limited" | "auth_failed" | "context_length_exceeded" |
+                       // "insufficient_quota" | "invalid_request" | "server_error" |
+                       // "network_error" | "stream_broken" | "canceled"
+    Message    string
+    Cause      error
+}
+
+func (e *ProviderError) IsRetryable() bool
+func (e *ProviderError) RetryAfter() time.Duration  // 解析 Retry-After header，无则零
+```
+
+每个 adapter SHALL 把自家 HTTP 状态码与错误体翻译成统一 ProviderError：
+
+| HTTP / 场景 | Code | IsRetryable |
+|---|---|---|
+| 429 / Anthropic `rate_limit_error` / OpenAI `rate_limit_exceeded` | `rate_limited` | true |
+| 503 / 502 / 504 | `server_error` | true |
+| 网络抖动 / EOF / DNS / TLS | `network_error` | true |
+| SSE 流中途断开 | `stream_broken` | true |
+| 401 / Anthropic `authentication_error` / OpenAI `invalid_api_key` | `auth_failed` | false |
+| 400 / Anthropic `invalid_request_error` | `invalid_request` | false |
+| Anthropic `context_length_exceeded` / OpenAI 同 | `context_length_exceeded` | false |
+| OpenAI `insufficient_quota` | `insufficient_quota` | false |
+| ctx 取消 | `canceled` | false |
+
+#### Scenario: 429 标记可重试
+
+- **WHEN** Anthropic 返回 `HTTP 429` 含 `Retry-After: 5`
+- **THEN** Provider 返回 `(nil, &ProviderError{Code:"rate_limited", StatusCode:429})`；`IsRetryable()` 返回 true；`RetryAfter()` 返回 5s
+
+#### Scenario: 401 不可重试
+
+- **WHEN** OpenAI 返回 `HTTP 401`
+- **THEN** Provider 返回 `(nil, &ProviderError{Code:"auth_failed", StatusCode:401})`；`IsRetryable()` 返回 false
 
 ### Requirement: 内部统一 Message 格式
 
@@ -36,17 +94,39 @@ type Provider interface {
 
 服务 SHALL 提供 `anthropic` provider，对接 `https://api.anthropic.com/v1/messages` SSE 端点。
 
+adapter SHALL 按以下表格把 Anthropic 8 种 SSE 事件映射为内部 ProviderEvent（5 种）：
+
+| Anthropic SSE event | 内部 ProviderEvent | 处理说明 |
+|---|---|---|
+| `message_start` | （吞咽） | 仅记录 `usage.input_tokens` 到 adapter 状态，**不**透出 |
+| `content_block_start` | （吞咽 / 状态） | 按 `content_block.type` 初始化累积缓冲：`text` 块准备空字符串、`tool_use` 块准备 `{id, name, input_json: ""}` |
+| `content_block_delta` (type=`text_delta`) | `text_delta` | 直接透出 `text_delta` 字段 |
+| `content_block_delta` (type=`input_json_delta`) | （吞咽 / 状态） | 把 `partial_json` 追加到当前 tool_use 块的 `input_json` 缓冲 |
+| `content_block_delta` (type=`thinking_delta`) | （吞咽 / 状态） | MVP 不透出 thinking；累积到 thinking 缓冲，在 message_stop 时一并丢弃 |
+| `content_block_stop` | `tool_use` 或（吞咽） | 当 stop 的是 tool_use 块：解析累积的 `input_json` 为 JSON，emit 完整 `tool_use { id, name, input }`；text 块：不 emit（text_delta 已实时透出） |
+| `message_delta` | `usage` | 从 `delta.stop_reason` 与 `usage.output_tokens` 提取，emit `usage { input_tokens, output_tokens }` + 缓存 stop_reason 到 adapter 状态 |
+| `message_stop` | `stop` | emit `stop { reason: <上一步缓存的 stop_reason> }`，然后 close channel |
+| `ping` | （吞咽） | 作为底层心跳，重置 stream 读超时，不透出 |
+| `error` | `error` | 翻成 ProviderError 透出，然后 close channel |
+
 adapter SHALL：
 - 直接映射内部 Message → Anthropic Messages 请求
-- 解析 Anthropic SSE 事件流（`message_start`、`content_block_start`、`content_block_delta`、`content_block_stop`、`message_delta`、`message_stop`、`ping`、`error`）
-- 将 `content_block_delta.text_delta` 翻成内部 `text_delta` 事件
-- 将 `tool_use` 块累积完成后翻成内部 `tool_use` 事件
-- 从 `message_delta.usage` 提取 input/output token 数
+- 在解析失败（如 SSE 帧不完整、JSON 解析失败）时 emit `error { Code: "stream_broken", Cause: err }` 后 close channel
 
-#### Scenario: 流式接收 Anthropic SSE
+#### Scenario: 流式接收 Anthropic SSE 简单文本
 
-- **WHEN** Anthropic 返回 SSE 流含 5 个 text delta + 1 个 tool_use + message_stop
-- **THEN** adapter 通过 channel 依次 emit 5 个 `text_delta`、1 个 `tool_use`、1 个 `stop` 事件
+- **WHEN** Anthropic 返回 SSE 流：`message_start` → `content_block_start(text)` → `content_block_delta(text_delta)` ×5 → `content_block_stop` → `message_delta` → `message_stop`
+- **THEN** adapter 透出 5 个 `text_delta`、1 个 `usage`、1 个 `stop`；`message_start`/`content_block_start`/`content_block_stop` 全部吞咽
+
+#### Scenario: tool_use 累积完成后 emit
+
+- **WHEN** Anthropic 返回：`content_block_start(tool_use, id=abc, name=Bash)` → `input_json_delta('{"comma')` → `input_json_delta('nd":"ls"}')` → `content_block_stop`
+- **THEN** adapter 在 `content_block_stop` 时解析累积的 `{"command":"ls"}`，emit 一条 `tool_use { id:"abc", name:"Bash", input:{"command":"ls"} }`
+
+#### Scenario: thinking 块被丢弃（MVP）
+
+- **WHEN** Anthropic 返回 `content_block_start(thinking)` + 多个 `thinking_delta`
+- **THEN** adapter 累积但不透出；MVP 不暴露 thinking 给客户端
 
 ### Requirement: OpenAI adapter
 
@@ -62,6 +142,16 @@ adapter SHALL：
 
 - **WHEN** 内部 history 末尾的 user message 含 1 个 tool_result
 - **THEN** adapter 在 OpenAI 请求中追加一条 `{ role: "tool", tool_call_id: <id>, content: <output> }`，不放进 user 消息
+
+#### Scenario: 并发 tool_calls 累积（index 字段）
+
+- **WHEN** OpenAI SSE 流返回 2 个并发 tool_calls：先 `delta.tool_calls=[{index:0,id:"a",function:{name:"Bash"}}]`，然后 `delta.tool_calls=[{index:1,id:"b",function:{name:"Read"}}]`，接着交错的 arguments delta（如 `[{index:0,function:{arguments:'{"comm'}}]` → `[{index:1,function:{arguments:'{"path'}}]` → ...）
+- **THEN** adapter 用 `index` 字段区分两个并发累积缓冲，最终在 `finish_reason: "tool_calls"` 时按 index 顺序 emit 2 个完整 `tool_use` 事件
+
+#### Scenario: finish_reason="stop" 但含 tool_calls
+
+- **WHEN** OpenAI 非流式响应返回 `finish_reason: "stop"` 但 message 含 `tool_calls`（部分模型行为）
+- **THEN** adapter 按 tool_calls 数组 emit 对应 `tool_use` 事件，再 emit `stop`
 
 ### Requirement: 兼容范围声明
 
