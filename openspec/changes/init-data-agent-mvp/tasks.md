@@ -47,7 +47,7 @@
 - [ ] 5.10 单元测试：DangerousCommandGuard 已知绕过测试（hex 转义、绝对路径、bash -c 包装、alias、base64 解码至少各一例，验证 MVP 不防的行为符合 spec）
 - [ ] 5.11 实现路径校验工具 `internal/tools/pathguard`：filepath.Clean → EvalSymlinks（含父目录退路）→ filepath.Rel 越界检查 → `O_NOFOLLOW` open（Linux/macOS）/ Lstat 复检（其他平台）。所有读写文件的内置工具与 MCP 工具适配层 SHALL 调用此模块。**来源：AI #2 复审 H-6**
 - [ ] 5.12 单元测试：pathguard 拒绝 `..` 穿越、symlink 逃逸、非工作目录路径；TOCTOU 场景（Linux/macOS O_NOFOLLOW）
-- [ ] 5.13 实现 Bash env 黑名单过滤（LD_PRELOAD / LD_LIBRARY_PATH / DYLD_* / 危险 PYTHONPATH 与 NODE_OPTIONS）；会话级 env 合并时同样过滤并 warn 日志。**来源：AI #2 复审 M-6**
+- [ ] 5.13 实现 `internal/tools/bash/envfilter.go` 集中维护 env 过滤表（精确名 + `DYLD_` 前缀 + `NODE_OPTIONS` 词法 token 前缀判定，用 `shlex` 拆分）；会话级 env 合并时对每 key 重跑过滤、被丢的 key warn 日志（不打 value）。**来源：AI #2 复审 M-6 + Round 3 算法明确化**
 - [ ] 5.14 实现 ToolResult.Output 大小自我截断（`tools.tool_result_max_bytes`，默认 1 MiB）：Bash 用 ring buffer / Read 用 limit / Grep 用上限行数；截断追加单行 `[truncated: ...]` 标记；UTF-8 安全回退。**来源：AI #2 复审 tool_result schema 未定义**
 - [ ] 5.15 单元测试：Bash env 过滤（启动 env 含 LD_PRELOAD 时子进程无）；ToolResult 截断 5MB 输出回到 1MB + 标记 + UTF-8 边界
 
@@ -96,7 +96,7 @@
 - [ ] 9.7 实现 `Last-Event-ID` header / `?last_event_id=N` query 双路径解析；GET 流原子回放算法：写锁内取 `max_idx_snapshot` → 回放 `idx > Last-Event-ID AND idx <= snapshot` → 释放锁 → 切实时通道
 - [ ] 9.8 实现 interrupt 到达时清空 outbox 但不删 events 表行
 - [ ] 9.9 实现客户端断开检测（`r.Context().Done()`）：停 SSE 写、释放写锁、session goroutine 继续
-- [ ] 9.10 实现 Graceful shutdown：收 SIGTERM → 停接新连接 → 所有 SSE emit `error{code:"server_shutdown"}` → 触发所有活跃 session 取消（合成 cancelled）→ 等 session goroutine 退出（`graceful_shutdown_timeout` 上限）→ 关 SQLite/MCP host → exit
+- [ ] 9.10 实现 Graceful shutdown，按 api-protocol spec "Graceful Shutdown" requirement 的 7 步严格顺序：收 SIGTERM → 停接新连接（**保留已建立 SSE**）→ 触发所有活跃 session 取消（合成 cancelled tool_result + emit `interrupted`）→ 等待 cancelled / interrupted 事件全部写入 events 表与 outbox channel → 所有 SSE emit `error{code:"server_shutdown"}` 并 flush 关闭 → 等 session goroutine 退出（`server.graceful_shutdown_timeout_seconds` 上限，默认 30s，超时强制退出码 1）→ 关 SQLite/MCP host → exit 0。**关键不变量**：cancelled / interrupted 事件 SHALL 先于 server_shutdown 事件送达客户端
 - [ ] 9.11 实现 `/health` 与 `/debug/sessions/{id}/events`（debug 端点受 `debug.enabled` 与 bearer auth 双重控制）
 - [ ] 9.12 实现 Bearer token 鉴权：constant-time 比较（`crypto/subtle`）；token 永不写日志
 - [ ] 9.13 E2E 测试：启动真二进制 + mock LLM → 创建会话 → 浏览器 `EventSource` 接事件 + curl `POST` 发消息 → 多轮对话 → 模拟断线后 EventSource 自动重连验证不漏事件
@@ -107,7 +107,7 @@
 - [ ] 9.18 E2E 测试：GET 单流切换并发安全（race detector + 100 次切换）
 - [ ] 9.19 E2E 测试：Bearer auth 在所有端点的行为（含 health 不验、ui 不验、其他都验）
 - [ ] 9.20 E2E 测试：SSE event data 含换行的 JSON 编码正确（客户端 `EventSource` onmessage 收到完整对象）
-- [ ] 9.21 E2E 测试：Graceful shutdown——SIGTERM 期间活跃 session 收到 server_shutdown + cancelled tool_result，进程在 timeout 内退出
+- [ ] 9.21 E2E 测试：Graceful shutdown——SIGTERM 期间活跃 session 客户端**先**收到 cancelled tool_result 与 `interrupted` 事件，**后**收到 `error{code:"server_shutdown"}`，最后连接关闭；ephemeral session 同样收到完整 cancelled/interrupted（验证 spec "Ephemeral session 取消事件不丢" Scenario）；进程在 timeout 内退出码 0
 - [ ] 9.22 集成测试：nginx 反代 + `proxy_buffering off` 场景下 SSE 流正常推送（参考 `docs/deployment.md`）
 - [ ] 9.23 实现 POST body 大小限制：所有 POST 端点用 `http.MaxBytesReader` 包裹；超 `server.max_request_body_bytes`（默认 1 MiB）返 `413` 含 `{code:"request_too_large", limit}`。**来源：AI #2 复审 M-3**
 - [ ] 9.24 单元/集成测试：POST 1 MiB 通过、5 MiB 拒；配置覆盖（设 512 KiB 时在该阈值处拒）
