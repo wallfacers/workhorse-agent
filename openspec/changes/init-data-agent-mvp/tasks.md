@@ -9,9 +9,9 @@
 
 ## 2. 配置与启动
 
-- [ ] 2.1 实现 `internal/config`：按 `configuration` capability 落地完整 schema；4 源加载（CLI > env > yaml > defaults）；数值与字符串校验（非法配置启动失败 + 明确错误消息）
-- [ ] 2.2 实现 `cmd/dataagent/main.go`：`init` / `serve` / `version` 三个子命令
-- [ ] 2.3 `dataagent init`：交互式生成 `~/.dataagent/{config.yaml,mcp.json,skills/,agents/}` 与空 `state.db`
+- [x] 2.1 实现 `internal/config`：按 `configuration` capability 落地完整 schema；4 源加载（CLI > env > yaml > defaults）；数值与字符串校验（非法配置启动失败 + 明确错误消息）
+- [x] 2.2 实现 `cmd/dataagent/main.go`：`init` / `serve` / `version` 三个子命令
+- [x] 2.3 `dataagent init`：交互式生成 `~/.dataagent/{config.yaml,mcp.json,skills/,agents/}` 与空 `state.db`
 - [ ] 2.4 `dataagent serve`：装配所有模块、按 config.server.host:port 绑定、注册 SIGTERM/SIGINT；按 §9.10 graceful shutdown 流程退出
 - [ ] 2.5 实现会话并发上限（`sessions.max_concurrent`）：POST `/v1/sessions` 检查活跃 session 数，超限返 429
 - [ ] 2.6 实现 history token 硬上限（`agent.max_history_tokens`）：每次 LLM 调用前检查，超限拒绝 user_message
