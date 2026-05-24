@@ -78,7 +78,7 @@ Dispatch 的 `agent_type` 参数 SHALL 用此 name 匹配；命中后 system_pro
 
 `Dispatch.Mode` SHALL 控制子 session 事件透传到父客户端：
 
-- `streaming`（默认）：子 session 的所有 Server→Client 事件 SHALL 被包装为 `subagent_event { agent_id, event: <inner> }` 透传给父 WebSocket
+- `streaming`（默认）：子 session 的所有 Server→Client 事件 SHALL 被包装为 `subagent_event { agent_id, event: <inner> }` 透传给父 SSE 流
 - `blocking`：父客户端 SHALL 仅看到 Dispatch 工具的 `tool_call_start` 和 `tool_call_done`，子 session 过程 SHALL 不透传
 
 子 session 完成后 Dispatch 工具 SHALL emit `tool_call_done` 含子 session 的 final assistant 文本作为 output。
@@ -86,12 +86,12 @@ Dispatch 的 `agent_type` 参数 SHALL 用此 name 匹配；命中后 system_pro
 #### Scenario: streaming 模式透传
 
 - **WHEN** 父 Dispatch 子 `mode: "streaming"`，子 session emit `assistant_text_delta`
-- **THEN** 父 WebSocket 收到 `subagent_event { agent_id: <child_id>, event: { type: "assistant_text_delta", delta: "..." } }`
+- **THEN** 父 SSE 流 收到 `subagent_event { agent_id: <child_id>, event: { type: "assistant_text_delta", delta: "..." } }`
 
 #### Scenario: blocking 模式不透传
 
 - **WHEN** 父 Dispatch 子 `mode: "blocking"`
-- **THEN** 父 WebSocket 仅收到 `tool_call_start` 和最终 `tool_call_done`，无中间 `subagent_event`
+- **THEN** 父 SSE 流 仅收到 `tool_call_start` 和最终 `tool_call_done`，无中间 `subagent_event`
 
 ### Requirement: 取消级联到子 session
 

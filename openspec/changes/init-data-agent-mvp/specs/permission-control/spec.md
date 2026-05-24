@@ -22,7 +22,7 @@ type Permission struct {
 
 ### Requirement: 权限决策值语义
 
-WebSocket `permission_decision` 消息的 `decision` 字段 SHALL 接受以下 5 个值：
+客户端 POST 的 `permission_decision` 消息的 `decision` 字段 SHALL 接受以下 5 个值：
 
 - `allow_once`：仅本次允许；不持久化
 - `allow_session`：本会话内同 tool+pattern 允许；存内存

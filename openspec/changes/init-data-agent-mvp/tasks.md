@@ -70,15 +70,17 @@
 - [ ] 8.7 集成测试：触发压缩 → 验证 history 缩短 + 保留 error + emit compaction 事件
 - [ ] 8.8 集成测试：跑中状态 cancel → 验证级联 + 合成 cancelled tool_result + 状态回 Idle
 
-## 9. HTTP + WebSocket API
+## 9. HTTP + Streamable HTTP API
 
-- [ ] 9.1 实现 `internal/api/server.go` chi router + middleware（recovery、structured logging、optional bearer auth）
+- [ ] 9.1 实现 `internal/api/server.go` chi router + middleware（recovery、structured logging、optional bearer auth、**Origin 校验**）
 - [ ] 9.2 实现 sessions CRUD handlers（POST/GET/DELETE/cancel/compact）
-- [ ] 9.3 实现 `internal/api/protocol` 的 ClientEvent / ServerEvent JSON 类型 + 校验
-- [ ] 9.4 实现 WebSocket handler（`nhooyr.io/websocket`）：升级、读 ClientEvent 入 session.Inbox、读 session.Outbox 写 ServerEvent
-- [ ] 9.5 实现断线重连：`?since_event_idx=N` 拉取 events 表后接续实时流
-- [ ] 9.6 实现 `/health` 与 `/debug/sessions/{id}/events`
-- [ ] 9.7 E2E 测试：启动真二进制 + mock LLM → 创建会话 → WebSocket → 多轮对话 → 断线重连验证
+- [ ] 9.3 实现 `internal/api/protocol` 的 ClientEvent / ServerEvent JSON 类型 + 校验（含 `event` 名 → ServerEvent 类型映射）
+- [ ] 9.4 实现 `POST /v1/sessions/{id}/stream` handler：JSON 解析 → 校验 type → 入 session.Inbox → 默认返回 `202 Accepted`；未知 type 返回 `400`
+- [ ] 9.5 实现 `GET /v1/sessions/{id}/stream` SSE handler：用 std `net/http` Flusher，按 `id: <idx>\nevent: <type>\ndata: <json>\n\n` 格式写；每 25s 写 `: keep-alive\n\n`；并发新 GET 时关旧流并写 `: superseded`
+- [ ] 9.6 实现 `Last-Event-ID` header / `?last_event_id=N` query 双路径解析；GET 流先从 events 表回放 `idx > N` 再切实时
+- [ ] 9.7 实现 `/health` 与 `/debug/sessions/{id}/events`
+- [ ] 9.8 E2E 测试：启动真二进制 + mock LLM → 创建会话 → 浏览器 `EventSource` 接事件 + curl `POST` 发消息 → 多轮对话 → 模拟断线后 EventSource 自动重连验证不漏事件
+- [ ] 9.9 E2E 测试：Origin 校验——非白名单 Origin 返 403；白名单通过
 
 ## 10. 多 agent 协作
 
@@ -110,14 +112,14 @@
 
 ## 13. 参考 Web UI
 
-- [ ] 13.1 写 `web/index.html` + `web/app.js`（~200 行原生 JS）：会话列表、新建、WebSocket 连、消息渲染、工具调用展示、权限询问对话框
+- [ ] 13.1 写 `web/index.html` + `web/app.js`（~200 行原生 JS）：会话列表、新建、`EventSource` 接事件流、`fetch POST` 发消息、消息渲染、工具调用展示、权限询问对话框
 - [ ] 13.2 `//go:embed` 把 web/ 编进二进制，挂在 `/ui`
 - [ ] 13.3 文档化协议供自定义 UI 作者参考：`docs/protocol.md`
 
 ## 14. 文档与发布
 
 - [ ] 14.1 写 README.md：合规声明 + 快速开始 + 配置说明 + provider 兼容范围声明
-- [ ] 14.2 写 `docs/protocol.md`：HTTP REST + WebSocket 完整协议规范
+- [ ] 14.2 写 `docs/protocol.md`：HTTP REST + Streamable HTTP（POST + GET SSE + Last-Event-ID）完整协议规范，含与 MCP 2025-11-25 spec 对应关系说明
 - [ ] 14.3 写 `docs/architecture.md`：模块图与责任清单
 - [ ] 14.4 配置 GitHub Actions 的 release workflow：tag 触发 multi-arch binary + checksums
 - [ ] 14.5 实际跑一遍端到端：`dataagent init` → `dataagent serve` → curl 创建会话 → wscat 发消息 → 观察事件流

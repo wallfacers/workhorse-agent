@@ -1,6 +1,6 @@
 ## Context
 
-`data-agent` 是从零开始的本地 AI agent 服务端。当前没有现成的 Go 实现能同时满足：多轮对话 + 并行工具 + 多 agent 并发派发 + MCP + Skills + 全双工 WebSocket 协议 + 自定义 UI 解耦。OpenCode 是 TypeScript 写的并以 SSE 半双工为主；Claude Code 是 TypeScript CLI、闭源且无 server 模式。空白处需要填补。
+`data-agent` 是从零开始的本地 AI agent 服务端。当前没有现成的 Go 实现能同时满足：多轮对话 + 并行工具 + 多 agent 并发派发 + MCP + Skills + 统一传输协议 + 自定义 UI 解耦。OpenCode 是 TypeScript 写的；Claude Code 是 TypeScript CLI、闭源且无 server 模式。空白处需要填补。
 
 技术参考路径取 **路径 C：参考架构再实现** ——可以通过 `claude-code-sourcemap`（npm 公开包附带的 source map 还原版本）理解架构思想，但代码、命名、目录结构、协议字段、字符串内容全部独立设计。
 
@@ -10,7 +10,7 @@
 
 - 单 Go 二进制启动即可服务，无外部依赖
 - 支持单用户并发多会话，每会话独立 workdir / env / history / 取消上下文
-- WebSocket 全双工事件流；客户端断线不中断 LLM 推理；重连按 `since_event_idx` 增量同步
+- MCP Streamable HTTP 传输（POST + GET SSE 长连接）；客户端断线不中断 LLM 推理；重连按标准 `Last-Event-ID` HTTP header 增量同步
 - 工具批量并行执行；并发批内单工具失败不取消整批；上下文修改延迟应用
 - 父 agent 通过 Dispatch 工具一轮并发派发多个子 session，每个子 session 是完整独立的 agent 循环
 - Provider 抽象支持 Anthropic Messages + OpenAI Chat Completions；可接 OpenAI 兼容端
@@ -35,13 +35,25 @@
 - **vs Rust**：goroutine 是天然的多 agent 基元，开发迭代速度比 Rust 快 2-3 倍；MVP 6-9 周可交付而非 6 个月；性能差距（20-40%）对 LLM-bound 工作负载无意义（瓶颈在 token 流）
 - **vs Elixir**：Erlang VM 适合 actor 但缺 AI 生态；HTTP 调 LLM 不需要 BEAM 的弹性优势；Go 单二进制分发更适合 CLI 工具型产品
 
-### D2 · 传输协议：WebSocket 全双工
+### D2 · 传输协议：MCP Streamable HTTP（POST + GET SSE）
 
-选 WebSocket 而非 SSE / gRPC bidi / MCP-style Streamable HTTP：
-- **vs SSE**：SSE 是单向（server→client），用户取消、人工接管、追加上下文等控制信号需要单独 POST endpoint 配对，半双工本质
-- **vs gRPC bidi**：HTTP/2 流真双向但浏览器原生 fetch 不支持 streamed request；自定义 Web UI 接入复杂
-- **vs MCP Streamable HTTP**：POST + SSE 配对在语义上接近全双工但不是；MCP 自己用得着是因为协议特性，应用层全双工 WebSocket 更直接
-- WebSocket 单连接、所有客户端语言都有库、Go 端 `nhooyr.io/websocket` 简洁现代
+参照 [MCP 2025-11-25 Streamable HTTP 规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http)：
+
+- **POST `/v1/sessions/{id}/stream`**：客户端提交 ClientEvent JSON；服务器默认返回 `202 Accepted` 无 body（fire-and-forget）。所有后续事件流走 GET 通道。
+- **GET `/v1/sessions/{id}/stream`**：客户端开启长连接 SSE 流；服务器把该 session 的所有 Server→Client 事件按 SSE 格式推送，每个 event 含 `id:` 字段（值为事件 `idx`，单调递增 ULID 或整数）。
+- **`Last-Event-ID` 重连**：客户端断线重连时在 GET 请求 header 带 `Last-Event-ID: <idx>`，服务器从 `events` 表回放 `idx > Last-Event-ID` 的所有事件后接续实时流——浏览器原生 `EventSource` 自动做这件事。
+- **`Origin` 校验**：服务器必须校验 `Origin` header，默认白名单 `null`（同源 file://）、`http://127.0.0.1:*`、`http://localhost:*`；其它来源 `403 Forbidden`。这是 MCP spec 强制要求，防 DNS rebinding 攻击。
+- **绑定 localhost**：默认 `127.0.0.1:7821`，不监听公网接口（与 MCP spec 一致）。
+- **Mcp-Session-Id 兼容字段**（可选）：响应 GET 时附 `Mcp-Session-Id: <session_id>` header，便于支持任何 MCP-aware 通用客户端调试，但我们的 session id 主要走 URL path。
+
+**为什么不用 WebSocket / gRPC bidi**：
+- **vs WebSocket**：浏览器原生 `EventSource` 比 `WebSocket` 更易用（自动重连、Last-Event-ID 自动管理）；curl/wget 即可调试；不需要 HTTP Upgrade 握手；与项目内 MCP 客户端共用同一传输模型，降低心智负担
+- **vs gRPC bidi**：HTTP/2 流虽然真双向但浏览器原生 fetch 不支持 streamed request body；自定义 Web UI 接入需 Connect-Web 等额外 SDK
+- **vs 纯 SSE**：本设计已是 SSE-based；MCP Streamable HTTP = SSE + 受规范化的"POST 提交客户端消息"模式，是 SSE 的合理工程包装
+
+**Pattern 选择**：MCP spec 允许 POST 直接返回 SSE 流，也允许 POST 返回 202 而事件走 GET 流。我们选**后者（Pattern A：单 GET SSE）**——心智模型最简单，断线重连只关注一条流，自定义客户端实现成本最低。
+
+**心跳**：GET SSE 长连接每 25 秒推送一条 SSE comment `: keep-alive\n\n`，对应原 `ping/pong` 心跳。客户端 POST `ping` 服务器仍可 emit `pong` 事件用于 RTT 测量。
 
 ### D3 · 部署形态：本地单进程 + 多会话隔离
 
@@ -55,7 +67,7 @@
 选 SQLite 而非 Postgres / 内存：
 - 本地单进程不需要 server-style DB
 - `modernc.org/sqlite` 纯 Go，无 CGO，编译跨平台静态二进制
-- 事件流 append-only 是"自定义 UI"和"断线重连"的共同基础——客户端可重放任意 `since_event_idx` 之后的事件
+- 事件流 append-only 是"自定义 UI"和"断线重连"的共同基础——客户端通过 SSE 标准 `Last-Event-ID` header 可重放任意 `idx` 之后的事件
 
 ### D5 · 并行工具执行：按 `CanRunInParallel` 分批
 
@@ -114,7 +126,8 @@ MVP 不做命令分类（白名单 + 解析）。仅维护小型 DangerousComman
 
 | 风险 | 缓解 |
 |---|---|
-| WebSocket 全双工对老 HTTP 代理 / 企业防火墙不够友好 | 端口默认 `127.0.0.1:7821`，本地用不受代理影响；未来需要时加 fallback HTTP polling |
+| SSE 长连接对某些反向代理（nginx 默认 buffering）不友好 | 端口默认 `127.0.0.1:7821`，本地用无反代；文档注明若部署在 nginx 后需 `proxy_buffering off` 与较长 `proxy_read_timeout` |
+| POST 默认 `202 Accepted` 意味客户端无法直接从 POST 响应得知"消息是否被 session 接受/处理"，需依赖 GET 流上的后续事件 | 错误情形（如 session 不存在、未知 type）服务器 POST 即返 `4xx`；正常情形客户端可通过 GET 流上即将到来的 `pong` 或 `assistant_text_delta` 等隐式确认；可选 `idempotency_key` 字段供未来回执机制 |
 | `modernc.org/sqlite` 是 transpiled C，比 mattn/go-sqlite3 慢 2-3 倍 | 本地单进程 IOPS 量极低（每事件 1 行 insert），跑得动；换 mattn 需要 CGO，破坏静态二进制目标 |
 | 工具并行执行竞争资源（CPU/IO/文件锁） | semaphore 默认 10 上限；Edit/Write 类工具 `CanRunInParallel=false` 强制串行；用户可配 |
 | 法律边界主观判断 | 路径 C 操作规则（D11）形成"防御性证据链"；Git 历史从空仓库起步可追溯；如必要时可再走"清洁室"流程把 sourcemap 隔离到不同人员 |
@@ -132,7 +145,7 @@ MVP 不做命令分类（白名单 + 解析）。仅维护小型 DangerousComman
 1. `go build` 出二进制
 2. 用户跑 `dataagent init` 生成 `~/.dataagent/config.yaml`（API key、provider、端口）
 3. `dataagent serve` 启动
-4. 自定义 UI 连 `ws://127.0.0.1:7821/v1/sessions/{id}/stream`
+4. 自定义 UI 调 `http://127.0.0.1:7821`：先 `POST /v1/sessions` 创建会话；再 `new EventSource('/v1/sessions/<id>/stream')` 接收事件；用户操作时 `fetch('/v1/sessions/<id>/stream', { method: 'POST', body: JSON.stringify(ev) })`
 
 回滚：本地服务，删二进制 + `~/.dataagent/` 即清空。
 
