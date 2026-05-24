@@ -1,0 +1,102 @@
+package tools
+
+import (
+	"errors"
+	"fmt"
+	"sort"
+	"sync"
+)
+
+// Registry holds every Tool the agent can dispatch — builtins, MCP-adapted
+// tools, Dispatch, and LoadSkill. The set is built at startup; AllowedTools
+// is a per-session filter applied on lookup.
+type Registry struct {
+	mu    sync.RWMutex
+	tools map[string]Tool
+}
+
+func NewRegistry() *Registry {
+	return &Registry{tools: map[string]Tool{}}
+}
+
+// Register adds t. Names must be unique; double-registration is rejected so a
+// typo in MCP namespacing doesn't silently shadow a builtin.
+func (r *Registry) Register(t Tool) error {
+	if t == nil {
+		return errors.New("registry: nil tool")
+	}
+	name := t.Name()
+	if name == "" {
+		return errors.New("registry: tool has empty Name()")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, dup := r.tools[name]; dup {
+		return fmt.Errorf("registry: tool %q already registered", name)
+	}
+	r.tools[name] = t
+	return nil
+}
+
+// Unregister removes the tool with the given name; missing names are ignored.
+func (r *Registry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
+}
+
+// Get returns the named tool. The second result is false when no such tool
+// exists.
+func (r *Registry) Get(name string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	t, ok := r.tools[name]
+	return t, ok
+}
+
+// Names returns the registered tool names in deterministic order so system
+// prompts are stable between calls.
+func (r *Registry) Names() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]string, 0, len(r.tools))
+	for n := range r.tools {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Filtered returns the subset of registered tools whose name is in allowed.
+// A nil or empty allowed slice means "no filter" — every tool is returned.
+func (r *Registry) Filtered(allowed []string) []Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(allowed) == 0 {
+		out := make([]Tool, 0, len(r.tools))
+		for _, n := range sortedKeys(r.tools) {
+			out = append(out, r.tools[n])
+		}
+		return out
+	}
+	want := make(map[string]struct{}, len(allowed))
+	for _, a := range allowed {
+		want[a] = struct{}{}
+	}
+	out := make([]Tool, 0, len(want))
+	for _, n := range sortedKeys(r.tools) {
+		if _, ok := want[n]; ok {
+			out = append(out, r.tools[n])
+		}
+	}
+	return out
+}
+
+func sortedKeys(m map[string]Tool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
