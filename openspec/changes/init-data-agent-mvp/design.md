@@ -40,9 +40,9 @@
 参照 [MCP 2025-11-25 Streamable HTTP 规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http)：
 
 - **POST `/v1/sessions/{id}/stream`**：客户端提交 ClientEvent JSON；服务器默认返回 `202 Accepted` 无 body（fire-and-forget）。所有后续事件流走 GET 通道。
-- **GET `/v1/sessions/{id}/stream`**：客户端开启长连接 SSE 流；服务器把该 session 的所有 Server→Client 事件按 SSE 格式推送，每个 event 含 `id:` 字段（值为事件 `idx`，单调递增 ULID 或整数）。
-- **`Last-Event-ID` 重连**：客户端断线重连时在 GET 请求 header 带 `Last-Event-ID: <idx>`，服务器从 `events` 表回放 `idx > Last-Event-ID` 的所有事件后接续实时流——浏览器原生 `EventSource` 自动做这件事。
-- **`Origin` 校验**：服务器必须校验 `Origin` header，默认白名单 `null`（同源 file://）、`http://127.0.0.1:*`、`http://localhost:*`；其它来源 `403 Forbidden`。这是 MCP spec 强制要求，防 DNS rebinding 攻击。
+- **GET `/v1/sessions/{id}/stream`**：客户端开启长连接 SSE 流；服务器把该 session 的所有 Server→Client 事件按 SSE 格式推送，每个 event 含 `id:` 字段（值为事件 `idx`，**int64 单调递增**，SSE `id:` 取十进制字符串；session/message/agent ID 才是 ULID）。
+- **`Last-Event-ID` 重连**：客户端断线重连时在 GET 请求 header 带 `Last-Event-ID: <idx>`，服务器在 session 级写锁内取 `max_idx_snapshot`，回放 `(Last-Event-ID, snapshot]` 后释放锁切实时通道——保证无重复无遗漏。浏览器原生 `EventSource` 自动管理 header。
+- **`Origin` 校验**：服务器必须用标准 URL parser 解析 `Origin` 取 `scheme+host+port` 三元组做 **exact match**，禁止前缀/正则。默认白名单：`http://127.0.0.1:*`、`http://localhost:*`、https 同上；缺失 `Origin` 仅在绑定 `127.0.0.1` 时允许；`Origin: null`（sandboxed iframe / file://）**默认拒绝**，需 `allow_null_origin: true` 显式开启。这是 MCP spec MUST 要求，防 DNS rebinding。
 - **绑定 localhost**：默认 `127.0.0.1:7821`，不监听公网接口（与 MCP spec 一致）。
 - **Mcp-Session-Id 兼容字段**（可选）：响应 GET 时附 `Mcp-Session-Id: <session_id>` header，便于支持任何 MCP-aware 通用客户端调试，但我们的 session id 主要走 URL path。
 
@@ -89,7 +89,7 @@
 
 主 agent 与子 agent 是同一种 Session struct，差别在 `parent_id` 外键 + 触发来源：
 - 子 session 完全独立的 history + goroutine
-- 默认继承父的 workdir / env / provider / model（可在 agent_type.yaml 或 Dispatch 参数覆盖）
+- 默认继承父的 workdir / env / provider / model（可在 `~/.dataagent/agents/<name>.yaml` 或 Dispatch 参数覆盖）
 - MCP host 共享（避免每子重启 MCP server）
 - 取消级联：父 ctx → 所有跑中的子 ctx
 - 事件透传默认 `streaming` —— 多 agent 协作的核心价值是可观察性
@@ -98,7 +98,7 @@
 
 取消时正在跑的工具被砍：
 - 已完成的 tool_result：保留入 history
-- 未完成的 tool_result：写入合成 `{is_error: true, output: "<cancelled by user>"}`
+- 未完成的 tool_result：写入合成 `{is_error: true, output: "[CANCELLED] Tool execution was interrupted by user"}`（前缀 `[CANCELLED]` 在 system prompt 中有解释，便于 LLM 识别）
 - 这样 LLM 下一轮看到完整 tool_use ↔ tool_result 配对，不会困惑或重试
 
 ### D9 · 上下文压缩：阈值 0.85 + 同家 Fast 模型
@@ -110,7 +110,7 @@
 
 ### D10 · Bash 安全：仅"重大隐患"防护
 
-MVP 不做命令分类（白名单 + 解析）。仅维护小型 DangerousCommandGuard 正则列表：`rm -rf /`、`rm -rf ~`、`dd of=/dev/`、`mkfs.*`、重定向到块设备、fork bomb、`chmod -R 777 /`、`shutdown/reboot/halt/poweroff`。命中即**强制询问**，绕过任何 `allow_permanent` 规则；事件标 `risk: "catastrophic"`，UI 应红色高亮。
+MVP 不做命令分类（白名单 + 解析）。仅维护小型 DangerousCommandGuard 正则列表共 **8 类**：`rm -rf /`、`rm -rf ~`、`dd of=/dev/`、`mkfs.*`、重定向到块设备、fork bomb、`chmod -R 777 /`、`shutdown/reboot/halt/poweroff`、可疑解码执行（`base64 -d | sh`、`curl ... | bash` 等管道执行）。命中即**强制询问**，绕过任何 `allow_permanent` 规则；事件标 `risk: "catastrophic"`，UI 应红色高亮。已知绕过（hex 转义、绝对路径、bash -c 包装、alias、同形字符、多空格）MVP 接受不防——见 permission-control spec。
 
 ### D11 · 合规：路径 C 操作规则
 

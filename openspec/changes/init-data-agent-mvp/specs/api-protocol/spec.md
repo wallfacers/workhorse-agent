@@ -118,6 +118,9 @@
 | `AwaitPerm` | `permission_decision`（匹配 request_id）、`interrupt`、`ping` | 其他 | `409 Conflict` |
 | `Executing` | `interrupt`、`ping` | 其他 | `409 Conflict` |
 | `Compacting` | `interrupt`、`ping` | 其他 | `409 Conflict` |
+| `Cancelled` | `interrupt`（幂等，返 `202 Accepted` 无副作用）、`ping` | 其他 | `409 Conflict` |
+
+注：`Cancelled` 是收尾中状态（见 session-management "取消收尾超时"），通常在 `cancel_drain_timeout_seconds` 内转为 `Idle`；期间重复 interrupt 按幂等返 `202`，其他类型按 `session_busy` 拒绝。
 
 拒绝时 SHALL 返回 `409 Conflict` 含 body `{ "code": "session_busy", "message": "...", "state": "<current>" }`；同时服务 SHALL 在 GET SSE 流上 emit 一条 `error` 事件 `{ "code": "session_busy", "state": "<current>" }`（双通道一致），确保不看 POST 响应的 SSE-only 客户端也能感知。
 
@@ -395,21 +398,29 @@ SSE 流上 `id:` 字段携带的是事件 `idx`（十进制字符串），不是
 - **WHEN** GET SSE 连接保持 10 分钟无任何事件（仅 keep-alive 注释）
 - **THEN** 连接不被服务端超时关闭；客户端持续收到 25 秒一次的 `: keep-alive`
 
+<!-- 来源：AI #1 复审 (2026-05-24)：原步骤 2 先关 SSE 导致步骤 3 产生的 cancelled tool_result 与 interrupted 事件无法送达；ephemeral session 事件永久丢失。改为先取消产生事件、再关 SSE。 -->
+
 ### Requirement: Graceful Shutdown
 
-服务收到 `SIGTERM` 或 `SIGINT` 时 SHALL 执行以下流程：
+服务收到 `SIGTERM` 或 `SIGINT` 时 SHALL 按以下严格顺序执行（不可重排，关键是先产生 cancelled 事件、再关 SSE 流）：
 
-1. 立即停止接受新的 HTTP 连接（`http.Server.Shutdown`）
-2. 对所有活跃 GET SSE 流，emit 一条 `error { code: "server_shutdown" }` 事件后关闭
-3. 对所有 Thinking/Executing/AwaitPerm/Compacting 状态的 session 触发取消（与用户 interrupt 同流程，含合成 cancelled tool_result）
-4. 等待所有 session goroutine 退出（最长 `graceful_shutdown_timeout` 秒，默认 30）
-5. 关闭 SQLite 连接、MCP host 子进程
-6. 进程退出码 0
+1. 立即停止接受新的 HTTP 连接（`http.Server.Shutdown` 但保留已建立的 SSE 流）
+2. 对所有 Thinking/Executing/AwaitPerm/Compacting 状态的 session 触发取消（与用户 interrupt 同流程，含合成 cancelled tool_result 与 emit `interrupted` 事件），按"取消收尾超时"requirement 限时收尾
+3. 等待 cancelled tool_result 与 `interrupted` 事件全部写入 events 表与 outbox channel（持久化 session 的事件至此已不可丢失，ephemeral session 通过仍开着的 SSE 流推送到客户端）
+4. 对所有活跃 GET SSE 流，emit 一条 `error { code: "server_shutdown", recoverable: false }` 事件并 flush，然后关闭响应 writer
+5. 等待所有 session goroutine 退出（步骤 2-4 总时长不超过 `server.graceful_shutdown_timeout_seconds` 秒，默认 30；超时强制终止）
+6. 关闭 SQLite 连接、MCP host 子进程
+7. 进程退出码 0；超时强制退出码 1
 
-#### Scenario: SIGTERM 优雅退出
+#### Scenario: SIGTERM 优雅退出含取消事件可见
 
-- **WHEN** 进程收到 SIGTERM，当前有 3 个 Thinking session、1 个 Idle session
-- **THEN** 服务对所有 SSE 流写 `error { code: "server_shutdown" }`；3 个 Thinking session 收到取消、合成 cancelled tool_result 入 history；进程在 30 秒内退出
+- **WHEN** 进程收到 SIGTERM，当前有 3 个 Thinking session（其中 1 个 ephemeral，2 个持久化）、1 个 Idle session，客户端均在 GET SSE
+- **THEN** 3 个 Thinking session 先收到取消、合成 cancelled tool_result 入 history、emit `interrupted`；客户端通过仍开着的 SSE 流收到这些事件；最后 SSE 流再 emit `error { code: "server_shutdown" }` 并关闭；进程在 30 秒内退出码 0
+
+#### Scenario: Ephemeral session 取消事件不丢
+
+- **WHEN** SIGTERM 触发时存在 1 个 ephemeral Thinking session，客户端正在监听 SSE
+- **THEN** 步骤 2-3 产生的 cancelled tool_result 与 `interrupted` 事件在步骤 4 关 SSE 前推送给客户端；客户端 UI 能看到"被中断"而非突然连接断开
 
 ### Requirement: Bearer Token 鉴权（可选）
 

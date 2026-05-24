@@ -79,6 +79,7 @@ agent:
 # === 工具 ===
 tools:
   default_timeout_seconds: 60      # 工具执行全局超时（除 Bash 用自己的）
+  tool_result_max_bytes: 1048576   # 单个 tool_result.output 最大字节（1 MiB）；超出自我截断 + 截断标记
   bash:
     timeout_seconds: 120           # 单次 Bash 命令默认超时
   read:
@@ -117,7 +118,29 @@ debug:
   enabled: false                   # true 时启用 /debug/* 端点
 ```
 
-所有数值字段 SHALL 在加载时校验：负数、零、超出合理范围（如 port>65535）SHALL 拒绝启动并打印明确错误。
+所有数值字段 SHALL 在加载时校验：负数、零、超出合理范围 SHALL 拒绝启动并打印明确错误。下表列出关键字段的合法范围：
+
+| 字段 | 合法范围 | 拒绝原因（举例） |
+|---|---|---|
+| `server.port` | 1-65535 | port>65535 或 <=0 |
+| `server.read_header_timeout_seconds` | 1-60 | 0 会立即超时所有请求 |
+| `server.read_timeout_seconds` | 5-3600 | 过短拒大 body；过长助长 slowloris |
+| `server.idle_timeout_seconds` | 10-3600 | - |
+| `server.max_header_bytes` | 4096-16777216 | 4KB-16MB |
+| `server.max_request_body_bytes` | 1024-104857600 | 1KB-100MB |
+| `server.graceful_shutdown_timeout_seconds` | 1-600 | - |
+| `server.sse_keepalive_seconds` | 5-300 | <5 心跳过频浪费带宽；>300 代理可能因无数据断连 |
+| `agent.max_parallel_tools` | 1-100 | 0 阻塞所有工具 |
+| `agent.max_depth` | 1-20 | 过深递归触发栈/资源问题 |
+| `agent.auto_compact_ratio` | 0.5-0.99 | <0.5 过早压缩损失上下文；>=1 永不触发 |
+| `agent.compact_recent_keep` | 1-100 | - |
+| `agent.max_history_tokens` | 1000-10000000 | - |
+| `agent.permission_request_timeout_seconds` | 5-3600 | - |
+| `agent.cancel_drain_timeout_seconds` | 1-60 | <1 收尾流程必然超时；>60 用户感知延迟过大 |
+| `tools.default_timeout_seconds` | 1-3600 | - |
+| `tools.tool_result_max_bytes` | 1024-104857600 | 1KB-100MB |
+| `tools.bash.timeout_seconds` | 1-3600 | - |
+| `sessions.max_concurrent` | 1-10000 | - |
 
 #### Scenario: 非法端口拒绝启动
 
@@ -128,6 +151,11 @@ debug:
 
 - **WHEN** `auth.enabled: true` 但 `auth.bearer_token: ""`
 - **THEN** 启动失败，stderr 输出 `invalid config: auth.bearer_token must be set when auth.enabled is true`
+
+#### Scenario: sse_keepalive_seconds 超出范围
+
+- **WHEN** `server.sse_keepalive_seconds: 0`
+- **THEN** 启动失败，stderr 输出 `invalid config: server.sse_keepalive_seconds must be 5-300, got 0`
 
 ### Requirement: 会话并发上限
 

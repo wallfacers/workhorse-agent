@@ -47,6 +47,9 @@
 - [ ] 5.10 单元测试：DangerousCommandGuard 已知绕过测试（hex 转义、绝对路径、bash -c 包装、alias、base64 解码至少各一例，验证 MVP 不防的行为符合 spec）
 - [ ] 5.11 实现路径校验工具 `internal/tools/pathguard`：filepath.Clean → EvalSymlinks（含父目录退路）→ filepath.Rel 越界检查 → `O_NOFOLLOW` open（Linux/macOS）/ Lstat 复检（其他平台）。所有读写文件的内置工具与 MCP 工具适配层 SHALL 调用此模块。**来源：AI #2 复审 H-6**
 - [ ] 5.12 单元测试：pathguard 拒绝 `..` 穿越、symlink 逃逸、非工作目录路径；TOCTOU 场景（Linux/macOS O_NOFOLLOW）
+- [ ] 5.13 实现 Bash env 黑名单过滤（LD_PRELOAD / LD_LIBRARY_PATH / DYLD_* / 危险 PYTHONPATH 与 NODE_OPTIONS）；会话级 env 合并时同样过滤并 warn 日志。**来源：AI #2 复审 M-6**
+- [ ] 5.14 实现 ToolResult.Output 大小自我截断（`tools.tool_result_max_bytes`，默认 1 MiB）：Bash 用 ring buffer / Read 用 limit / Grep 用上限行数；截断追加单行 `[truncated: ...]` 标记；UTF-8 安全回退。**来源：AI #2 复审 tool_result schema 未定义**
+- [ ] 5.15 单元测试：Bash env 过滤（启动 env 含 LD_PRELOAD 时子进程无）；ToolResult 截断 5MB 输出回到 1MB + 标记 + UTF-8 边界
 
 ## 6. 工具并行编排器
 
@@ -151,6 +154,7 @@
 
 - [ ] 14.1 写 README.md：合规声明 + 快速开始 + 配置说明 + provider 兼容范围声明
 - [ ] 14.2 写 `docs/protocol.md`：HTTP REST + Streamable HTTP（POST + GET SSE + Last-Event-ID）完整协议规范，含与 MCP 2025-11-25 spec 对应关系说明
+- [ ] 14.2.1 写 `docs/deployment.md`：本地启动、配置文件位置、nginx 反代示例（`proxy_buffering off` + `proxy_read_timeout 3600s` + `Origin` 透传）、systemd unit 模板、Bearer auth 启用步骤。**来源：AI #1 复审 2026-05-24（tasks 9.22 已引用此文件但缺创建任务）**
 - [ ] 14.3 写 `docs/architecture.md`：模块图与责任清单
 - [ ] 14.4 配置 GitHub Actions 的 release workflow：tag 触发 multi-arch binary + checksums
 - [ ] 14.5 实际跑一遍端到端：`dataagent init` → `dataagent serve` → curl 创建会话 → `curl -X POST .../stream` 发 user_message → `curl -N .../stream` 观察 SSE 事件流

@@ -42,6 +42,7 @@
 ## Impact
 
 - **新增代码**：8,000-12,000 行 Go（不含测试）
+- **工期估算**：原始估 6-9 周（80 tasks），两轮 spec 评审后 tasks 增至 ~125 个（含 P0/P1 安全/可靠性补强、Bash env 隔离、ToolResult 截断、deployment 文档、路径越界 pathguard 模块、取消收尾超时、配置范围校验等）。重估 **9-12 周**单人全职，关键路径为 group 8（session/agent loop）+ group 9（API/SSE）+ group 11（MCP HTTP transport）。其中 P0/P1 补强 tasks 约占 15%——这是 spec 阶段已识别风险的工程化代价，不是范围蔓延
 - **新增依赖**：~9 个直接依赖（chi、modernc.org/sqlite、yaml.v3、jsonschema、errgroup/semaphore、slog、ulid、shlex；SSE/HTTP 用 std `net/http`，不引入 WebSocket 库）
 - **新增配置目录**：`~/.dataagent/{config.yaml, state.db, mcp.json, skills/, agents/}`（首次启动自动创建）
 - **运行时**：本地服务，监听 `127.0.0.1:7821`（默认），可选 bearer token 鉴权
