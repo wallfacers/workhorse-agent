@@ -1,0 +1,101 @@
+## ADDED Requirements
+
+### Requirement: Tool 接口契约
+
+每个工具 SHALL 实现以下 Go 接口：
+
+```go
+type Tool interface {
+    Name() string
+    Description() string
+    InputSchema() jsonschema.Schema
+    IsReadOnly(input json.RawMessage) bool
+    CanRunInParallel(input json.RawMessage) bool
+    PermissionPreview(input json.RawMessage) string
+    Run(ctx context.Context, input json.RawMessage, env *ToolEnv) (*ToolResult, error)
+}
+```
+
+`Run` 返回的 `ToolResult` 含 `Output`（LLM 可见文本）、`IsError`、可选 `ContextModifier`（声明对 `ToolEnv` 的副作用）、`Took`（耗时）。
+
+`Run` SHALL 尊重 `ctx`；超时或被取消时 SHALL 在 100ms 内返回。
+
+#### Scenario: 工具响应 ctx 取消
+
+- **WHEN** 工具正在执行时其 `ctx` 被 cancel
+- **THEN** 工具在 100ms 内返回；返回的 error 可以为 `context.Canceled`
+
+### Requirement: 内置 5 工具
+
+服务 SHALL 内置注册以下 5 个工具：
+
+| 工具 | IsReadOnly | CanRunInParallel | 行为 |
+|---|---|---|---|
+| `Read` | true | true | 读 `path` 文件内容（支持 offset/limit/pages） |
+| `Grep` | true | true | 在 `path` 下搜索 `pattern`（regex），返回匹配行 |
+| `Write` | false | false | 写 `content` 到 `path`（覆盖） |
+| `Edit` | false | false | 在 `path` 中把 `old_string` 替换为 `new_string`（exact-match） |
+| `Bash` | false（MVP 简化） | false | 在会话 workdir 中执行 `command`，最长 `timeout` 秒，返回 stdout+stderr |
+
+所有工具 SHALL 强制路径在会话 workdir 内（或额外 allowed_paths 内），否则返回 `is_error: true`。
+
+#### Scenario: Edit 未找到 old_string
+
+- **WHEN** 调用 `Edit { path, old_string: "foo", new_string: "bar" }`，文件中无 "foo"
+- **THEN** 返回 `tool_result { is_error: true, output: "old_string not found in file" }`，不修改文件
+
+#### Scenario: Bash 在会话 workdir 中执行
+
+- **WHEN** 会话 workdir 是 `/tmp/p`，调用 `Bash { command: "pwd" }`
+- **THEN** 工具返回的 output 含 `/tmp/p`
+
+### Requirement: 并行执行批次划分
+
+Agent SHALL 对 LLM 一轮返回的 `tool_use[]` 按以下规则切批：
+
+1. 保留 LLM 给出的顺序
+2. 连续多个 `CanRunInParallel(input)=true` 的工具调用合并为一个 parallel batch
+3. 任何 `CanRunInParallel(input)=false` 的工具调用单独成一个 serial batch
+4. 批与批之间 SHALL 严格顺序执行（不重排序）
+5. parallel batch 内 SHALL 并发执行，受 `MaxParallelTools`（默认 10）信号量限流
+
+#### Scenario: 混合工具切批
+
+- **WHEN** LLM 返回 `[Read(a), Read(b), Edit(c), Read(d), Bash("ls")]`
+- **THEN** 切成 4 批：`[Read(a), Read(b)]` 并发 → `[Edit(c)]` 串行 → `[Read(d)]` 串行 → `[Bash("ls")]` 串行（因 Bash MVP CanRunInParallel=false）
+
+#### Scenario: 全并发批
+
+- **WHEN** LLM 返回 `[Read(a), Read(b), Read(c), Grep(d)]`
+- **THEN** 切成 1 批，4 个工具并发执行
+
+### Requirement: 并发批内单工具失败不取消整批
+
+并发批内某个工具 `Run` 返回 error 或 panic SHALL **不**触发批的 ctx 取消；其他工具继续；该工具的结果包装为 `tool_result { is_error: true, output: error.Error() }`。
+
+唯有 session 级 ctx 取消（用户 interrupt）SHALL 取消整批。
+
+#### Scenario: 并发批一工具失败
+
+- **WHEN** 并发批 `[Read(a), Read(b)]` 中 `Read(a)` 因文件不存在返回 error
+- **THEN** `Read(b)` 继续执行至完成；批整体完成；history 追加 2 个 tool_result，其中 a 的 `is_error=true`
+
+### Requirement: ContextModifier 延迟应用
+
+并发批内多个工具的 `ToolResult.ContextModifier` SHALL 在整批完成后按工具的原始顺序顺序 apply 到 `ToolEnv`，避免并发写竞争。
+
+#### Scenario: 并发工具的 modifier 顺序应用
+
+- **WHEN** 并发批中工具 1 和工具 2 都返回 ContextModifier，两 modifier 都修改 `env.SessionEnv["KEY"]`
+- **THEN** 批完成后先 apply 工具 1 的 modifier，再 apply 工具 2 的 modifier；最终 `env.SessionEnv["KEY"]` 取工具 2 的修改值
+
+### Requirement: 工具注册表与动态发现
+
+服务 SHALL 维护全局 ToolRegistry，启动时注册 5 个内置工具；MCP 工具与 Skills 触发的 LoadSkill 注入工具 SHALL 通过同一接口注册。
+
+会话级 SHALL 支持工具子集：通过 `AllowedTools` 配置可限制本会话可调工具范围。
+
+#### Scenario: 子集限制
+
+- **WHEN** 会话配置 `AllowedTools: ["Read", "Grep"]`，LLM 请求调用 `Bash`
+- **THEN** Agent 不向 LLM 暴露 Bash schema；若 LLM 仍尝试调用，emit `error { code: "tool_not_allowed" }`
