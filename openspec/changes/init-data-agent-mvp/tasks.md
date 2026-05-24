@@ -26,12 +26,12 @@
 ## 4. Provider 抽象与内部 Message
 
 - [x] 4.1 定义 `internal/provider` 的 Provider interface、Request、ProviderEvent、Message、ContentBlock
-- [ ] 4.2 实现 Anthropic adapter：HTTP POST + SSE 解析 + Anthropic Messages → 内部 Message 双向映射
-- [ ] 4.3 实现 OpenAI adapter：含 tool_use/tool_result 的特殊翻译（独立 `role:"tool"` 消息、tool_calls 增量累积）
+- [x] 4.2 实现 Anthropic adapter：HTTP POST + SSE 解析 + Anthropic Messages → 内部 Message 双向映射
+- [x] 4.3 实现 OpenAI adapter：含 tool_use/tool_result 的特殊翻译（独立 `role:"tool"` 消息、tool_calls 增量累积）
 - [x] 4.4 实现 `ModelPolicy`：Default/Fast/BySessionType + 同家原则（Anthropic→Haiku、OpenAI→gpt-4o-mini）
 - [x] 4.5 实现可重试错误的指数退避（500ms/2s/8s，3 次）+ 不可重试立即终止
-- [ ] 4.6 编写 `test/mockprovider`：录制回放 SSE 流，避免测试消耗 token
-- [ ] 4.7 集成测试：Anthropic + OpenAI adapter 各自能 stream 一段假响应包括 tool_use
+- [x] 4.6 编写 `test/mockprovider`：录制回放 SSE 流，避免测试消耗 token
+- [x] 4.7 集成测试：Anthropic + OpenAI adapter 各自能 stream 一段假响应包括 tool_use
 
 ## 5. 工具系统基础
 
