@@ -1,11 +1,11 @@
 ## 1. 项目脚手架
 
-- [ ] 1.1 初始化 Go module `github.com/wallfacers/data-agent`，go.mod 设最低版本 Go 1.22
-- [ ] 1.2 建立目录骨架：`cmd/dataagent`、`internal/{api,session,agent,provider,tools,permission,coord,mcp,skills,store,config}`、`pkg/client`、`web`、`test/{e2e,fixtures,mockprovider}`、`scripts`
-- [ ] 1.3 添加根级 LICENSE（AGPL-3.0）、README.md（含路径 C 合规声明）、CLAUDE.md
-- [ ] 1.4 配置 `.golangci.yml`（启用 govet/staticcheck/errcheck/ineffassign/gosec）
-- [ ] 1.5 配置 `.github/workflows/ci.yml`：lint + `go test -race` + multi-arch build matrix（Linux/macOS/Windows × amd64/arm64）
-- [ ] 1.6 写 `scripts/build.sh` 用 `-trimpath -ldflags="-s -w"` 出剥离静态二进制
+- [x] 1.1 初始化 Go module `github.com/wallfacers/data-agent`，go.mod 设最低版本 Go 1.22
+- [x] 1.2 建立目录骨架：`cmd/dataagent`、`internal/{api,session,agent,provider,tools,permission,coord,mcp,skills,store,config}`、`pkg/client`、`web`、`test/{e2e,fixtures,mockprovider}`、`scripts`
+- [x] 1.3 添加根级 LICENSE（AGPL-3.0）、README.md（含路径 C 合规声明）、CLAUDE.md
+- [x] 1.4 配置 `.golangci.yml`（启用 govet/staticcheck/errcheck/ineffassign/gosec）
+- [x] 1.5 配置 `.github/workflows/ci.yml`：lint + `go test -race` + multi-arch build matrix（Linux/macOS/Windows × amd64/arm64）
+- [x] 1.6 写 `scripts/build.sh` 用 `-trimpath -ldflags="-s -w"` 出剥离静态二进制
 
 ## 2. 配置与启动
 

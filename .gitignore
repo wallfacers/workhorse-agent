@@ -1,0 +1,15 @@
+# Build output
+/dist/
+/dataagent
+/dataagent.exe
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

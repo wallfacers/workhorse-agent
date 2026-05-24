@@ -1,0 +1,41 @@
+run:
+  timeout: 5m
+  go: "1.22"
+
+linters:
+  disable-all: true
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - gosec
+    - unused
+    - gofmt
+    - goimports
+
+linters-settings:
+  govet:
+    enable-all: true
+    disable:
+      - fieldalignment
+  gosec:
+    excludes:
+      - G104  # Errors unhandled — overlaps with errcheck.
+      - G304  # Potential file inclusion via variable — pathguard handles this.
+    severity: low
+    confidence: low
+  errcheck:
+    check-type-assertions: true
+    check-blank: false
+  goimports:
+    local-prefixes: github.com/wallfacers/data-agent
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck
