@@ -63,12 +63,12 @@
 
 ## 7. 权限模型
 
-- [ ] 7.1 实现 `internal/permission` 的 Permission struct + 匹配器（tool exact + pattern glob，基于 `path/filepath.Match` 扩展支持 `**`）
-- [ ] 7.2 实现 PermissionStore：scope=permanent 持久化到 SQLite；session/once 仅内存
-- [ ] 7.3 实现询问流程：emit `permission_request` → 阻塞 channel 等 `permission_decision` → `agent.permission_request_timeout_seconds` 秒超时视为 deny
-- [ ] 7.4 接入 DangerousCommandGuard：命中即强制询问，绕过 allow 规则
-- [ ] 7.5 单元测试：5 种 decision 值的行为、permanent 跨会话生效、deny 阻断、超时
-- [ ] 7.6 单元测试：glob pattern 匹配（`*` 单段、`**` 多段、字面、`?`）+ Bash/Read/Edit 各自 pattern 语义
+- [x] 7.1 实现 `internal/permission` 的 Permission struct + 匹配器（tool exact + pattern glob，基于 `path/filepath.Match` 扩展支持 `**`）
+- [x] 7.2 实现 PermissionStore：scope=permanent 持久化到 SQLite；session/once 仅内存
+- [x] 7.3 实现询问流程：emit `permission_request` → 阻塞 channel 等 `permission_decision` → `agent.permission_request_timeout_seconds` 秒超时视为 deny
+- [x] 7.4 接入 DangerousCommandGuard：命中即强制询问，绕过 allow 规则
+- [x] 7.5 单元测试：5 种 decision 值的行为、permanent 跨会话生效、deny 阻断、超时
+- [x] 7.6 单元测试：glob pattern 匹配（`*` 单段、`**` 多段、字面、`?`）+ Bash/Read/Edit 各自 pattern 语义
 
 ## 8. Session 管理与 Agent 循环
 
