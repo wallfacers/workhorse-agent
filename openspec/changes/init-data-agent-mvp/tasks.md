@@ -42,12 +42,12 @@
 - [ ] 5.5 实现 `Edit` 工具：exact-match 替换、`old_string` 不存在返回 error
 - [ ] 5.6 实现 `Grep` 工具：纯 Go regex 实现（不依赖 rg）
 - [ ] 5.7 实现 `Bash` 工具：`exec.CommandContext` + `SysProcAttr{Setpgid: true}` 创建进程组；取消时 `syscall.Kill(-pgid, SIGTERM)` → 1.5s 后 SIGKILL 兜底，确保孙进程也被杀；超时配置取 `tools.bash.timeout_seconds`；env 过滤掉危险变量（LD_PRELOAD、LD_LIBRARY_PATH 等）
-- [ ] 5.8 实现 `internal/tools/bash/danger.go` DangerousCommandGuard（8 类正则模式 + 已知绕过明示）
+- [x] 5.8 实现 `internal/tools/bash/danger.go` DangerousCommandGuard（8 类正则模式 + 已知绕过明示）
 - [ ] 5.9 单元测试：5 工具各自的 happy path + workdir 越界 + ctx 取消 + Bash danger 模式命中 + Bash 进程组取消的孙进程清理（`bash -c 'sleep 60 & sleep 60'` 场景）
 - [ ] 5.10 单元测试：DangerousCommandGuard 已知绕过测试（hex 转义、绝对路径、bash -c 包装、alias、base64 解码至少各一例，验证 MVP 不防的行为符合 spec）
-- [ ] 5.11 实现路径校验工具 `internal/tools/pathguard`：filepath.Clean → EvalSymlinks（含父目录退路）→ filepath.Rel 越界检查 → `O_NOFOLLOW` open（Linux/macOS）/ Lstat 复检（其他平台）。所有读写文件的内置工具与 MCP 工具适配层 SHALL 调用此模块。**来源：AI #2 复审 H-6**
+- [x] 5.11 实现路径校验工具 `internal/tools/pathguard`：filepath.Clean → EvalSymlinks（含父目录退路）→ filepath.Rel 越界检查 → `O_NOFOLLOW` open（Linux/macOS）/ Lstat 复检（其他平台）。所有读写文件的内置工具与 MCP 工具适配层 SHALL 调用此模块。**来源：AI #2 复审 H-6**
 - [ ] 5.12 单元测试：pathguard 拒绝 `..` 穿越、symlink 逃逸、非工作目录路径；TOCTOU 场景（Linux/macOS O_NOFOLLOW）
-- [ ] 5.13 实现 `internal/tools/bash/envfilter.go` 集中维护 env 过滤表（精确名 + `DYLD_` 前缀 + `NODE_OPTIONS` 词法 token 前缀判定，用 `shlex` 拆分）；会话级 env 合并时对每 key 重跑过滤、被丢的 key warn 日志（不打 value）。**来源：AI #2 复审 M-6 + Round 3 算法明确化**
+- [x] 5.13 实现 `internal/tools/bash/envfilter.go` 集中维护 env 过滤表（精确名 + `DYLD_` 前缀 + `NODE_OPTIONS` 词法 token 前缀判定，用 `shlex` 拆分）；会话级 env 合并时对每 key 重跑过滤、被丢的 key warn 日志（不打 value）。**来源：AI #2 复审 M-6 + Round 3 算法明确化**
 - [ ] 5.14 实现 ToolResult.Output 大小自我截断（`tools.tool_result_max_bytes`，默认 1 MiB）：Bash 用 ring buffer / Read 用 limit / Grep 用上限行数；截断追加单行 `[truncated: ...]` 标记；UTF-8 安全回退。**来源：AI #2 复审 tool_result schema 未定义**
 - [ ] 5.15 单元测试：Bash env 过滤（启动 env 含 LD_PRELOAD 时子进程无）；ToolResult 截断 5MB 输出回到 1MB + 标记 + UTF-8 边界
 
