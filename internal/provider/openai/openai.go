@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/wallfacers/workhorse-agent/internal/provider"
+	"github.com/wallfacers/workhorse-agent/internal/version"
 )
 
 // DefaultBaseURL is used when Options.BaseURL is empty.
@@ -63,6 +64,7 @@ func (p *Provider) Stream(ctx context.Context, req provider.Request) (<-chan pro
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("User-Agent", version.UserAgent())
 	httpReq.Header.Set("Authorization", "Bearer "+p.opts.APIKey)
 
 	resp, err := p.opts.HTTPClient.Do(httpReq)
