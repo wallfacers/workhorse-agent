@@ -22,14 +22,14 @@ type ModelPolicy struct {
 // may be empty (root session). override may be empty (no per-call override).
 func (p ModelPolicy) Pick(agentType, override string) (string, string) {
 	if override != "" {
-		return splitProviderModel(override)
+		return SplitProviderModel(override)
 	}
 	if agentType != "" {
 		if v, ok := p.BySessionType[agentType]; ok && v != "" {
-			return splitProviderModel(v)
+			return SplitProviderModel(v)
 		}
 	}
-	return splitProviderModel(p.Default)
+	return SplitProviderModel(p.Default)
 }
 
 // PickFast applies the same-family rule. sessionProvider is the provider name
@@ -37,7 +37,7 @@ func (p ModelPolicy) Pick(agentType, override string) (string, string) {
 // different family we fall back to the known fast model for the session's
 // family so a compaction never crosses vendors.
 func (p ModelPolicy) PickFast(sessionProvider string) (string, string) {
-	fastProvider, fastModel := splitProviderModel(p.Fast)
+	fastProvider, fastModel := SplitProviderModel(p.Fast)
 	if sessionProvider == "" || fastProvider == sessionProvider {
 		return fastProvider, fastModel
 	}
@@ -52,10 +52,10 @@ func (p ModelPolicy) PickFast(sessionProvider string) (string, string) {
 	}
 }
 
-// splitProviderModel parses "<provider>:<model-id>". If no colon is present
+// SplitProviderModel parses "<provider>:<model-id>". If no colon is present
 // the whole string is returned as the model id with an empty provider; the
 // caller has to decide what to do (typically: error).
-func splitProviderModel(s string) (string, string) {
+func SplitProviderModel(s string) (string, string) {
 	i := strings.IndexByte(s, ':')
 	if i < 0 {
 		return "", s
