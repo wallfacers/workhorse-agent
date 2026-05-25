@@ -24,6 +24,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/provider/anthropic"
 	"github.com/wallfacers/workhorse-agent/internal/provider/openai"
 	"github.com/wallfacers/workhorse-agent/internal/session"
+	"github.com/wallfacers/workhorse-agent/internal/skills"
 	"github.com/wallfacers/workhorse-agent/internal/store"
 	"github.com/wallfacers/workhorse-agent/internal/store/sqlite"
 	"github.com/wallfacers/workhorse-agent/internal/tools"
@@ -62,7 +63,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	ctx := context.Background()
 
 	// 1. Store.
-	st, err := sqlite.Open(ctx, sqlite.Options{DSN: cfg.Store.Path})
+	st, err := sqlite.Open(ctx, sqlite.Options{DSN: cfg.Store.Path, BusyTimeoutMs: cfg.Store.BusyTimeoutMs})
 	if err != nil {
 		return fmt.Errorf("serve: open store: %w", err)
 	}
@@ -77,7 +78,8 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 
 	// 3. Tool registry (built-ins).
 	registry := tools.NewRegistry()
-	if err := registerBuiltinTools(registry, cfg); err != nil {
+	skillCatalog := skills.Scan(cfg.Skills.Dir)
+	if err := registerBuiltinTools(registry, cfg, skillCatalog); err != nil {
 		_ = st.Close()
 		return fmt.Errorf("serve: register tools: %w", err)
 	}
@@ -214,17 +216,23 @@ func buildProviderRegistry(cfg config.Config) (def, fast map[string]provider.Pro
 	return def, fast, nil
 }
 
-func registerBuiltinTools(reg *tools.Registry, cfg config.Config) error {
+func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skills.Catalog) error {
 	for _, t := range []tools.Tool{
-		builtin.Read{MaxBytes: cfg.Tools.ToolResultMaxBytes},
+		builtin.Read{
+			MaxBytes: cfg.Tools.ToolResultMaxBytes,
+			Timeout:  time.Duration(cfg.Tools.Read.TimeoutSeconds) * time.Second,
+		},
 		builtin.Write{},
 		builtin.Edit{},
-		builtin.Grep{},
+		builtin.Grep{
+			Timeout: time.Duration(cfg.Tools.Grep.TimeoutSeconds) * time.Second,
+		},
 		bash.Bash{
 			DefaultTimeoutSeconds: cfg.Tools.Bash.TimeoutSeconds,
 			MaxOutputBytes:        cfg.Tools.ToolResultMaxBytes,
 			BaseEnv:               os.Environ(),
 		},
+		skills.NewLoadSkill(catalog),
 	} {
 		if err := reg.Register(t); err != nil {
 			return err
@@ -311,6 +319,10 @@ func newRunnerFactory(
 		CompactRecentKeep:  cfg.Agent.CompactRecentKeep,
 		MaxHistoryTokens:   cfg.Agent.MaxHistoryTokens,
 		CancelDrainTimeout: time.Duration(cfg.Agent.CancelDrainTimeoutSeconds) * time.Second,
+		Retry: agent.RetryConfig{
+			Attempts: cfg.Agent.ProviderRetryAttempts,
+			Backoff:  msToDurations(cfg.Agent.ProviderRetryBackoffMs),
+		},
 	}
 	loopCfg.ApplyDefaults()
 	defaultProvName := cfg.Providers.Default
@@ -333,6 +345,8 @@ func newRunnerFactory(
 		if model == "" {
 			model = defaultModel
 		}
+		_, modelID := provider.SplitProviderModel(model)
+		_, fastModelID := provider.SplitProviderModel(defaultFastModel)
 		loop := agent.NewLoop(loopCfg)
 		loop.Session = sess
 		loop.Provider = prov
@@ -340,15 +354,16 @@ func newRunnerFactory(
 		loop.Permissions = permMgr
 		loop.Logger = logger
 		loop.SystemPromptBase = sess.SystemPromptBase
-		loop.Config.Model = model
+		loop.Config.Model = modelID
 		loop.ToolEnv = &tools.Env{
 			SessionID: sess.ID,
 			Workdir:   sess.Workdir,
 			Env:       sess.Env,
 		}
+		loop.Registry = reg
 		loop.Compactor = &agent.Compactor{
 			Provider:   fast,
-			Model:      defaultFastModel,
+			Model:      fastModelID,
 			RecentKeep: cfg.Agent.CompactRecentKeep,
 		}
 		// Per-session AllowedTools filters the schema list the LLM sees.
@@ -399,6 +414,17 @@ func apiConfigFrom(cfg config.Config) api.Config {
 		MaxHistoryTokens:      cfg.Agent.MaxHistoryTokens,
 		Version:               versionString(),
 	}
+}
+
+func msToDurations(ms []int) []time.Duration {
+	if len(ms) == 0 {
+		return nil
+	}
+	out := make([]time.Duration, len(ms))
+	for i, v := range ms {
+		out[i] = time.Duration(v) * time.Millisecond
+	}
+	return out
 }
 
 // ensure store interface satisfied

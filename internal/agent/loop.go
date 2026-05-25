@@ -36,9 +36,6 @@ func (c *LoopConfig) ApplyDefaults() {
 	if c.MaxTokens == 0 {
 		c.MaxTokens = 4096
 	}
-	if c.AutoCompactRatio == 0 {
-		c.AutoCompactRatio = 0.85
-	}
 	if c.CompactRecentKeep == 0 {
 		c.CompactRecentKeep = 8
 	}
@@ -71,6 +68,7 @@ type Loop struct {
 	SystemPromptBase string
 	Tools            []provider.ToolSchema
 	ToolEnv          *tools.Env
+	Registry         *tools.Registry
 
 	Config LoopConfig
 
@@ -278,6 +276,30 @@ func (l *Loop) finishCancelledTurn() {
 	}
 }
 
+// drainOrphanedPending drains pending tool uses that were registered before a
+// provider fatal error. Unlike finishCancelledTurn it does not emit "interrupted"
+// or transition to Cancelled — it just pairs the orphaned tool_use blocks with
+// cancelled tool_results so history stays valid for the next turn.
+func (l *Loop) drainOrphanedPending() {
+	pending := l.Session.DrainPendingToolUses()
+	if len(pending) == 0 {
+		return
+	}
+	blocks := make([]provider.ContentBlock, 0, len(pending))
+	for _, p := range pending {
+		blocks = append(blocks, provider.ContentBlock{
+			Type:      provider.BlockToolResult,
+			ToolUseID: p.ID,
+			Output:    CancelledToolOutput,
+			IsError:   true,
+		})
+	}
+	l.Session.AppendMessage(provider.Message{
+		Role:    provider.RoleUser,
+		Content: blocks,
+	})
+}
+
 // startInboxWatcher spawns a goroutine that consumes inbox messages while a
 // turn is in flight. The watcher converts ClientInterrupt into a turn cancel,
 // forwards ClientPermissionDecision into Session.PermissionAnswers for the
@@ -347,7 +369,7 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 			Model:     l.Config.Model,
 			System:    BuildSystemPrompt(l.SystemPromptBase),
 			Messages:  l.Session.History(),
-			Tools:     l.Tools,
+			Tools:     l.buildToolSchemas(),
 			MaxTokens: l.Config.MaxTokens,
 		}
 
@@ -365,6 +387,9 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 
 		toolCalls, terminate := l.consumeProviderStream(ctx, events)
 		if terminate || ctx.Err() != nil {
+			if ctx.Err() == nil {
+				l.drainOrphanedPending()
+			}
 			return
 		}
 
@@ -623,6 +648,26 @@ func extractResource(toolName string, input json.RawMessage) string {
 		}
 	}
 	return ""
+}
+
+// buildToolSchemas rebuilds the LLM-facing tool list from the registry filtered
+// by the session's current AllowedTools set. Called before each provider request
+// so that LoadSkill's AllowedToolsModifier takes effect on the next turn.
+func (l *Loop) buildToolSchemas() []provider.ToolSchema {
+	if l.Registry == nil {
+		return l.Tools
+	}
+	allowed := l.Session.AllowedTools()
+	tools := l.Registry.Filtered(allowed)
+	out := make([]provider.ToolSchema, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, provider.ToolSchema{
+			Name:        t.Name(),
+			Description: t.Description(),
+			InputSchema: t.InputSchema(),
+		})
+	}
+	return out
 }
 
 // shouldCompact returns true when the current history is above the configured
