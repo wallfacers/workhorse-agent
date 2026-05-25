@@ -40,6 +40,7 @@ type DispatchInput struct {
 	Mode         string         `json:"mode,omitempty"`
 	Workdir      string         `json:"workdir,omitempty"`
 	AllowedTools []string       `json:"allowed_tools,omitempty"`
+	DeniedTools  []string       `json:"denied_tools,omitempty"`
 	Provider     string         `json:"provider,omitempty"`
 	Model        string         `json:"model,omitempty"`
 }
@@ -70,14 +71,15 @@ func (Tool) InputSchema() json.RawMessage {
 	return json.RawMessage(`{
   "type": "object",
   "properties": {
-    "prompt":        {"type": "string"},
-    "agent_type":    {"type": "string"},
-    "inputs":        {"type": "object"},
-    "mode":          {"type": "string", "enum": ["streaming", "blocking"]},
-    "workdir":       {"type": "string"},
-    "allowed_tools": {"type": "array", "items": {"type": "string"}},
-    "provider":      {"type": "string"},
-    "model":         {"type": "string"}
+    "prompt":         {"type": "string"},
+    "agent_type":     {"type": "string"},
+    "inputs":         {"type": "object"},
+    "mode":           {"type": "string", "enum": ["streaming", "blocking"]},
+    "workdir":        {"type": "string"},
+    "allowed_tools":  {"type": "array", "items": {"type": "string"}},
+    "denied_tools":   {"type": "array", "items": {"type": "string"}},
+    "provider":       {"type": "string"},
+    "model":          {"type": "string"}
   },
   "required": ["prompt"]
 }`)
@@ -231,6 +233,10 @@ func buildChildOptions(parent *session.Session, at coord.AgentType, in DispatchI
 	if len(allowed) == 0 {
 		allowed = append([]string(nil), at.AllowTools...)
 	}
+	denied := append([]string(nil), in.DeniedTools...)
+	if len(denied) == 0 {
+		denied = append([]string(nil), at.DenyTools...)
+	}
 	return session.Options{
 		ParentID:         parent.ID,
 		Workdir:          workdir,
@@ -240,6 +246,7 @@ func buildChildOptions(parent *session.Session, at coord.AgentType, in DispatchI
 		ProviderName:     providerName,
 		AgentType:        at.Name,
 		AllowedTools:     allowed,
+		DenyTools:        denied,
 		Depth:            depth,
 		SystemPromptBase: at.SystemPrompt,
 	}
