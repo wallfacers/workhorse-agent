@@ -176,7 +176,13 @@ func (m *Manager) ListSessions() []*Session {
 func (m *Manager) CountActive() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return len(m.sessions)
+	n := 0
+	for _, a := range m.sessions {
+		if a != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // RequestCompact signals the session's agent loop that POST /compact was
