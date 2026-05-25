@@ -118,11 +118,12 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		// Either no row, or already deleted. We treat "already deleted" as
-		// idempotent success; only a truly missing row is an error.
-		_, err := s.GetSession(ctx, id)
-		if errors.Is(err, store.ErrNotFound) {
+		_, getErr := s.GetSession(ctx, id)
+		if errors.Is(getErr, store.ErrNotFound) {
 			return store.ErrNotFound
+		}
+		if getErr != nil {
+			return fmt.Errorf("sqlite: DeleteSession: probe: %w", getErr)
 		}
 	}
 	return nil
