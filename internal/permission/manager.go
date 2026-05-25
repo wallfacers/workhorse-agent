@@ -206,7 +206,9 @@ func (m *Manager) addSession(sessionID string, r rule) {
 
 func (m *Manager) savePermanent(ctx context.Context, tool, pattern string, decision Decision) error {
 	b := make([]byte, 8)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Errorf("permission: rand: %w", err)
+	}
 	return m.store.SavePermission(ctx, &store.Permission{
 		ID:        fmt.Sprintf("perm-%x", b),
 		SessionID: "", // permanent = global
