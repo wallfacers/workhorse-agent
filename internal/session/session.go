@@ -70,10 +70,12 @@ var allowedTransitions = map[State]map[State]struct{}{
 		StateExecuting: {},
 		StateThinking:  {},
 		StateCancelled: {},
+		StateIdle:      {},
 	},
 	StateExecuting: {
 		StateThinking:  {},
 		StateCancelled: {},
+		StateIdle:      {},
 	},
 	StateCompacting: {
 		StateIdle:      {},

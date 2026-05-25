@@ -87,7 +87,7 @@ func TestTransition_AllowedAndRejected(t *testing.T) {
 		{"compacting→idle", StateCompacting, StateIdle, true},
 		{"cancelled→idle", StateCancelled, StateIdle, true},
 		{"idle→executing forbidden", StateIdle, StateExecuting, false},
-		{"executing→idle forbidden", StateExecuting, StateIdle, false},
+		{"executing→idle", StateExecuting, StateIdle, true},
 		{"idle→awaitPerm forbidden", StateIdle, StateAwaitPerm, false},
 	}
 	for _, tc := range cases {
