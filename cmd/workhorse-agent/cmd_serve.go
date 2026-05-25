@@ -312,6 +312,7 @@ func newRunnerFactory(
 		Registry:       reg,
 		MaxParallel:    cfg.Agent.MaxParallelTools,
 		DefaultTimeout: time.Duration(cfg.Tools.DefaultTimeoutSeconds) * time.Second,
+		MaxResultBytes: cfg.Tools.ToolResultMaxBytes,
 	}
 	loopCfg := agent.LoopConfig{
 		MaxTokens:          4096,
