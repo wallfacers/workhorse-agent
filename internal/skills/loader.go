@@ -86,11 +86,13 @@ func Scan(dir string) *Catalog {
 		contentFile := filepath.Join(skillDir, c.cfg.ContentPath)
 		rel, err := filepath.Rel(skillDir, contentFile)
 		if err != nil || strings.HasPrefix(rel, "..") {
+			delete(seen, c.cfg.Name)
 			slog.Warn("skills: content_path escapes skill directory", "skill", c.cfg.Name, "path", c.cfg.ContentPath)
 			continue
 		}
 		data, err := os.ReadFile(contentFile)
 		if err != nil {
+			delete(seen, c.cfg.Name)
 			slog.Warn("skills: content_path not found", "skill", c.cfg.Name, "path", contentFile)
 			continue
 		}

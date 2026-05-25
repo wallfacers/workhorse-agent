@@ -154,14 +154,14 @@ func TestScan_AllowedTools(t *testing.T) {
 	}
 }
 
-func TestScan_DuplicateFirstFailsSecondSkipped(t *testing.T) {
+func TestScan_DuplicateFirstFailsSecondLoaded(t *testing.T) {
 	dir := t.TempDir()
-	// aaa has duplicate name but missing content file — name is claimed.
+	// aaa has duplicate name but missing content file — name is not claimed.
 	aDir := filepath.Join(dir, "aaa")
 	os.MkdirAll(aDir, 0o755)
 	os.WriteFile(filepath.Join(aDir, "skill.yaml"), []byte(
 		"name: helper\ndescription: first\ntrigger: first\ncontent_path: ./missing.md\n"), 0o644)
-	// bbb has same name but valid content — skipped as duplicate.
+	// bbb has same name but valid content — should load successfully.
 	bDir := filepath.Join(dir, "bbb")
 	os.MkdirAll(bDir, 0o755)
 	os.WriteFile(filepath.Join(bDir, "skill.yaml"), []byte(
@@ -169,8 +169,11 @@ func TestScan_DuplicateFirstFailsSecondSkipped(t *testing.T) {
 	os.WriteFile(filepath.Join(bDir, "ok.md"), []byte("content-b"), 0o644)
 
 	cat := skills.Scan(dir)
-	if len(cat.Skills) != 0 {
-		t.Fatalf("expected 0 skills (first failed, second skipped as dup), got %d", len(cat.Skills))
+	if len(cat.Skills) != 1 {
+		t.Fatalf("expected 1 skill (first failed, second loaded), got %d", len(cat.Skills))
+	}
+	if cat.Skills[0].Description != "second" {
+		t.Fatalf("expected second skill, got %s", cat.Skills[0].Description)
 	}
 }
 
