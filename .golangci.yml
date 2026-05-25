@@ -19,6 +19,8 @@ linters-settings:
     enable-all: true
     disable:
       - fieldalignment
+      # `shadow` is enable-all noise: inner `if err := ...` is idiomatic Go.
+      - shadow
   gosec:
     excludes:
       - G104  # Errors unhandled — overlaps with errcheck.
@@ -29,7 +31,7 @@ linters-settings:
     check-type-assertions: true
     check-blank: false
   goimports:
-    local-prefixes: github.com/wallfacers/data-agent
+    local-prefixes: github.com/wallfacers/workhorse-agent
 
 issues:
   max-issues-per-linter: 0

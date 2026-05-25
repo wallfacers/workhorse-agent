@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/store"
-	"github.com/wallfacers/data-agent/internal/store/sqlite"
+	"github.com/wallfacers/workhorse-agent/internal/store"
+	"github.com/wallfacers/workhorse-agent/internal/store/sqlite"
 )
 
 func newTestStore(t *testing.T) *sqlite.Store {

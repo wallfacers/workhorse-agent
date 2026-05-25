@@ -5,8 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/wallfacers/workhorse-agent/internal/skills"
 	"gopkg.in/yaml.v3"
+
+	"github.com/wallfacers/workhorse-agent/internal/skills"
 )
 
 func writeSkillYAML(t *testing.T, dir, name, desc, trigger, contentPath string, allowedTools []string) {
@@ -153,14 +154,14 @@ func TestScan_AllowedTools(t *testing.T) {
 	}
 }
 
-func TestScan_DuplicateFirstFailsSecondWins(t *testing.T) {
+func TestScan_DuplicateFirstFailsSecondSkipped(t *testing.T) {
 	dir := t.TempDir()
-	// aaa has duplicate name but missing content file
+	// aaa has duplicate name but missing content file — name is claimed.
 	aDir := filepath.Join(dir, "aaa")
 	os.MkdirAll(aDir, 0o755)
 	os.WriteFile(filepath.Join(aDir, "skill.yaml"), []byte(
 		"name: helper\ndescription: first\ntrigger: first\ncontent_path: ./missing.md\n"), 0o644)
-	// bbb has same name but valid content
+	// bbb has same name but valid content — skipped as duplicate.
 	bDir := filepath.Join(dir, "bbb")
 	os.MkdirAll(bDir, 0o755)
 	os.WriteFile(filepath.Join(bDir, "skill.yaml"), []byte(
@@ -168,11 +169,8 @@ func TestScan_DuplicateFirstFailsSecondWins(t *testing.T) {
 	os.WriteFile(filepath.Join(bDir, "ok.md"), []byte("content-b"), 0o644)
 
 	cat := skills.Scan(dir)
-	if len(cat.Skills) != 1 {
-		t.Fatalf("expected 1 skill, got %d", len(cat.Skills))
-	}
-	if cat.Skills[0].Content != "content-b" {
-		t.Errorf("expected second skill to win when first fails, got %q", cat.Skills[0].Content)
+	if len(cat.Skills) != 0 {
+		t.Fatalf("expected 0 skills (first failed, second skipped as dup), got %d", len(cat.Skills))
 	}
 }
 

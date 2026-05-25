@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/wallfacers/data-agent/internal/tools/pathguard"
+	"github.com/wallfacers/workhorse-agent/internal/tools/pathguard"
 )
 
 func setupWorkdir(t *testing.T) string {

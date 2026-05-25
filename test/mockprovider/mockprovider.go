@@ -17,7 +17,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/wallfacers/data-agent/internal/provider"
+	"github.com/wallfacers/workhorse-agent/internal/provider"
 )
 
 // Provider is a programmable provider.Provider. It records every Request it
@@ -25,11 +25,11 @@ import (
 type Provider struct {
 	name string
 
-	mu        sync.Mutex
-	queue     [][]provider.ProviderEvent
-	upfront   error // returned by Stream as the upfront error (request-never-sent)
-	requests  []provider.Request
-	noScript  func() []provider.ProviderEvent // fallback when queue is empty
+	mu       sync.Mutex
+	queue    [][]provider.ProviderEvent
+	upfront  error // returned by Stream as the upfront error (request-never-sent)
+	requests []provider.Request
+	noScript func() []provider.ProviderEvent // fallback when queue is empty
 }
 
 // New constructs a Provider with the given name (anthropic/openai/...). Tests

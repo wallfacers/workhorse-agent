@@ -45,7 +45,7 @@ var dangerPatterns = []dangerPattern{
 	// root marker is part of the same path so we don't pin the right edge.
 	{
 		label: "destructive_rm",
-		re: regexp.MustCompile(`(?i)\brm\s+-(?:[a-z]*r[a-z]*f|[a-z]*f[a-z]*r)[a-z]*\s+(?:/|~|\$HOME)`),
+		re:    regexp.MustCompile(`(?i)\brm\s+-(?:[a-z]*r[a-z]*f|[a-z]*f[a-z]*r)[a-z]*\s+(?:/|~|\$HOME)`),
 	},
 	// 2. dd writing to a block device.
 	{

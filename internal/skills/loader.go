@@ -17,6 +17,7 @@ type Skill struct {
 	ContentPath  string
 	Content      string
 	AllowedTools []string
+	SourceDir    string // directory name that contributed this skill
 }
 
 type Catalog struct {
@@ -91,7 +92,6 @@ func Scan(dir string) *Catalog {
 		data, err := os.ReadFile(contentFile)
 		if err != nil {
 			slog.Warn("skills: content_path not found", "skill", c.cfg.Name, "path", contentFile)
-			delete(seen, c.cfg.Name)
 			continue
 		}
 
@@ -107,6 +107,7 @@ func Scan(dir string) *Catalog {
 			ContentPath:  c.cfg.ContentPath,
 			Content:      string(data),
 			AllowedTools: allowed,
+			SourceDir:    c.dirName,
 		})
 	}
 

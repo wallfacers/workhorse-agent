@@ -4,22 +4,22 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/wallfacers/data-agent/internal/provider"
+	"github.com/wallfacers/workhorse-agent/internal/provider"
 )
 
 // anthropicStreamState accumulates SSE state across events and produces the
 // internal ProviderEvent slice for each incoming event. The 8→5 mapping is:
 //
-//   message_start            → swallow (capture input_tokens)
-//   content_block_start      → swallow + init buffer slot per index
-//   content_block_delta text → text_delta (forwarded as-is)
-//   content_block_delta json → swallow (accumulate into tool_use input)
-//   content_block_delta think→ swallow (MVP discards thinking)
-//   content_block_stop       → tool_use (only for tool_use blocks; text closes silently)
-//   message_delta            → usage (and cache stop_reason)
-//   message_stop             → stop (using cached stop_reason), terminal
-//   ping                     → swallow (heartbeat)
-//   error                    → error, terminal
+//	message_start            → swallow (capture input_tokens)
+//	content_block_start      → swallow + init buffer slot per index
+//	content_block_delta text → text_delta (forwarded as-is)
+//	content_block_delta json → swallow (accumulate into tool_use input)
+//	content_block_delta think→ swallow (MVP discards thinking)
+//	content_block_stop       → tool_use (only for tool_use blocks; text closes silently)
+//	message_delta            → usage (and cache stop_reason)
+//	message_stop             → stop (using cached stop_reason), terminal
+//	ping                     → swallow (heartbeat)
+//	error                    → error, terminal
 //
 // We keep the buffer slice indexed by block index because Anthropic emits a
 // single content_block_delta event per block, and blocks can interleave when a
@@ -68,6 +68,11 @@ func (s *anthropicStreamState) handle(ev provider.SSEEvent) ([]provider.Provider
 			typ:  p.ContentBlock.Type,
 			id:   p.ContentBlock.ID,
 			name: p.ContentBlock.Name,
+		}
+		if p.ContentBlock.Type == "text" && p.ContentBlock.Text != "" {
+			return []provider.ProviderEvent{
+				{Type: provider.EventTextDelta, TextDelta: p.ContentBlock.Text},
+			}, false, nil
 		}
 		return nil, false, nil
 	case "content_block_delta":

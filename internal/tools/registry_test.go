@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/tools"
+	"github.com/wallfacers/workhorse-agent/internal/tools"
 )
 
 type fakeTool struct{ name string }

@@ -1,4 +1,4 @@
-module github.com/wallfacers/data-agent
+module github.com/wallfacers/workhorse-agent
 
 go 1.22.0
 

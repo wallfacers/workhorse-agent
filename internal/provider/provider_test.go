@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/provider"
+	"github.com/wallfacers/workhorse-agent/internal/provider"
 )
 
 func TestProviderError_Retryable(t *testing.T) {

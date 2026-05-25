@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// schema is the v1 schema for dataagent state. Tables map to the five domain
+// schema is the v1 schema for workhorse-agent state. Tables map to the five domain
 // types in internal/store (sessions, messages, events, tool_calls,
 // permissions). All timestamps are stored as INTEGER unix microseconds — the
 // finest resolution we expect to need, and easy to round-trip via time.Time.

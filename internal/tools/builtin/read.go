@@ -13,8 +13,8 @@ import (
 	"io"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/tools"
-	"github.com/wallfacers/data-agent/internal/tools/pathguard"
+	"github.com/wallfacers/workhorse-agent/internal/tools"
+	"github.com/wallfacers/workhorse-agent/internal/tools/pathguard"
 )
 
 // ReadInput is the JSON input for the Read tool.
@@ -33,9 +33,9 @@ type Read struct {
 	Timeout  time.Duration
 }
 
-func (Read) Name() string             { return "Read" }
-func (Read) IsReadOnly() bool         { return true }
-func (Read) CanRunInParallel() bool   { return true }
+func (Read) Name() string           { return "Read" }
+func (Read) IsReadOnly() bool       { return true }
+func (Read) CanRunInParallel() bool { return true }
 func (r Read) DefaultTimeout() time.Duration {
 	if r.Timeout > 0 {
 		return r.Timeout
@@ -84,6 +84,12 @@ func (r Read) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*to
 	sc.Buffer(make([]byte, 0, 64*1024), max+1)
 	var buf []byte
 	line := 0
+	// Treat Offset=0 as "start from line 1" so the limit arithmetic is
+	// consistent whether or not the caller supplied an offset.
+	startLine := in.Offset
+	if startLine <= 0 {
+		startLine = 1
+	}
 	for sc.Scan() {
 		select {
 		case <-ctx.Done():
@@ -91,10 +97,10 @@ func (r Read) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*to
 		default:
 		}
 		line++
-		if in.Offset > 0 && line < in.Offset {
+		if line < startLine {
 			continue
 		}
-		if in.Limit > 0 && line >= in.Offset+in.Limit {
+		if in.Limit > 0 && line >= startLine+in.Limit {
 			break
 		}
 		buf = fmtAppend(buf, line, sc.Bytes())

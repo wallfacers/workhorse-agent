@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/provider"
-	"github.com/wallfacers/data-agent/internal/provider/openai"
+	"github.com/wallfacers/workhorse-agent/internal/provider"
+	"github.com/wallfacers/workhorse-agent/internal/provider/openai"
 )
 
 func chunks(lines ...string) string {

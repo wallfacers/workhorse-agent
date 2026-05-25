@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/tools"
-	"github.com/wallfacers/data-agent/internal/tools/pathguard"
+	"github.com/wallfacers/workhorse-agent/internal/tools"
+	"github.com/wallfacers/workhorse-agent/internal/tools/pathguard"
 )
 
 type WriteInput struct {
@@ -24,9 +24,9 @@ type Write struct {
 	Timeout time.Duration
 }
 
-func (Write) Name() string                  { return "Write" }
-func (Write) IsReadOnly() bool              { return false }
-func (Write) CanRunInParallel() bool        { return false }
+func (Write) Name() string           { return "Write" }
+func (Write) IsReadOnly() bool       { return false }
+func (Write) CanRunInParallel() bool { return false }
 func (w Write) DefaultTimeout() time.Duration {
 	if w.Timeout > 0 {
 		return w.Timeout

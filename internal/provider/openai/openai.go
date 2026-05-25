@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/provider"
+	"github.com/wallfacers/workhorse-agent/internal/provider"
 )
 
 // DefaultBaseURL is used when Options.BaseURL is empty.
@@ -130,6 +130,14 @@ func (p *Provider) streamLoop(ctx context.Context, resp *http.Response, ch chan<
 		return nil
 	})
 
+	// Flush remaining tool calls and emit a stop event when the stream
+	// ended without [DONE] (OpenAI-compatible servers may omit it).
+	for _, e := range st.flushTerminal() {
+		if !emit(e) {
+			break
+		}
+	}
+
 	if parseErr != nil && !errors.Is(parseErr, io.EOF) {
 		var pe *provider.ProviderError
 		if errors.Is(parseErr, context.Canceled) {
@@ -233,10 +241,10 @@ func encodeRequest(r provider.Request) ([]byte, error) {
 // assistant/user message plus any number of role:"tool" messages.
 //
 // Spec rules:
-//   * assistant text comes before tool_calls (OpenAI rejects interleaving).
-//   * each tool_result becomes its own role:"tool" message with matching
+//   - assistant text comes before tool_calls (OpenAI rejects interleaving).
+//   - each tool_result becomes its own role:"tool" message with matching
 //     tool_call_id.
-//   * user messages with text plain become role:"user" with content.
+//   - user messages with text plain become role:"user" with content.
 func toOpenAIMessages(m provider.Message) []openaiMsg {
 	switch m.Role {
 	case provider.RoleAssistant:
@@ -423,7 +431,6 @@ func (s *openaiStreamState) flushTerminal() []provider.ProviderEvent {
 				Type:  provider.EventError,
 				Error: provider.NewProviderError("openai", 0, provider.CodeStreamBroken, "tool_call arguments not valid JSON", err),
 			})
-			return out
 		}
 	}
 

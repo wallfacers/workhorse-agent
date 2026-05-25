@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/store"
+	"github.com/wallfacers/workhorse-agent/internal/store"
 )
 
 // ---- time helpers ----

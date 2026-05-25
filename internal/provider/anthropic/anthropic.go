@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/provider"
+	"github.com/wallfacers/workhorse-agent/internal/provider"
 )
 
 // DefaultBaseURL is used when Options.BaseURL is empty.
@@ -246,6 +246,9 @@ func encodeRequest(r provider.Request, defaultMax int) ([]byte, error) {
 		body.Temperature = r.Temperature
 	}
 	for _, m := range r.Messages {
+		if m.Role == provider.RoleSystem {
+			continue // already in body.System
+		}
 		body.Messages = append(body.Messages, toAnthropicMessage(m))
 	}
 	for _, t := range r.Tools {

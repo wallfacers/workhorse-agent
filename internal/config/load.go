@@ -34,7 +34,7 @@ type LoadOptions struct {
 //  1. built-in Default()
 //  2. yaml file at LoadOptions.YAMLPath, if present (yaml.v3 keeps fields
 //     not mentioned in the file at their existing — default — value)
-//  3. environment variables prefixed DATAAGENT_
+//  3. environment variables prefixed WORKHORSE_AGENT_
 //  4. recognised CLI flags from LoadOptions.Args
 //
 // After all four steps the result is validated and any home-relative paths
@@ -106,7 +106,7 @@ func mergeYAMLFile(cfg *Config, path string) error {
 // envMap is the explicit allowlist of environment overrides supported by the
 // configuration spec. Anything outside this list must be expressed in
 // config.yaml — we don't auto-map every nested field by reflection because the
-// resulting names get unwieldy ("DATAAGENT_TOOLS_BASH_TIMEOUT_SECONDS") and
+// resulting names get unwieldy ("WORKHORSE_AGENT_TOOLS_BASH_TIMEOUT_SECONDS") and
 // the spec only requires a handful to be settable via env.
 type envBinding struct {
 	key   string
@@ -115,71 +115,71 @@ type envBinding struct {
 
 func envBindings() []envBinding {
 	return []envBinding{
-		{"DATAAGENT_HOST", func(c *Config, v string) error {
+		{"WORKHORSE_AGENT_HOST", func(c *Config, v string) error {
 			c.Server.Host = v
 			return nil
 		}},
-		{"DATAAGENT_PORT", func(c *Config, v string) error {
+		{"WORKHORSE_AGENT_PORT", func(c *Config, v string) error {
 			p, err := strconv.Atoi(v)
 			if err != nil {
-				return fmt.Errorf("DATAAGENT_PORT: %w", err)
+				return fmt.Errorf("WORKHORSE_AGENT_PORT: %w", err)
 			}
 			c.Server.Port = p
 			return nil
 		}},
-		{"DATAAGENT_LOG_LEVEL", func(c *Config, v string) error {
+		{"WORKHORSE_AGENT_LOG_LEVEL", func(c *Config, v string) error {
 			c.Logging.Level = v
 			return nil
 		}},
-		{"DATAAGENT_LOG_FORMAT", func(c *Config, v string) error {
+		{"WORKHORSE_AGENT_LOG_FORMAT", func(c *Config, v string) error {
 			c.Logging.Format = v
 			return nil
 		}},
-		{"DATAAGENT_AUTH_ENABLED", func(c *Config, v string) error {
+		{"WORKHORSE_AGENT_AUTH_ENABLED", func(c *Config, v string) error {
 			b, err := parseBoolStrict(v)
 			if err != nil {
-				return fmt.Errorf("DATAAGENT_AUTH_ENABLED: %w", err)
+				return fmt.Errorf("WORKHORSE_AGENT_AUTH_ENABLED: %w", err)
 			}
 			c.Auth.Enabled = b
 			return nil
 		}},
-		{"DATAAGENT_AUTH_BEARER_TOKEN", func(c *Config, v string) error {
+		{"WORKHORSE_AGENT_AUTH_BEARER_TOKEN", func(c *Config, v string) error {
 			c.Auth.BearerToken = v
 			return nil
 		}},
-		{"DATAAGENT_PROVIDERS_DEFAULT", func(c *Config, v string) error {
+		{"WORKHORSE_AGENT_PROVIDERS_DEFAULT", func(c *Config, v string) error {
 			c.Providers.Default = v
 			return nil
 		}},
-		{"DATAAGENT_PROVIDERS_ANTHROPIC_API_KEY", func(c *Config, v string) error {
+		{"WORKHORSE_AGENT_PROVIDERS_ANTHROPIC_API_KEY", func(c *Config, v string) error {
 			c.Providers.Anthropic.APIKey = v
 			return nil
 		}},
-		{"DATAAGENT_PROVIDERS_ANTHROPIC_BASE_URL", func(c *Config, v string) error {
+		{"WORKHORSE_AGENT_PROVIDERS_ANTHROPIC_BASE_URL", func(c *Config, v string) error {
 			c.Providers.Anthropic.BaseURL = v
 			return nil
 		}},
-		{"DATAAGENT_PROVIDERS_OPENAI_API_KEY", func(c *Config, v string) error {
+		{"WORKHORSE_AGENT_PROVIDERS_OPENAI_API_KEY", func(c *Config, v string) error {
 			c.Providers.OpenAI.APIKey = v
 			return nil
 		}},
-		{"DATAAGENT_PROVIDERS_OPENAI_BASE_URL", func(c *Config, v string) error {
+		{"WORKHORSE_AGENT_PROVIDERS_OPENAI_BASE_URL", func(c *Config, v string) error {
 			c.Providers.OpenAI.BaseURL = v
 			return nil
 		}},
-		{"DATAAGENT_DEBUG_ENABLED", func(c *Config, v string) error {
+		{"WORKHORSE_AGENT_DEBUG_ENABLED", func(c *Config, v string) error {
 			b, err := parseBoolStrict(v)
 			if err != nil {
-				return fmt.Errorf("DATAAGENT_DEBUG_ENABLED: %w", err)
+				return fmt.Errorf("WORKHORSE_AGENT_DEBUG_ENABLED: %w", err)
 			}
 			c.Debug.Enabled = b
 			return nil
 		}},
-		{"DATAAGENT_STORE_PATH", func(c *Config, v string) error {
+		{"WORKHORSE_AGENT_STORE_PATH", func(c *Config, v string) error {
 			c.Store.Path = v
 			return nil
 		}},
-		{"DATAAGENT_MCP_CONFIG_PATH", func(c *Config, v string) error {
+		{"WORKHORSE_AGENT_MCP_CONFIG_PATH", func(c *Config, v string) error {
 			c.MCP.ConfigPath = v
 			return nil
 		}},
@@ -201,19 +201,19 @@ func applyEnv(cfg *Config, lookup func(string) (string, bool)) error {
 
 // applyCLI handles the small set of flags the spec calls out (--port,
 // --host, --config, --log-level). The leftover Args (positional) are
-// returned so cmd/dataagent can dispatch to subcommands above this layer.
+// returned so cmd/workhorse-agent can dispatch to subcommands above this layer.
 //
 // We intentionally do not expose every config knob as a CLI flag — yaml stays
 // the configured source of truth. Flags exist for the spec scenarios and for
 // quick local overrides.
 func applyCLI(cfg *Config, args []string) ([]string, error) {
-	fs := flag.NewFlagSet("dataagent", flag.ContinueOnError)
+	fs := flag.NewFlagSet("workhorse-agent", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // we own the error messages
 
 	host := fs.String("host", cfg.Server.Host, "")
 	port := fs.Int("port", cfg.Server.Port, "")
 	logLevel := fs.String("log-level", cfg.Logging.Level, "")
-	// --config is consumed by cmd/dataagent before Load() — accept and
+	// --config is consumed by cmd/workhorse-agent before Load() — accept and
 	// discard so users can pass it on the same command line.
 	_ = fs.String("config", "", "")
 

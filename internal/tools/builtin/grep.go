@@ -12,15 +12,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/tools"
-	"github.com/wallfacers/data-agent/internal/tools/pathguard"
+	"github.com/wallfacers/workhorse-agent/internal/tools"
+	"github.com/wallfacers/workhorse-agent/internal/tools/pathguard"
 )
 
 type GrepInput struct {
-	Pattern  string `json:"pattern"`
-	Path     string `json:"path,omitempty"`     // file or dir, default workdir
-	Include  string `json:"include,omitempty"`  // optional glob filter on filenames
-	MaxHits  int    `json:"max_hits,omitempty"` // 0 = default 500
+	Pattern string `json:"pattern"`
+	Path    string `json:"path,omitempty"`     // file or dir, default workdir
+	Include string `json:"include,omitempty"`  // optional glob filter on filenames
+	MaxHits int    `json:"max_hits,omitempty"` // 0 = default 500
 }
 
 // Grep walks the workdir (or a sub-path) and emits "path:line:content" lines
@@ -29,9 +29,9 @@ type Grep struct {
 	Timeout time.Duration
 }
 
-func (Grep) Name() string                   { return "Grep" }
-func (Grep) IsReadOnly() bool               { return true }
-func (Grep) CanRunInParallel() bool         { return true }
+func (Grep) Name() string           { return "Grep" }
+func (Grep) IsReadOnly() bool       { return true }
+func (Grep) CanRunInParallel() bool { return true }
 func (g Grep) DefaultTimeout() time.Duration {
 	if g.Timeout > 0 {
 		return g.Timeout
@@ -82,9 +82,11 @@ func (Grep) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*tool
 
 	var sb strings.Builder
 	hits := 0
+	skipped := 0
 	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // ignore unreadable entries
+			skipped++
+			return nil
 		}
 		select {
 		case <-ctx.Done():
@@ -136,7 +138,14 @@ func (Grep) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*tool
 		}
 	}
 	if sb.Len() == 0 {
-		return &tools.Result{Output: "(no matches)"}, nil
+		msg := "(no matches)"
+		if skipped > 0 {
+			msg = fmt.Sprintf("(no matches, %d entries skipped due to access errors)", skipped)
+		}
+		return &tools.Result{Output: msg}, nil
+	}
+	if skipped > 0 {
+		fmt.Fprintf(&sb, "\n[%d entries skipped due to access errors]", skipped)
 	}
 	return &tools.Result{Output: sb.String()}, nil
 }

@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/wallfacers/data-agent/internal/tools/bash"
+	"github.com/wallfacers/workhorse-agent/internal/tools/bash"
 )
 
 func TestFilter_ExactMatchDeny(t *testing.T) {
@@ -81,11 +81,11 @@ func TestFilter_PreservesUnrelated(t *testing.T) {
 
 func TestFilterMap(t *testing.T) {
 	in := map[string]string{
-		"LD_PRELOAD":    "/tmp/x",
-		"NODE_OPTIONS":  "--require=evil",
-		"PATH":          "/usr/bin",
-		"DYLD_VERSION":  "1",
-		"HOME":          "/home/foo",
+		"LD_PRELOAD":   "/tmp/x",
+		"NODE_OPTIONS": "--require=evil",
+		"PATH":         "/usr/bin",
+		"DYLD_VERSION": "1",
+		"HOME":         "/home/foo",
 	}
 	out, dropped := bash.FilterMap(in)
 	if _, ok := out["PATH"]; !ok {

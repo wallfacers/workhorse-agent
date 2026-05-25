@@ -70,11 +70,11 @@ jobs:
           ext=""
           if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
           go build -trimpath -ldflags="-s -w" \
-            -o dist/dataagent-${GOOS}-${GOARCH}${ext} \
-            ./cmd/dataagent
+            -o dist/workhorse-agent-${GOOS}-${GOARCH}${ext} \
+            ./cmd/workhorse-agent
       - uses: actions/upload-artifact@v4
         with:
-          name: dataagent-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: workhorse-agent-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
           if-no-files-found: error
           retention-days: 7

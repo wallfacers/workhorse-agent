@@ -1,0 +1,143 @@
+package protocol
+
+import (
+	"encoding/json"
+	"errors"
+	"testing"
+)
+
+func TestClientMessageType_IsKnown(t *testing.T) {
+	for _, ok := range []ClientMessageType{
+		ClientUserMessage, ClientPermissionDecision,
+		ClientInterrupt, ClientPing, ClientContextUpdate,
+	} {
+		if !ok.IsKnown() {
+			t.Fatalf("%q must be known", ok)
+		}
+	}
+	for _, bad := range []ClientMessageType{"", "frobnicate", "user-message"} {
+		if bad.IsKnown() {
+			t.Fatalf("%q must not be known", bad)
+		}
+	}
+}
+
+func TestServerEventTypes_Eleven(t *testing.T) {
+	if got := len(AllServerEventTypes); got != 11 {
+		t.Fatalf("api-protocol spec requires 11 event types, got %d", got)
+	}
+}
+
+func TestAllErrorCodes_Fourteen(t *testing.T) {
+	if got := len(AllErrorCodes); got != 14 {
+		t.Fatalf("api-protocol spec requires 14 error codes, got %d", got)
+	}
+}
+
+func TestErrorCode_RecoverableMatchesSpec(t *testing.T) {
+	// Per spec table 256-274.
+	cases := map[ErrorCode]bool{
+		ErrSessionBusy:                   true,
+		ErrUnknownMessageType:            false,
+		ErrHistoryTokenLimit:             false,
+		ErrToolNotAllowed:                true,
+		ErrPermissionDenied:              true,
+		ErrProviderAuthFailed:            false,
+		ErrProviderInvalidRequest:        false,
+		ErrProviderContextLengthExceeded: false,
+		ErrProviderInsufficientQuota:     false,
+		ErrProviderUnrecoverable:         false,
+		ErrCancelTimeout:                 true,
+		ErrInternalPanic:                 true,
+		ErrServerShutdown:                false,
+		ErrRequestTooLarge:               true,
+	}
+	for code, want := range cases {
+		if got := code.Recoverable(); got != want {
+			t.Errorf("%s.Recoverable()=%v, want %v", code, got, want)
+		}
+	}
+}
+
+func TestNewErrorPayload_ShapeAndDefaults(t *testing.T) {
+	p := NewErrorPayload(ErrSessionBusy, "", map[string]any{"state": "Compacting"})
+	if p["code"] != string(ErrSessionBusy) {
+		t.Fatalf("code: %v", p["code"])
+	}
+	if p["message"] != ErrSessionBusy.Message() {
+		t.Fatalf("default message lost: %v", p["message"])
+	}
+	if p["recoverable"] != true {
+		t.Fatalf("session_busy must be recoverable")
+	}
+	det, ok := p["details"].(map[string]any)
+	if !ok || det["state"] != "Compacting" {
+		t.Fatalf("details lost: %v", p["details"])
+	}
+}
+
+func TestNewErrorPayload_NilDetailsBecomesObject(t *testing.T) {
+	p := NewErrorPayload(ErrServerShutdown, "", nil)
+	det, ok := p["details"].(map[string]any)
+	if !ok {
+		t.Fatalf("details must always be an object, got %T", p["details"])
+	}
+	if len(det) != 0 {
+		t.Fatalf("details default must be empty, got %+v", det)
+	}
+	// Roundtrip through JSON to confirm shape stays stable.
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := decoded["details"].(map[string]any); !ok {
+		t.Fatalf("details lost roundtrip: %v", decoded["details"])
+	}
+}
+
+func TestDecodeClientMessage_OK(t *testing.T) {
+	body := []byte(`{"type":"user_message","content":"hi"}`)
+	msg, err := DecodeClientMessage(body)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if msg.Type != ClientUserMessage {
+		t.Fatalf("type: %s", msg.Type)
+	}
+	var p UserMessagePayload
+	if err := json.Unmarshal(msg.Payload, &p); err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	if p.Content != "hi" {
+		t.Fatalf("content: %q", p.Content)
+	}
+}
+
+func TestDecodeClientMessage_UnknownType(t *testing.T) {
+	body := []byte(`{"type":"frobnicate"}`)
+	msg, err := DecodeClientMessage(body)
+	if !errors.Is(err, ErrUnknownClientType) {
+		t.Fatalf("expected ErrUnknownClientType, got %v", err)
+	}
+	if msg.Type != "frobnicate" {
+		t.Fatalf("type should be preserved for diagnostics, got %q", msg.Type)
+	}
+}
+
+func TestDecodeClientMessage_MissingType(t *testing.T) {
+	body := []byte(`{}`)
+	_, err := DecodeClientMessage(body)
+	if !errors.Is(err, ErrUnknownClientType) {
+		t.Fatalf("expected ErrUnknownClientType for missing type, got %v", err)
+	}
+}
+
+func TestDecodeClientMessage_BadJSON(t *testing.T) {
+	if _, err := DecodeClientMessage([]byte(`{not-json`)); err == nil {
+		t.Fatalf("expected decode error for bad JSON")
+	}
+}

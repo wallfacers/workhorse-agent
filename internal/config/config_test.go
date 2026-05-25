@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wallfacers/data-agent/internal/config"
+	"github.com/wallfacers/workhorse-agent/internal/config"
 )
 
 func TestDefault_PassesValidation(t *testing.T) {
@@ -44,7 +44,7 @@ server:
 	cfg, err := config.Load(config.LoadOptions{
 		YAMLPath: path,
 		LookupEnv: stubEnv(map[string]string{
-			"DATAAGENT_PORT": "9000",
+			"WORKHORSE_AGENT_PORT": "9000",
 		}),
 	})
 	if err != nil {
@@ -60,7 +60,7 @@ func TestLoad_CLIOverridesEnv(t *testing.T) {
 	cfg, err := config.Load(config.LoadOptions{
 		Args: []string{"--port", "8000"},
 		LookupEnv: stubEnv(map[string]string{
-			"DATAAGENT_PORT": "9000",
+			"WORKHORSE_AGENT_PORT": "9000",
 		}),
 	})
 	if err != nil {
@@ -170,8 +170,8 @@ providers:
 func TestLoad_AuthBearerTokenViaEnv(t *testing.T) {
 	cfg, err := config.Load(config.LoadOptions{
 		LookupEnv: stubEnv(map[string]string{
-			"DATAAGENT_AUTH_ENABLED":      "true",
-			"DATAAGENT_AUTH_BEARER_TOKEN": "s3cret-token",
+			"WORKHORSE_AGENT_AUTH_ENABLED":      "true",
+			"WORKHORSE_AGENT_AUTH_BEARER_TOKEN": "s3cret-token",
 		}),
 	})
 	if err != nil {
@@ -185,7 +185,7 @@ func TestLoad_AuthBearerTokenViaEnv(t *testing.T) {
 func TestLoad_RejectsBadEnvBool(t *testing.T) {
 	_, err := config.Load(config.LoadOptions{
 		LookupEnv: stubEnv(map[string]string{
-			"DATAAGENT_AUTH_ENABLED": "maybe",
+			"WORKHORSE_AGENT_AUTH_ENABLED": "maybe",
 		}),
 	})
 	if err == nil {

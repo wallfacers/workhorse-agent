@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/tools"
-	"github.com/wallfacers/data-agent/internal/tools/pathguard"
+	"github.com/wallfacers/workhorse-agent/internal/tools"
+	"github.com/wallfacers/workhorse-agent/internal/tools/pathguard"
 )
 
 type EditInput struct {
@@ -28,9 +28,9 @@ type Edit struct {
 	Timeout time.Duration
 }
 
-func (Edit) Name() string                   { return "Edit" }
-func (Edit) IsReadOnly() bool               { return false }
-func (Edit) CanRunInParallel() bool         { return false }
+func (Edit) Name() string           { return "Edit" }
+func (Edit) IsReadOnly() bool       { return false }
+func (Edit) CanRunInParallel() bool { return false }
 func (e Edit) DefaultTimeout() time.Duration {
 	if e.Timeout > 0 {
 		return e.Timeout

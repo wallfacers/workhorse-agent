@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a stripped static dataagent binary for one or many targets.
+# Build a stripped static workhorse-agent binary for one or many targets.
 #
 # Usage:
 #   scripts/build.sh                          # host platform
@@ -7,13 +7,13 @@
 #   scripts/build.sh linux/amd64 darwin/arm64 # several targets
 #   scripts/build.sh all                      # full Linux/macOS/Windows × amd64/arm64 matrix
 #
-# Output:  dist/dataagent[-<goos>-<goarch>][.exe]
+# Output:  dist/workhorse-agent[-<goos>-<goarch>][.exe]
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="${REPO_ROOT}/dist"
-PKG="./cmd/dataagent"
+PKG="./cmd/workhorse-agent"
 
 # Reproducibility: -trimpath strips local paths; -s -w drops debug + symbol
 # tables to keep the binary small. CGO disabled because modernc.org/sqlite is
@@ -48,11 +48,11 @@ build_one() {
   if [ "${target}" = "host" ]; then
     goos="$(go env GOOS)"
     goarch="$(go env GOARCH)"
-    out="${DIST_DIR}/dataagent"
+    out="${DIST_DIR}/workhorse-agent"
   else
     goos="${target%/*}"
     goarch="${target##*/}"
-    out="${DIST_DIR}/dataagent-${goos}-${goarch}"
+    out="${DIST_DIR}/workhorse-agent-${goos}-${goarch}"
   fi
   if [ "${goos}" = "windows" ]; then
     ext=".exe"

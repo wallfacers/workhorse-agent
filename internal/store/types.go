@@ -1,4 +1,4 @@
-// Package store defines the dataagent persistence boundary: a small set of
+// Package store defines the workhorse-agent persistence boundary: a small set of
 // value types and a Store interface that every concrete backend
 // (currently only SQLite via modernc.org/sqlite) must implement.
 package store

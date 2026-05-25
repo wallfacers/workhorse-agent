@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/provider"
-	"github.com/wallfacers/data-agent/internal/provider/anthropic"
+	"github.com/wallfacers/workhorse-agent/internal/provider"
+	"github.com/wallfacers/workhorse-agent/internal/provider/anthropic"
 )
 
 // sse builds the canonical SSE wire format the adapter parses.

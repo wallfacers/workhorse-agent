@@ -1,10 +1,10 @@
-// Package config defines the dataagent runtime configuration: a single Config
+// Package config defines the workhorse-agent runtime configuration: a single Config
 // struct, the built-in defaults, range/relationship validation, and the load
 // pipeline that merges defaults < yaml < env < CLI flags.
 package config
 
 // Config is the full runtime configuration tree. Every field maps 1:1 to the
-// schema in openspec/changes/init-data-agent-mvp/specs/configuration/spec.md.
+// schema in openspec/changes/init-workhorse-agent-mvp/specs/configuration/spec.md.
 type Config struct {
 	Server    ServerConfig    `yaml:"server"`
 	Auth      AuthConfig      `yaml:"auth"`
@@ -41,9 +41,9 @@ type AuthConfig struct {
 }
 
 type ProvidersConfig struct {
-	Default   string             `yaml:"default"`
-	Anthropic ProviderEndpoint   `yaml:"anthropic"`
-	OpenAI    ProviderEndpoint   `yaml:"openai"`
+	Default   string           `yaml:"default"`
+	Anthropic ProviderEndpoint `yaml:"anthropic"`
+	OpenAI    ProviderEndpoint `yaml:"openai"`
 }
 
 type ProviderEndpoint struct {
@@ -59,24 +59,24 @@ type ModelsConfig struct {
 }
 
 type AgentConfig struct {
-	MaxParallelTools                int   `yaml:"max_parallel_tools"`
-	MaxDepth                        int   `yaml:"max_depth"`
+	MaxParallelTools                int     `yaml:"max_parallel_tools"`
+	MaxDepth                        int     `yaml:"max_depth"`
 	AutoCompactRatio                float64 `yaml:"auto_compact_ratio"`
-	CompactRecentKeep               int   `yaml:"compact_recent_keep"`
-	MaxHistoryTokens                int   `yaml:"max_history_tokens"`
-	PermissionRequestTimeoutSeconds int   `yaml:"permission_request_timeout_seconds"`
-	CancelDrainTimeoutSeconds       int   `yaml:"cancel_drain_timeout_seconds"`
-	ProviderRetryAttempts           int   `yaml:"provider_retry_attempts"`
-	ProviderRetryBackoffMs          []int `yaml:"provider_retry_backoff_ms"`
+	CompactRecentKeep               int     `yaml:"compact_recent_keep"`
+	MaxHistoryTokens                int     `yaml:"max_history_tokens"`
+	PermissionRequestTimeoutSeconds int     `yaml:"permission_request_timeout_seconds"`
+	CancelDrainTimeoutSeconds       int     `yaml:"cancel_drain_timeout_seconds"`
+	ProviderRetryAttempts           int     `yaml:"provider_retry_attempts"`
+	ProviderRetryBackoffMs          []int   `yaml:"provider_retry_backoff_ms"`
 }
 
 type ToolsConfig struct {
-	DefaultTimeoutSeconds int          `yaml:"default_timeout_seconds"`
-	ToolResultMaxBytes    int          `yaml:"tool_result_max_bytes"`
-	Bash                  ToolTimeout  `yaml:"bash"`
-	Read                  ToolTimeout  `yaml:"read"`
-	Grep                  ToolTimeout  `yaml:"grep"`
-	DefaultAllowedTools   []string     `yaml:"default_allowed_tools"`
+	DefaultTimeoutSeconds int         `yaml:"default_timeout_seconds"`
+	ToolResultMaxBytes    int         `yaml:"tool_result_max_bytes"`
+	Bash                  ToolTimeout `yaml:"bash"`
+	Read                  ToolTimeout `yaml:"read"`
+	Grep                  ToolTimeout `yaml:"grep"`
+	DefaultAllowedTools   []string    `yaml:"default_allowed_tools"`
 }
 
 type ToolTimeout struct {
@@ -84,8 +84,8 @@ type ToolTimeout struct {
 }
 
 type StoreConfig struct {
-	Path           string `yaml:"path"`
-	BusyTimeoutMs  int    `yaml:"busy_timeout_ms"`
+	Path          string `yaml:"path"`
+	BusyTimeoutMs int    `yaml:"busy_timeout_ms"`
 }
 
 type SessionsConfig struct {
@@ -161,11 +161,11 @@ func Default() Config {
 			Read:                  ToolTimeout{TimeoutSeconds: 30},
 			Grep:                  ToolTimeout{TimeoutSeconds: 60},
 		},
-		Store:    StoreConfig{Path: "~/.dataagent/state.db", BusyTimeoutMs: 5000},
+		Store:    StoreConfig{Path: "~/.workhorse-agent/state.db", BusyTimeoutMs: 5000},
 		Sessions: SessionsConfig{MaxConcurrent: 50},
-		MCP:      MCPConfig{ConfigPath: "~/.dataagent/mcp.json"},
-		Skills:   PathConfig{Dir: "~/.dataagent/skills"},
-		Agents:   PathConfig{Dir: "~/.dataagent/agents"},
+		MCP:      MCPConfig{ConfigPath: "~/.workhorse-agent/mcp.json"},
+		Skills:   PathConfig{Dir: "~/.workhorse-agent/skills"},
+		Agents:   PathConfig{Dir: "~/.workhorse-agent/agents"},
 		Logging:  LoggingConfig{Level: "info", Format: "json", LogLLMPayload: false},
 		Debug:    DebugConfig{Enabled: false},
 	}

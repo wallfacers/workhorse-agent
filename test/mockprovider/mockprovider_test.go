@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/wallfacers/data-agent/internal/provider"
-	"github.com/wallfacers/data-agent/test/mockprovider"
+	"github.com/wallfacers/workhorse-agent/internal/provider"
+	"github.com/wallfacers/workhorse-agent/test/mockprovider"
 )
 
 func TestQueueAndReplay(t *testing.T) {

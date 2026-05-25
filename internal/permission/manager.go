@@ -2,12 +2,13 @@ package permission
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/store"
+	"github.com/wallfacers/workhorse-agent/internal/store"
 )
 
 // Decision mirrors the five values in the permission-control spec.
@@ -184,11 +185,11 @@ func (m *Manager) promptAndPersist(ctx context.Context, sessionID, tool, resourc
 	case AllowSession:
 		m.addSession(sessionID, rule{tool: tool, pattern: resource, decision: decision, scope: store.ScopeSession})
 	case AllowPermanent:
-		if err := m.savePermanent(ctx, tool, resource, AllowPermanent); err != nil {
+		if err := m.savePermanent(pctx, tool, resource, AllowPermanent); err != nil {
 			return Deny, err
 		}
 	case DenyPermanent:
-		if err := m.savePermanent(ctx, tool, resource, DenyPermanent); err != nil {
+		if err := m.savePermanent(pctx, tool, resource, DenyPermanent); err != nil {
 			return Deny, err
 		}
 	}
@@ -202,8 +203,10 @@ func (m *Manager) addSession(sessionID string, r rule) {
 }
 
 func (m *Manager) savePermanent(ctx context.Context, tool, pattern string, decision Decision) error {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
 	return m.store.SavePermission(ctx, &store.Permission{
-		ID:        fmt.Sprintf("perm-%d", time.Now().UnixNano()),
+		ID:        fmt.Sprintf("perm-%x", b),
 		SessionID: "", // permanent = global
 		Tool:      tool,
 		Pattern:   pattern,

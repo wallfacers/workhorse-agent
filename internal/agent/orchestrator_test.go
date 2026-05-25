@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/agent"
-	"github.com/wallfacers/data-agent/internal/tools"
+	"github.com/wallfacers/workhorse-agent/internal/agent"
+	"github.com/wallfacers/workhorse-agent/internal/tools"
 )
 
 // ---- stub tools ----
@@ -224,19 +224,8 @@ func TestRunAll_ModifiersApplyAfterBatch(t *testing.T) {
 }
 
 func TestResolveTimeout_PriorityChain(t *testing.T) {
-	defaultTo := &stubTool{name: "x", parallel: true, timeout: 17 * time.Second}
-	r := makeReg(t, defaultTo)
-	o := &agent.Orchestrator{
-		Registry:        r,
-		MaxParallel:     1,
-		DefaultTimeout:  3 * time.Second,
-		PerToolTimeouts: map[string]time.Duration{"x": 7 * time.Second},
-	}
-	// Tool.DefaultTimeout (17) wins over both config layers.
-	o.DefaultTimeout = 3 * time.Second
-	_ = o // semantic check is via behaviour; the assertion is the result.
-
-	// Run a no-op tool and verify deadline >= tool's DefaultTimeout.
+	// Run a no-op tool and verify deadline >= tool's DefaultTimeout (17s),
+	// which the spec says wins over the orchestrator default + per-tool config.
 	done := make(chan time.Duration, 1)
 	captureTo := &stubTool{
 		name: "y", parallel: true, timeout: 17 * time.Second,

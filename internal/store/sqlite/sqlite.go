@@ -1,6 +1,6 @@
 // Package sqlite is the SQLite-backed implementation of internal/store.Store,
 // built on modernc.org/sqlite (pure-Go, no CGO). The on-disk file lives under
-// config.store.path (default ~/.dataagent/state.db); :memory: is used by
+// config.store.path (default ~/.workhorse-agent/state.db); :memory: is used by
 // tests.
 package sqlite
 
@@ -13,7 +13,7 @@ import (
 
 	_ "modernc.org/sqlite" // driver registers itself as "sqlite"
 
-	"github.com/wallfacers/data-agent/internal/store"
+	"github.com/wallfacers/workhorse-agent/internal/store"
 )
 
 // Options controls how Open connects to the database.
@@ -54,9 +54,8 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 	}
 
 	// modernc.org/sqlite is a single-writer database; SetMaxOpenConns(1)
-	// guarantees we serialise writes through Go and never trip "database is
-	// locked" with concurrent goroutines. Reads still parallelise fine
-	// thanks to WAL mode.
+	// serialises ALL access (reads and writes) through a single Go connection
+	// so we never trip "database is locked" with concurrent goroutines.
 	db.SetMaxOpenConns(1)
 
 	for _, pragma := range []string{

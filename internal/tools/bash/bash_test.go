@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/tools"
-	"github.com/wallfacers/data-agent/internal/tools/bash"
+	"github.com/wallfacers/workhorse-agent/internal/tools"
+	"github.com/wallfacers/workhorse-agent/internal/tools/bash"
 )
 
 func newBashEnv(t *testing.T) *tools.Env {

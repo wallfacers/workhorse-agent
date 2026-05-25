@@ -1,9 +1,16 @@
 # Repo guidance for AI coding assistants
 
+> **Project renamed (2025-05-24):** This project was formerly known as
+> `data-agent` / `dataagent`. The current name is **workhorse-agent**.
+> Module path: `github.com/wallfacers/workhorse-agent`. Binary: `workhorse-agent`.
+> Config dir: `~/.workhorse-agent/`. All old names have been replaced throughout
+> the codebase. If you encounter any remaining references to the old name, treat
+> them as bugs and fix them.
+
 ## Project shape
 
 Go 1.22+, single binary, local single-user multi-session AI agent server. Specs
-live under `openspec/changes/init-data-agent-mvp/`. Treat those specs as the
+live under `openspec/changes/init-workhorse-agent-mvp/`. Treat those specs as the
 source of truth: proposal, design, the per-capability `specs/*/spec.md`, and
 the implementation backlog in `tasks.md`.
 
@@ -106,5 +113,5 @@ Session/message/agent IDs are ULIDs.
 ## Hot reload
 
 `config.yaml` does NOT hot-reload (requires restart). Only
-`~/.dataagent/agents/*.yaml` and `~/.dataagent/skills/*/skill.yaml` are
+`~/.workhorse-agent/agents/*.yaml` and `~/.workhorse-agent/skills/*/skill.yaml` are
 re-scanned dynamically.

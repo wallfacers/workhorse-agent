@@ -24,15 +24,15 @@ import (
 
 // exactDeny is the exhaustive list of env variable names we never let through.
 var exactDeny = map[string]struct{}{
-	"LD_PRELOAD":                  {},
-	"LD_LIBRARY_PATH":             {},
-	"LD_AUDIT":                    {},
-	"DYLD_INSERT_LIBRARIES":       {},
-	"DYLD_LIBRARY_PATH":           {},
-	"DYLD_FALLBACK_LIBRARY_PATH":  {},
-	"DYLD_FORCE_FLAT_NAMESPACE":   {},
-	"PYTHONPATH":                  {},
-	"PYTHONSTARTUP":               {},
+	"LD_PRELOAD":                 {},
+	"LD_LIBRARY_PATH":            {},
+	"LD_AUDIT":                   {},
+	"DYLD_INSERT_LIBRARIES":      {},
+	"DYLD_LIBRARY_PATH":          {},
+	"DYLD_FALLBACK_LIBRARY_PATH": {},
+	"DYLD_FORCE_FLAT_NAMESPACE":  {},
+	"PYTHONPATH":                 {},
+	"PYTHONSTARTUP":              {},
 }
 
 // nodeOptionDanger lists the NODE_OPTIONS sub-flags that can load arbitrary

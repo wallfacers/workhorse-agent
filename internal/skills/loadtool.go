@@ -30,9 +30,9 @@ func NewLoadSkill(catalog *Catalog) *LoadSkill {
 	return &LoadSkill{catalog: catalog}
 }
 
-func (LoadSkill) Name() string             { return "LoadSkill" }
-func (LoadSkill) IsReadOnly() bool         { return true }
-func (LoadSkill) CanRunInParallel() bool   { return true }
+func (LoadSkill) Name() string           { return "LoadSkill" }
+func (LoadSkill) IsReadOnly() bool       { return true }
+func (LoadSkill) CanRunInParallel() bool { return true }
 func (LoadSkill) Description() string {
 	return "Load a skill's full instructions by name. Returns the skill content for the LLM to use."
 }

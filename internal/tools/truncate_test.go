@@ -5,7 +5,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/wallfacers/data-agent/internal/tools"
+	"github.com/wallfacers/workhorse-agent/internal/tools"
 )
 
 func TestTruncate_NoTruncationUnderLimit(t *testing.T) {

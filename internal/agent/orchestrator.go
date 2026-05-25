@@ -17,7 +17,7 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
-	"github.com/wallfacers/data-agent/internal/tools"
+	"github.com/wallfacers/workhorse-agent/internal/tools"
 )
 
 // ToolCall is one tool_use the LLM emitted in the current turn.
@@ -237,5 +237,8 @@ func (o *Orchestrator) resolveTimeout(t tools.Tool) time.Duration {
 	if d, ok := o.PerToolTimeouts[t.Name()]; ok && d > 0 {
 		return d
 	}
-	return o.DefaultTimeout
+	if o.DefaultTimeout > 0 {
+		return o.DefaultTimeout
+	}
+	return 120 * time.Second
 }

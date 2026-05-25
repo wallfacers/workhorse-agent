@@ -3,7 +3,7 @@ package bash_test
 import (
 	"testing"
 
-	"github.com/wallfacers/data-agent/internal/tools/bash"
+	"github.com/wallfacers/workhorse-agent/internal/tools/bash"
 )
 
 func TestDanger_CatchesEightFamilies(t *testing.T) {

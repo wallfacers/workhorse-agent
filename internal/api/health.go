@@ -1,0 +1,86 @@
+package api
+
+import (
+	"encoding/json"
+	"net/http"
+	"strconv"
+	"time"
+)
+
+// handleHealth answers GET /health. The endpoint is intentionally exempt from
+// bearer auth (monitoring probes) and Origin checks (server-side probes).
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":              true,
+		"version":         s.cfg.Version,
+		"uptime_sec":      int(time.Since(s.startedAt).Seconds()),
+		"sessions_active": s.manager.CountActive(),
+	})
+}
+
+// handleDebugEvents serves GET /debug/sessions/{id}/events?since=N as a
+// streaming NDJSON dump (one event JSON per line). Gated by debug.enabled
+// AND bearer auth (the middleware enforces auth; the handler enforces
+// debug.enabled).
+func (s *Server) handleDebugEvents(w http.ResponseWriter, r *http.Request) {
+	if !s.cfg.DebugEnabled {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"code":    "not_found",
+			"message": "debug endpoints are disabled",
+		})
+		return
+	}
+	if s.store == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"code":    "not_found",
+			"message": "persistent store not configured",
+		})
+		return
+	}
+	id := r.PathValue("id")
+	if _, err := s.manager.GetSession(id); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"code":    "session_not_found",
+			"message": "no such session",
+		})
+		return
+	}
+	since := int64(0)
+	if v := r.URL.Query().Get("since"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			since = n
+		}
+	}
+	events, err := s.store.EventsAfter(r.Context(), id, since, 0)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"code":    "internal",
+			"message": err.Error(),
+		})
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+	flusher, _ := w.(http.Flusher)
+	for _, ev := range events {
+		// Build the same envelope shape live events have so debug parity is
+		// preserved.
+		var payload map[string]any
+		if len(ev.PayloadJSON) > 0 {
+			_ = json.Unmarshal([]byte(ev.PayloadJSON), &payload)
+		}
+		if payload == nil {
+			payload = map[string]any{}
+		}
+		payload["type"] = ev.Type
+		payload["idx"] = ev.Idx
+		payload["session_id"] = ev.SessionID
+		line, _ := json.Marshal(payload)
+		if _, err := w.Write(append(line, '\n')); err != nil {
+			return
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+}

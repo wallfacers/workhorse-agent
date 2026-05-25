@@ -13,3 +13,4 @@ coverage.*
 .vscode/
 *.swp
 .DS_Store
+/workhorse-agent

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wallfacers/data-agent/internal/tools"
-	"github.com/wallfacers/data-agent/internal/tools/builtin"
+	"github.com/wallfacers/workhorse-agent/internal/tools"
+	"github.com/wallfacers/workhorse-agent/internal/tools/builtin"
 )
 
 func env(t *testing.T) *tools.Env {

@@ -5,12 +5,12 @@ import "encoding/json"
 // Request shape ----
 
 type openaiReq struct {
-	Model       string         `json:"model"`
-	Messages    []openaiMsg    `json:"messages"`
-	Tools       []openaiTool   `json:"tools,omitempty"`
-	Stream      bool           `json:"stream"`
-	MaxTokens   int            `json:"max_tokens,omitempty"`
-	Temperature float64        `json:"temperature,omitempty"`
+	Model       string       `json:"model"`
+	Messages    []openaiMsg  `json:"messages"`
+	Tools       []openaiTool `json:"tools,omitempty"`
+	Stream      bool         `json:"stream"`
+	MaxTokens   int          `json:"max_tokens,omitempty"`
+	Temperature float64      `json:"temperature,omitempty"`
 }
 
 // openaiMsg covers all four roles. Only fields appropriate to the role are

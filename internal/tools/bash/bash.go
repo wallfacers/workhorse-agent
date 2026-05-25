@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wallfacers/data-agent/internal/tools"
+	"github.com/wallfacers/workhorse-agent/internal/tools"
 )
 
 // BashInput is the JSON input for the Bash tool. Commands run under `bash -c`.
@@ -43,9 +43,9 @@ type Bash struct {
 	BaseEnv []string
 }
 
-func (Bash) Name() string                  { return "Bash" }
-func (Bash) IsReadOnly() bool              { return false }
-func (Bash) CanRunInParallel() bool        { return false }
+func (Bash) Name() string           { return "Bash" }
+func (Bash) IsReadOnly() bool       { return false }
+func (Bash) CanRunInParallel() bool { return false }
 func (b Bash) DefaultTimeout() time.Duration {
 	if b.DefaultTimeoutSeconds > 0 {
 		return time.Duration(b.DefaultTimeoutSeconds) * time.Second
@@ -83,7 +83,7 @@ func (b Bash) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*to
 	timedCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(timedCtx, "bash", "-c", in.Command)
+	cmd := exec.CommandContext(timedCtx, "bash", "-c", in.Command) //nolint:gosec // the whole point of the Bash tool is to run user-supplied commands; danger guard + permission gate sit in front
 	cmd.Dir = env.Workdir
 	configureProcessGroup(cmd) // Setpgid on Unix; no-op on Windows.
 
@@ -169,6 +169,9 @@ func (r *ringBuffer) Write(p []byte) (int, error) {
 	defer r.mu.Unlock()
 	if len(p) >= r.limit {
 		// Single write bigger than the limit: keep the tail.
+		// Returns len(p) to signal full consumption — exec.Cmd's io.Copy
+		// trusts the return value and the bytes are already drained from
+		// the kernel pipe. The silently-dropped head is by design.
 		r.buf.Reset()
 		r.buf.Write(p[len(p)-r.limit:])
 		return len(p), nil
