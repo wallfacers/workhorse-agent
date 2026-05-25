@@ -193,9 +193,11 @@ func (h *Host) startServer(inst *serverInstance) error {
 		return fmt.Errorf("tools/list: %w", err)
 	}
 
+	h.mu.Lock()
 	inst.transport = transport
 	inst.client = client
 	inst.tools = tools
+	h.mu.Unlock()
 	return nil
 }
 
@@ -229,8 +231,11 @@ func (h *Host) monitorStdio(inst *serverInstance) {
 		time.Sleep(1 * time.Second)
 
 		// Close old transport and create a new one.
-		if inst.transport != nil {
-			inst.transport.Close()
+		h.mu.Lock()
+		oldTransport := inst.transport
+		h.mu.Unlock()
+		if oldTransport != nil {
+			oldTransport.Close()
 		}
 
 		if err := h.startServer(inst); err != nil {
@@ -238,11 +243,14 @@ func (h *Host) monitorStdio(inst *serverInstance) {
 			continue
 		}
 
+		h.mu.Lock()
 		inst.healthy = true
+		newTransport := inst.transport
+		h.mu.Unlock()
 		h.log("mcp server restarted successfully", "name", inst.config.Name)
 
 		// Restart monitoring on the new transport.
-		t, ok = inst.transport.(*StdioTransport)
+		t, ok = newTransport.(*StdioTransport)
 		if !ok {
 			return
 		}

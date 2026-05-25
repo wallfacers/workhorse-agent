@@ -252,3 +252,41 @@ func newSSEServer(body string) *httptest.Server {
 		}
 	}))
 }
+
+// Scenario: mid-stream JSON decode failure must not emit stop or half-baked tool_use.
+func TestOpenAI_MidStreamErrorNoFlush(t *testing.T) {
+	// First chunk is valid (starts accumulating a tool_call), second chunk is
+	// garbage JSON that triggers a decode error inside handle().
+	wire := chunks(
+		`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"t1","type":"function","function":{"name":"Bash","arguments":""}}]}}]}`,
+		`{invalid json`,
+	)
+	srv := newSSEServer(wire)
+	defer srv.Close()
+
+	p := openai.New(openai.Options{APIKey: "k", BaseURL: srv.URL})
+	ch, err := p.Stream(context.Background(), provider.Request{Model: "gpt-4o"})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	events := drain(t, ch)
+
+	for _, e := range events {
+		if e.Type == provider.EventStop {
+			t.Error("mid-stream error should not produce a stop event")
+		}
+		if e.Type == provider.EventToolUse {
+			t.Errorf("mid-stream error should not flush partial tool_use, got %+v", e.ToolUse)
+		}
+	}
+	// Expect at least one error event.
+	var gotError bool
+	for _, e := range events {
+		if e.Type == provider.EventError {
+			gotError = true
+		}
+	}
+	if !gotError {
+		t.Error("expected an error event after mid-stream failure")
+	}
+}

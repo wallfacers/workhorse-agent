@@ -28,6 +28,9 @@ func TestTruncate_ASCIIBoundary(t *testing.T) {
 	if !strings.Contains(got, "of 5242880]") {
 		t.Errorf("marker should record original length, got %q", got[len(got)-80:])
 	}
+	if len(got) > 1024*1024 {
+		t.Errorf("result length %d exceeds maxBytes %d", len(got), 1024*1024)
+	}
 }
 
 // Spec requirement: UTF-8 边界安全. Cut must not land in the middle of a
@@ -39,6 +42,9 @@ func TestTruncate_UTF8Boundary(t *testing.T) {
 	got, truncated := tools.TruncateOutput(s, 50)
 	if !truncated {
 		t.Fatal("expected truncation")
+	}
+	if len(got) > 50 {
+		t.Errorf("result length %d exceeds maxBytes 50", len(got))
 	}
 	// The bit before the marker must still be valid UTF-8.
 	marker := "[truncated:"
@@ -58,5 +64,36 @@ func TestTruncate_ZeroLimitDisabled(t *testing.T) {
 	got, truncated := tools.TruncateOutput(s, 0)
 	if truncated || got != s {
 		t.Errorf("maxBytes=0 means disabled, got truncated=%v", truncated)
+	}
+}
+
+func TestTruncate_SmallMaxBytes(t *testing.T) {
+	s := strings.Repeat("a", 200)
+	got, truncated := tools.TruncateOutput(s, 50)
+	if !truncated {
+		t.Fatal("expected truncation")
+	}
+	if len(got) > 50 {
+		t.Errorf("result length %d exceeds maxBytes 50", len(got))
+	}
+	if !strings.Contains(got, "[truncated:") {
+		t.Errorf("missing truncation marker: %q", got)
+	}
+}
+
+func TestTruncate_VerySmallMaxBytes(t *testing.T) {
+	s := strings.Repeat("xyz", 100) // 300 bytes
+	got, truncated := tools.TruncateOutput(s, 10)
+	if !truncated {
+		t.Fatal("expected truncation")
+	}
+	// When maxBytes < marker length, result is marker-only (no data prefix).
+	// The marker itself may exceed maxBytes, but we keep it for diagnosability.
+	if !strings.Contains(got, "[truncated:") {
+		t.Errorf("missing truncation marker: %q", got)
+	}
+	// At minimum, the result should be much shorter than the original.
+	if len(got) >= len(s) {
+		t.Errorf("result should be shorter than original: got %d, orig %d", len(got), len(s))
 	}
 }

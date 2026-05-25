@@ -11,6 +11,7 @@ package mcp
 import (
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 )
 
 // JSON-RPC 2.0 protocol constants.
@@ -103,9 +104,18 @@ type ServerInfo struct {
 
 // ToolDef is one tool as returned by tools/list.
 type ToolDef struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"inputSchema"`
+	Name        string           `json:"name"`
+	Description string           `json:"description,omitempty"`
+	InputSchema json.RawMessage  `json:"inputSchema"`
+	Annotations *ToolAnnotations `json:"annotations,omitempty"`
+}
+
+// ToolAnnotations carries the optional MCP tool annotations from tools/list.
+type ToolAnnotations struct {
+	ReadOnlyHint    bool `json:"readOnlyHint,omitempty"`
+	DestructiveHint bool `json:"destructiveHint,omitempty"`
+	IdempotentHint  bool `json:"idempotentHint,omitempty"`
+	OpenWorldHint   bool `json:"openWorldHint,omitempty"`
 }
 
 // ListToolsResult is the result of tools/list.
@@ -139,14 +149,10 @@ type CancelledParams struct {
 	Reason    string `json:"reason,omitempty"`
 }
 
-// nextID is a simple atomic-style counter for request IDs. The host owns a
-// counter and increments it; IDs start from 1.
-type idGen struct{ n int64 }
+// idGen is a lock-free counter for JSON-RPC request IDs. IDs start from 1.
+type idGen struct{ n atomic.Int64 }
 
-func (g *idGen) Next() int64 {
-	g.n++
-	return g.n
-}
+func (g *idGen) Next() int64 { return g.n.Add(1) }
 
 // MustJSON marshals v to json.RawMessage, panicking on error. Only used for
 // values that are guaranteed to marshal without errors (static strings, simple

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -241,6 +242,43 @@ func TestResolveTimeout_PriorityChain(t *testing.T) {
 	d := <-done
 	if d < 16*time.Second {
 		t.Errorf("deadline should reflect DefaultTimeout (17s), got %v", d)
+	}
+}
+
+func TestRunOne_TruncatesLargeOutput(t *testing.T) {
+	big := &stubTool{name: "big", parallel: false, body: func(context.Context) (*tools.Result, error) {
+		return &tools.Result{Output: strings.Repeat("x", 10000)}, nil
+	}}
+	r := makeReg(t, big)
+	o := &agent.Orchestrator{Registry: r, MaxParallel: 1, MaxResultBytes: 1024}
+	results := o.RunBatch(context.Background(), &tools.Env{}, agent.ToolBatch{
+		Calls: []agent.ToolCall{{Name: "big"}},
+	})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Result.IsError {
+		t.Fatalf("unexpected error: %s", results[0].Result.Output)
+	}
+	if len(results[0].Result.Output) > 1024 {
+		t.Errorf("output length %d exceeds MaxResultBytes 1024", len(results[0].Result.Output))
+	}
+	if !strings.Contains(results[0].Result.Output, "[truncated:") {
+		t.Errorf("expected truncation marker in output")
+	}
+}
+
+func TestRunOne_NoTruncateWhenZero(t *testing.T) {
+	big := &stubTool{name: "big2", parallel: false, body: func(context.Context) (*tools.Result, error) {
+		return &tools.Result{Output: strings.Repeat("y", 5000)}, nil
+	}}
+	r := makeReg(t, big)
+	o := &agent.Orchestrator{Registry: r, MaxParallel: 1, MaxResultBytes: 0}
+	results := o.RunBatch(context.Background(), &tools.Env{}, agent.ToolBatch{
+		Calls: []agent.ToolCall{{Name: "big2"}},
+	})
+	if len(results[0].Result.Output) != 5000 {
+		t.Errorf("expected full output (5000 bytes), got %d", len(results[0].Result.Output))
 	}
 }
 

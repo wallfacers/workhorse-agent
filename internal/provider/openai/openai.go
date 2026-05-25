@@ -115,6 +115,7 @@ func (p *Provider) streamLoop(ctx context.Context, resp *http.Response, ch chan<
 		}
 		out, terminal, err := st.handle(ev.Data)
 		if err != nil {
+			st.sawError = true
 			pe := provider.NewProviderError(p.Name(), 0, provider.CodeStreamBroken, "decode openai chunk", err)
 			emit(provider.ProviderEvent{Type: provider.EventError, Error: pe})
 			return io.EOF
@@ -131,10 +132,14 @@ func (p *Provider) streamLoop(ctx context.Context, resp *http.Response, ch chan<
 	})
 
 	// Flush remaining tool calls and emit a stop event when the stream
-	// ended without [DONE] (OpenAI-compatible servers may omit it).
-	for _, e := range st.flushTerminal() {
-		if !emit(e) {
-			break
+	// ended cleanly (graceful close or [DONE]-terminated). On mid-stream
+	// errors, skip flushing — half-accumulated tool_call fragments would
+	// create orphan pending entries upstream.
+	if parseErr == nil || errors.Is(parseErr, io.EOF) {
+		for _, e := range st.flushTerminal() {
+			if !emit(e) {
+				break
+			}
 		}
 	}
 
@@ -307,6 +312,7 @@ func toOpenAIMessages(m provider.Message) []openaiMsg {
 type openaiStreamState struct {
 	textSeen   bool
 	finished   bool
+	sawError   bool
 	toolCalls  map[int]*toolCallBuf // index → accumulator
 	stopReason string
 }
@@ -398,7 +404,7 @@ func (s *openaiStreamState) handle(data []byte) ([]provider.ProviderEvent, bool,
 // flushTerminal is called when [DONE] is seen. It drains the tool_call
 // accumulators in index order and emits a final stop event.
 func (s *openaiStreamState) flushTerminal() []provider.ProviderEvent {
-	if s.finished {
+	if s.finished || s.sawError {
 		return nil
 	}
 	s.finished = true

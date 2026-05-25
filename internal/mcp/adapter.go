@@ -10,12 +10,6 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/tools"
 )
 
-// ToolAnnotations carries the optional MCP tool annotations from tools/list.
-type ToolAnnotations struct {
-	ReadOnlyHint    bool `json:"readOnlyHint,omitempty"`
-	DestructiveHint bool `json:"destructiveHint,omitempty"`
-}
-
 // Adapter wraps a ServerTool as a tools.Tool. It implements the Tool interface
 // with conservative defaults: unless the MCP server declares readOnlyHint=true,
 // the tool is treated as read-write and non-parallel.
@@ -49,27 +43,9 @@ func NewAdapter(st ServerTool) *Adapter {
 	}
 }
 
-// hasReadOnlyHint checks the raw tool definition for an annotations.readOnlyHint
-// field set to true. We use a lightweight partial parse to avoid adding an
-// annotations field to ToolDef that most servers don't populate.
+// hasReadOnlyHint returns true when the MCP server declared annotations.readOnlyHint.
 func hasReadOnlyHint(t ToolDef) bool {
-	var raw struct {
-		Annotations *struct {
-			ReadOnlyHint bool `json:"readOnlyHint"`
-		} `json:"annotations"`
-	}
-	// Re-marshal ToolDef to get the full JSON with annotations.
-	b, err := json.Marshal(t)
-	if err != nil {
-		return false
-	}
-	if err := json.Unmarshal(b, &raw); err != nil {
-		return false
-	}
-	if raw.Annotations != nil && raw.Annotations.ReadOnlyHint {
-		return true
-	}
-	return false
+	return t.Annotations != nil && t.Annotations.ReadOnlyHint
 }
 
 func (a *Adapter) Name() string                  { return a.name }

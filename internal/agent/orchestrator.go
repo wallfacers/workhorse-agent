@@ -54,6 +54,8 @@ type Orchestrator struct {
 	// PerToolTimeouts maps tool name to a config-supplied override. Optional;
 	// tool.DefaultTimeout() still wins when non-zero.
 	PerToolTimeouts map[string]time.Duration
+	// MaxResultBytes caps tool output via TruncateOutput. Zero disables truncation.
+	MaxResultBytes int
 }
 
 // BatchTools walks the call slice and produces ToolBatches:
@@ -220,6 +222,9 @@ func (o *Orchestrator) runOne(ctx context.Context, env *tools.Env, call ToolCall
 	if res == nil {
 		out.Result = &tools.Result{Output: "(no output)", IsError: false}
 		return
+	}
+	if truncated, ok := tools.TruncateOutput(res.Output, o.MaxResultBytes); ok {
+		res.Output = truncated
 	}
 	out.Result = res
 	return

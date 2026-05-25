@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -273,6 +274,44 @@ func TestAdapterNameSpacing(t *testing.T) {
 	}
 }
 
+func TestAdapter_ReadOnlyHintFromAnnotations(t *testing.T) {
+	st := ServerTool{
+		Server: "srv",
+		Def: ToolDef{
+			Name:        "ro",
+			Description: "read-only tool",
+			InputSchema: json.RawMessage(`{}`),
+			Annotations: &ToolAnnotations{ReadOnlyHint: true},
+		},
+	}
+	adapter := NewAdapter(st)
+	if !adapter.IsReadOnly() {
+		t.Error("expected IsReadOnly=true when annotations.readOnlyHint is set")
+	}
+	if !adapter.CanRunInParallel() {
+		t.Error("read-only tools should be parallel-safe")
+	}
+}
+
+func TestAdapter_ReadOnlyHintFromJSON(t *testing.T) {
+	// Verify that JSON deserialization populates Annotations.
+	raw := `{"tools":[{"name":"t","description":"d","inputSchema":{},"annotations":{"readOnlyHint":true}}]}`
+	var result ListToolsResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(result.Tools))
+	}
+	if result.Tools[0].Annotations == nil || !result.Tools[0].Annotations.ReadOnlyHint {
+		t.Error("annotations.readOnlyHint not deserialized")
+	}
+	adapter := NewAdapter(ServerTool{Server: "x", Def: result.Tools[0]})
+	if !adapter.IsReadOnly() {
+		t.Error("expected IsReadOnly=true from JSON-deserialized annotations")
+	}
+}
+
 // ---------- mock MCP HTTP server ----------
 
 // mockMCPServer implements a minimal MCP HTTP+SSE server for tests.
@@ -486,7 +525,98 @@ func TestNextID(t *testing.T) {
 	}
 }
 
+func TestNextID_ConcurrentNoDuplicates(t *testing.T) {
+	const n = 10000
+	var g idGen
+	seen := make(map[int64]struct{}, n)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			v := g.Next()
+			mu.Lock()
+			seen[v] = struct{}{}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if len(seen) != n {
+		t.Errorf("got %d unique IDs, want %d (duplicate IDs detected)", len(seen), n)
+	}
+}
+
 func intPtr(n int64) *int64 { return &n }
+
+// ---------- host race tests ----------
+
+// mockTransport is a minimal Transport that signals Exited when closed.
+type mockTransport struct {
+	closed  chan struct{}
+	exited  chan struct{}
+	notifCh chan *Request
+}
+
+func newMockTransport() *mockTransport {
+	return &mockTransport{
+		closed:  make(chan struct{}),
+		exited:  make(chan struct{}),
+		notifCh: make(chan *Request, 1),
+	}
+}
+
+func (m *mockTransport) Call(_ context.Context, req *Request) (*Response, error) {
+	return &Response{JSONRPC: JSONRPCVersion, ID: *req.ID, Result: json.RawMessage(`{}`)}, nil
+}
+
+func (m *mockTransport) Notify(_ context.Context, _ *Request) error { return nil }
+func (m *mockTransport) Notifications() <-chan *Request             { return m.notifCh }
+func (m *mockTransport) Close() error {
+	select {
+	case <-m.closed:
+	default:
+		close(m.closed)
+	}
+	return nil
+}
+
+func TestHost_AllToolsNoRace(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := NewHost(logger)
+
+	// Pre-populate a server instance that looks like it was started.
+	mt := newMockTransport()
+	inst := &serverInstance{
+		config:    ServerConfig{Name: "test", Transport: "http"},
+		transport: mt,
+		client:    &MCPClient{Transport: mt},
+		tools:     []ToolDef{{Name: "t1", InputSchema: json.RawMessage(`{}`)}},
+		healthy:   true,
+	}
+	h.servers["test"] = inst
+
+	// Simulate concurrent AllTools reads and field writes (as monitorStdio does).
+	var wg sync.WaitGroup
+	const rounds = 500
+	wg.Add(rounds * 2)
+	for i := 0; i < rounds; i++ {
+		go func() {
+			defer wg.Done()
+			h.AllTools()
+		}()
+		go func() {
+			defer wg.Done()
+			h.mu.Lock()
+			inst.healthy = false
+			h.mu.Unlock()
+			h.mu.Lock()
+			inst.healthy = true
+			h.mu.Unlock()
+		}()
+	}
+	wg.Wait()
+}
 
 // ---------- Test helper: verify stdio transport reads lines properly ----------
 

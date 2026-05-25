@@ -19,7 +19,13 @@ func TruncateOutput(s string, maxBytes int) (string, bool) {
 	if maxBytes <= 0 || len(s) <= maxBytes {
 		return s, false
 	}
-	cut := maxBytes
+	// Upper-bound marker: "\n[truncated: kept <d> bytes of <d>]".
+	// <d> is at most len(s) which fits in ~10 digits. 80 bytes is generous.
+	const markerBudget = 80
+	cut := maxBytes - markerBudget
+	if cut < 0 {
+		cut = 0
+	}
 	// Walk back until s[:cut] ends on a clean rune boundary. Worst case is
 	// 3 steps (the longest continuation tail is 3 bytes). DecodeLastRune
 	// returns (RuneError, 1) for *invalid* encodings and (RuneError, 3) for
@@ -32,5 +38,23 @@ func TruncateOutput(s string, maxBytes int) (string, bool) {
 		cut--
 	}
 	marker := fmt.Sprintf("\n[truncated: kept %d bytes of %d]", cut, len(s))
-	return s[:cut] + marker, true
+	result := s[:cut] + marker
+	// Safety net: if marker was shorter than budget we may still fit.
+	if len(result) > maxBytes {
+		over := len(result) - maxBytes
+		newCut := cut - over
+		if newCut < 0 {
+			newCut = 0
+		}
+		for newCut > 0 {
+			r, size := utf8.DecodeLastRuneInString(s[:newCut])
+			if r != utf8.RuneError || size != 1 {
+				break
+			}
+			newCut--
+		}
+		marker = fmt.Sprintf("\n[truncated: kept %d bytes of %d]", newCut, len(s))
+		result = s[:newCut] + marker
+	}
+	return result, true
 }
