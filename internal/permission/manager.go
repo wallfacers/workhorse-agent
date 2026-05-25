@@ -186,11 +186,13 @@ func (m *Manager) promptAndPersist(ctx context.Context, sessionID, tool, resourc
 		m.addSession(sessionID, rule{tool: tool, pattern: resource, decision: decision, scope: store.ScopeSession})
 	case AllowPermanent:
 		if err := m.savePermanent(pctx, tool, resource, AllowPermanent); err != nil {
-			return Deny, err
+			m.addSession(sessionID, rule{tool: tool, pattern: resource, decision: AllowPermanent, scope: store.ScopeSession})
+			return AllowPermanent, err
 		}
 	case DenyPermanent:
 		if err := m.savePermanent(pctx, tool, resource, DenyPermanent); err != nil {
-			return Deny, err
+			m.addSession(sessionID, rule{tool: tool, pattern: resource, decision: DenyPermanent, scope: store.ScopeSession})
+			return DenyPermanent, err
 		}
 	}
 	return decision, nil
