@@ -236,6 +236,10 @@ type Options struct {
 	ProviderName string
 	AgentType    string
 	AllowedTools []string
+	// DenyTools lists tool names to exclude from AllowedTools. Applied as
+	// (AllowedTools - DenyTools) in New(). Used when an agent_type declares
+	// tools.deny: [Bash] or dispatch overrides it.
+	DenyTools []string
 	// Depth is the nesting depth in a parent→child Dispatch chain. Zero for
 	// top-level sessions; the Dispatch tool sets parent.Depth+1 for children.
 	Depth int
@@ -275,7 +279,7 @@ func New(opts Options) *Session {
 	for k, v := range opts.Env {
 		envCopy[k] = v
 	}
-	allowed := append([]string(nil), opts.AllowedTools...)
+	allowed := applyDenyFilter(opts.AllowedTools, opts.DenyTools)
 	return &Session{
 		ID:                idgen.NewULID(),
 		ParentID:          opts.ParentID,
@@ -299,6 +303,29 @@ func New(opts Options) *Session {
 		allowed:           allowed,
 		updatedAt:         now,
 	}
+}
+
+// applyDenyFilter computes (allowed - denied). When allowed is empty (meaning
+// "all tools"), the result is nil (also "all tools"). When allowed is non-empty
+// and denied is non-empty, denied tools are removed.
+func applyDenyFilter(allowed, denied []string) []string {
+	if len(denied) == 0 {
+		return append([]string(nil), allowed...)
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	ban := make(map[string]struct{}, len(denied))
+	for _, t := range denied {
+		ban[t] = struct{}{}
+	}
+	out := make([]string, 0, len(allowed))
+	for _, t := range allowed {
+		if _, ok := ban[t]; !ok {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // State returns the current state under the session mutex.
