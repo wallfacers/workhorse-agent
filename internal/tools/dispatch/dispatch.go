@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -152,10 +153,12 @@ func (t Tool) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*to
 	if err != nil {
 		return errResult("create child session: " + err.Error()), nil
 	}
-	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelCleanup()
 	defer func() {
-		_ = t.Host.Manager.DeleteSession(cleanupCtx, childSess.ID, 2*time.Second)
+		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := t.Host.Manager.DeleteSession(cctx, childSess.ID, 2*time.Second); err != nil {
+			slog.Warn("dispatch: cleanup delete session", "session", childSess.ID, "err", err)
+		}
 	}()
 
 	collector := newCollector()
