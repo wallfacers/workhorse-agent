@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
+	"github.com/wallfacers/workhorse-agent/internal/prompt"
 	"github.com/wallfacers/workhorse-agent/internal/provider"
 )
 
@@ -18,11 +20,10 @@ import (
 //     can still reason about what went wrong).
 //   - Prepend one synthesised system-role message holding the summary.
 type Compactor struct {
-	Provider     provider.Provider
-	Model        string
-	RecentKeep   int
-	MaxTokens    int
-	SystemPrompt string
+	Provider   provider.Provider
+	Model      string
+	RecentKeep int
+	MaxTokens  int
 }
 
 // CompactionResult captures the before/after token counts so callers can
@@ -100,12 +101,13 @@ func (c *Compactor) Compact(ctx context.Context, history []provider.Message) ([]
 // kept short and instruction-only — we never fold the user's content into the
 // system prompt directly.
 func (c *Compactor) summarise(ctx context.Context, msgs []provider.Message) (string, error) {
+	sys, err := prompt.Compaction.Execute(nil)
+	if err != nil {
+		slog.Warn("compaction: render system prompt failed", "err", err)
+	}
 	req := provider.Request{
-		Model: c.Model,
-		System: "You are a conversation summariser. Read the messages provided " +
-			"and produce a single dense paragraph (≤ 400 tokens) capturing every " +
-			"factual claim, decision, and open question. Do not editorialise. " +
-			"Do not include greetings or meta-commentary about the summary itself.",
+		Model:     c.Model,
+		System:    sys,
 		Messages:  msgs,
 		MaxTokens: c.MaxTokens,
 	}
@@ -126,7 +128,7 @@ func (c *Compactor) summarise(ctx context.Context, msgs []provider.Message) (str
 	}
 	out := strings.TrimSpace(sb.String())
 	if out == "" {
-		return "(compaction summary unavailable)", nil
+		return prompt.CompactionFallback, nil
 	}
 	return out, nil
 }

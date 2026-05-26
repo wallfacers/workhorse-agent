@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -113,7 +114,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	sessMgr = session.NewManager(session.ManagerOptions{
 		Store:         st,
 		MaxConcurrent: cfg.Sessions.MaxConcurrent,
-		RunnerFactory: newRunnerFactory(cfg, providers, fastProviders, registry, permMgr, logger),
+		RunnerFactory: newRunnerFactory(cfg, providers, fastProviders, registry, permMgr, skillCatalog, logger),
 	})
 	dispatchHost.Manager = sessMgr
 
@@ -307,6 +308,7 @@ func newRunnerFactory(
 	defProv, fastProv map[string]provider.Provider,
 	reg *tools.Registry,
 	permMgr *permission.Manager,
+	skillCatalog *skills.Catalog,
 	logger *slog.Logger,
 ) session.RunnerFactory {
 	orch := &agent.Orchestrator{
@@ -356,6 +358,17 @@ func newRunnerFactory(
 		loop.Permissions = permMgr
 		loop.Logger = logger
 		loop.SystemPromptBase = sess.SystemPromptBase
+		// Skill manifest is injected only for top-level sessions; child agents
+		// (Dispatch) get their tool surface from their agent_type definition.
+		if sess.ParentID == "" {
+			if manifest := skills.FormatManifest(skillCatalog); manifest != "" {
+				base := strings.TrimRight(loop.SystemPromptBase, " \t\n")
+				if base != "" {
+					base += "\n\n"
+				}
+				loop.SystemPromptBase = base + manifest
+			}
+		}
 		loop.Config.Model = modelID
 		loop.ToolEnv = &tools.Env{
 			SessionID: sess.ID,

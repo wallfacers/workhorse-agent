@@ -11,6 +11,7 @@ import (
 
 	"github.com/wallfacers/workhorse-agent/internal/idgen"
 	"github.com/wallfacers/workhorse-agent/internal/permission"
+	"github.com/wallfacers/workhorse-agent/internal/prompt"
 	"github.com/wallfacers/workhorse-agent/internal/provider"
 	"github.com/wallfacers/workhorse-agent/internal/session"
 	"github.com/wallfacers/workhorse-agent/internal/tools"
@@ -259,7 +260,7 @@ func (l *Loop) finishCancelledTurn() {
 			blocks = append(blocks, provider.ContentBlock{
 				Type:      provider.BlockToolResult,
 				ToolUseID: p.ID,
-				Output:    CancelledToolOutput,
+				Output:    prompt.CancelledToolOutput,
 				IsError:   true,
 			})
 		}
@@ -290,7 +291,7 @@ func (l *Loop) drainOrphanedPending() {
 		blocks = append(blocks, provider.ContentBlock{
 			Type:      provider.BlockToolResult,
 			ToolUseID: p.ID,
-			Output:    CancelledToolOutput,
+			Output:    prompt.CancelledToolOutput,
 			IsError:   true,
 		})
 	}
@@ -367,7 +368,7 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 
 		req := provider.Request{
 			Model:     l.Config.Model,
-			System:    BuildSystemPrompt(l.SystemPromptBase),
+			System:    prompt.BuildSystemPrompt(l.SystemPromptBase),
 			Messages:  l.Session.History(),
 			Tools:     l.buildToolSchemas(),
 			MaxTokens: l.Config.MaxTokens,
@@ -731,7 +732,7 @@ func (l *Loop) handlePanic(parent context.Context, r any, stack []byte) {
 			blocks = append(blocks, provider.ContentBlock{
 				Type:      provider.BlockToolResult,
 				ToolUseID: p.ID,
-				Output:    CancelledToolOutput,
+				Output:    prompt.CancelledToolOutput,
 				IsError:   true,
 			})
 		}
