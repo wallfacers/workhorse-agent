@@ -18,30 +18,6 @@ When implementing a task from `tasks.md`, mark its checkbox `[x]` immediately
 after the work lands, and keep the surrounding spec text untouched unless the
 task explicitly says to edit it.
 
-## Compliance — read first, then code
-
-This project is built under "path C": independent reimplementation guided by a
-published reference architecture. The license and the public framing depend on
-the following invariants holding everywhere in the repo, in every commit:
-
-1. **No verbatim copies.** Do not paste code, identifiers, error strings,
-   on-disk paths, schema column names, or directory layouts from any other
-   agent runtime, including but not limited to Claude Code's source.
-2. **No transliteration.** Renaming `foo_bar` to `fooBar` does not make a copy
-   original. If you find yourself reproducing a structure piece by piece, stop
-   and re-derive from the spec.
-3. **Public protocols are fine.** MCP 2025-11-25 Streamable HTTP, SSE,
-   Anthropic Messages API, OpenAI Chat Completions API — these are
-   vendor-published interfaces and we follow them exactly. The internal
-   `Message` / `ContentBlock` types are this project's own and bridge to those
-   APIs.
-4. **No vendor SDKs.** Hand-write thin HTTP clients against the published
-   request/response shapes. Specifically: do not import
-   `github.com/anthropics/anthropic-sdk-go` or
-   `github.com/openai/openai-go`.
-5. **No WebSocket library.** The transport is MCP Streamable HTTP (POST + GET
-   SSE) over `net/http`. SSE only.
-
 ## Code style
 
 - Default to no comments. Add one only when the *why* would surprise a future
