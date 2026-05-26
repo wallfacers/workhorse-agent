@@ -146,7 +146,7 @@ func validateTools(t ToolsConfig) error {
 		return fmt.Errorf("invalid config: tools.grep.timeout_seconds must be 0-3600, got %d", t.Grep.TimeoutSeconds)
 	}
 	if t.Grep.Workers < 0 || t.Grep.Workers > 256 {
-		return fmt.Errorf("invalid config: tools.grep.workers must be 0-256 (0 means runtime.NumCPU()), got %d", t.Grep.Workers)
+		return fmt.Errorf("invalid config: tools.grep.workers must be 0-256 (0 means min(runtime.NumCPU(), 8)), got %d", t.Grep.Workers)
 	}
 	for i, pat := range t.Grep.DefaultExcludes {
 		if _, err := path.Match(pat, "x"); err != nil {

@@ -239,7 +239,7 @@ func TestLoad_ResolveHomePaths(t *testing.T) {
 func TestDefault_GrepWorkers(t *testing.T) {
 	c := config.Default()
 	if c.Tools.Grep.Workers != 0 {
-		t.Errorf("default workers must be 0 (= runtime.NumCPU()), got %d", c.Tools.Grep.Workers)
+		t.Errorf("default workers must be 0 (= min(runtime.NumCPU(), 8)), got %d", c.Tools.Grep.Workers)
 	}
 	if !c.Tools.Grep.RespectGitignore {
 		t.Errorf("default respect_gitignore must be true")

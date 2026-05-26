@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -235,6 +237,60 @@ func BenchmarkGrep_SmallMonorepo(b *testing.B) {
 		res, _ := g.Run(context.Background(), e, json.RawMessage(`{"pattern":"TODO"}`))
 		if res.IsError {
 			b.Fatal(res.Output)
+		}
+	}
+}
+
+// buildMonorepoFixture spreads `n` small Go files across ~20-file packages so
+// that directory fanout stays sane at 20k files. Half the files contain a
+// matchable TODO; the other half are filler so the scan does real work.
+func buildMonorepoFixture(b *testing.B, root string, n int) {
+	b.Helper()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		b.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("*.log\nbuild/\n"), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	for i := 0; i < n; i++ {
+		dir := filepath.Join(root, fmt.Sprintf("pkg%04d", i/20))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			b.Fatal(err)
+		}
+		body := "package x\n// TODO line\nfunc F() {}\n// TODO 2\n"
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d.go", i)), []byte(body), 0o600); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// Scaling matrix: (files × workers). Each (files=N) row reuses one tempdir so
+// the 20k-file setup cost isn't paid per worker variant.
+func BenchmarkGrep_Scaling(b *testing.B) {
+	workerSet := map[int]struct{}{1: {}, 2: {}, 4: {}, 8: {}, runtime.NumCPU(): {}}
+	workers := make([]int, 0, len(workerSet))
+	for w := range workerSet {
+		workers = append(workers, w)
+	}
+	sort.Ints(workers)
+
+	for _, files := range []int{200, 2000, 20000} {
+		tmp := b.TempDir()
+		buildMonorepoFixture(b, tmp, files)
+		e := &tools.Env{Workdir: tmp}
+
+		for _, w := range workers {
+			name := fmt.Sprintf("files=%d/workers=%d", files, w)
+			b.Run(name, func(b *testing.B) {
+				g := builtin.Grep{Cfg: config.ToolsGrep{Workers: w, RespectGitignore: true}}
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					res, _ := g.Run(context.Background(), e, json.RawMessage(`{"pattern":"TODO"}`))
+					if res.IsError {
+						b.Fatal(res.Output)
+					}
+				}
+			})
 		}
 	}
 }

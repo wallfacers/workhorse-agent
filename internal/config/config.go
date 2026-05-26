@@ -88,7 +88,7 @@ type ToolTimeout struct {
 // openspec/changes/speed-up-grep/specs/configuration/spec.md.
 type ToolsGrep struct {
 	TimeoutSeconds   int      `yaml:"timeout_seconds"`
-	Workers          int      `yaml:"workers"`           // 0 = runtime.NumCPU(); 1 = serial codepath
+	Workers          int      `yaml:"workers"`           // 0 = min(runtime.NumCPU(), 8); 1 = serial codepath
 	RespectGitignore bool     `yaml:"respect_gitignore"` // overridden by Grep input.ignore_vcs
 	DefaultExcludes  []string `yaml:"default_excludes"`  // nil/empty = builtin list; non-empty = full replacement
 }

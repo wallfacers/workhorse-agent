@@ -101,10 +101,15 @@ func (g Grep) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*to
 		}
 	}
 
-	// Effective settings: input > config > defaults.
+	// Effective settings: input > config > defaults. The single walker goroutine
+	// caps useful parallelism around 8; bigger pools just add scheduling jitter
+	// (see docs/bench-grep-scaling.md).
 	workers := g.Cfg.Workers
 	if workers <= 0 {
 		workers = runtime.NumCPU()
+		if workers > 8 {
+			workers = 8
+		}
 	}
 
 	respectGitignore := g.Cfg.RespectGitignore

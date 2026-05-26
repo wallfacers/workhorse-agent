@@ -150,7 +150,7 @@ Operator overrides (`~/.workhorse-agent/config.yaml`):
 ```yaml
 tools:
   grep:
-    workers: 0                 # 0 = runtime.NumCPU(); 1 = serial codepath
+    workers: 0                 # 0 = min(runtime.NumCPU(), 8); 1 = serial codepath
     respect_gitignore: true    # input.ignore_vcs takes precedence
     default_excludes: []       # non-empty REPLACES the built-in list
 ```

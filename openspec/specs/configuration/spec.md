@@ -205,7 +205,7 @@ debug:
 | 键 | 类型 | 默认 | 含义 |
 |---|---|---|---|
 | `timeout_seconds` | int | 60 | （已有）`Grep` 工具执行超时 |
-| `workers` | int | 0 | 并行扫描 goroutine 数；`0` 表示 `runtime.NumCPU()`；`1` 走串行 codepath |
+| `workers` | int | 0 | 并行扫描 goroutine 数；`0` 表示 `min(runtime.NumCPU(), 8)`（见 docs/bench-grep-scaling.md）；`1` 走串行 codepath |
 | `respect_gitignore` | bool | true | 是否应用 `.gitignore` 栈过滤；input `ignore_vcs` 字段优先级更高 |
 | `default_excludes` | []string | `null` | basename glob 模式数组；`null` 或空时使用内置硬编码清单；非空时**完整替换**内置清单（不是追加） |
 

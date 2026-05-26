@@ -267,7 +267,7 @@ NODE_OPTIONS 判定算法 SHALL 用 `github.com/google/shlex` 或等价 POSIX sh
 
 1. 一个 walker goroutine 执行 `filepath.WalkDir` 并应用上述排除规则
 2. N 个 worker goroutine 并发处理文件（打开 + binary 嗅探 + 行扫描 + regex 匹配）
-3. N 取值 SHALL 优先按 `tools.grep.workers` 配置；`workers <= 0` 或缺省时 SHALL 取 `runtime.NumCPU()`；`workers > 256` SHALL 在启动时校验失败
+3. N 取值 SHALL 优先按 `tools.grep.workers` 配置；`workers <= 0` 或缺省时 SHALL 取 `min(runtime.NumCPU(), 8)`（单 walker goroutine 在 ≥8 worker 后是瓶颈，再大只增调度抖动；见 `docs/bench-grep-scaling.md`）；`workers > 256` SHALL 在启动时校验失败
 4. **`workers=1` SHALL 走完整的串行 codepath**（不创建 channel / 不创建 goroutine 池），作为退化与调试用
 
 无论并行或串行执行，`Grep` 工具的最终输出 SHALL 按 `(rel path 字典序, lineNo 升序)` 双键排序后序列化。同一文件内的命中 SHALL 连续出现且按 lineNo 升序。
