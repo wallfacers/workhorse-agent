@@ -112,18 +112,20 @@ When `userMD` is empty, the `USER:\n...\n---\n` block is omitted entirely (but `
 ```sql
 CREATE VIRTUAL TABLE messages_fts USING fts5(
   content,
-  content='messages',
-  content_rowid='rowid',
-  tokenize = 'unicode61 remove_diacritics 2'
+  tokenize='trigram'
 );
 
-CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+CREATE TRIGGER messages_fts_ai AFTER INSERT ON messages BEGIN
   INSERT INTO messages_fts(rowid, content) VALUES (new.rowid, extract_text(new.content_json));
 END;
 -- + AFTER DELETE, AFTER UPDATE
 ```
 
 `extract_text()` is implemented in Go as a custom SQLite function registered at connection setup. It walks the `content_json` block array and concatenates the `text` field of each text-typed `ContentBlock`, ignoring tool_use/tool_result blocks (those would explode the index with JSON noise).
+
+**Tokenizer revision history**: an earlier draft of D5 specified `tokenize='unicode61 remove_diacritics 2'` and relied on D6's query-layer trigram synthesis to make CJK queries usable. During implementation the tokenizer was changed to FTS5's built-in `trigram` (introduced upstream in SQLite 3.34, and confirmed available in `modernc.org/sqlite` v1.34.5). The motivation: `unicode61` treats each run of CJK characters as a single token (because CJK has no whitespace word breaker in Unicode 61's default rules), which means even a perfect query-layer rewrite cannot recover from an index that has stored "数据库迁移" as one indivisible token. With `trigram` tokenization, the index itself stores rolling 3-grams, so any 3+ character substring becomes matchable.
+
+This change does NOT make D6's query-layer trigram synthesis obsolete — see the updated D6 below for the three independent reasons that machinery is still needed.
 
 **Spike required before implementation**: there are no custom SQLite functions in the codebase today, and `modernc.org/sqlite`'s registration API differs from `mattn/go-sqlite3`. Reading the modernc source: the right path is `sqlite.MustRegisterScalarFunction("extract_text", 1, func(ctx *sqlite.FunctionContext, args []driver.Value) (driver.Value, error) { ... })`, called once during `*sql.DB` setup before any connection is used. This is currently an unverified hypothesis. Task 7.0 (preceding 7.1) is a spike: write a 30-line throwaway that registers a trivial function and call it from a real query; only proceed to 7.1 once the registration mechanism is concretely confirmed. If it turns out registration is per-connection rather than per-DB, the connector setup hook (`sql.Register(...)` wrapper) must be used instead.
 
@@ -132,15 +134,23 @@ END;
 - *Use `content_json` directly as FTS content*: indexes raw JSON keys/escapes. Rejected — pollutes results and inflates index size.
 - *Implement `extract_text` purely in SQL with `json_extract`*: tempting because it removes the custom-function dependency. Rejected — `content_json` is an array of heterogeneous blocks; selecting only `type='text'` blocks and concatenating their `text` fields requires a recursive CTE per trigger fire. Goes from one Go function call to a complex SQL fragment in three triggers, and the JSON contract is more naturally maintained in Go where `ContentBlock` is defined.
 
-### D6: CJK handling via length-gated trigram fallback in the tool, not in tokenizer
+### D6: Query-layer plan builder with explicit trigram phrases and LIKE fallback
 
-**Choice**: Index with `unicode61 remove_diacritics 2` (no `tokenchars`, no `trigram`). The `session_search` tool, on receiving a query, classifies it:
+**Choice**: Even though the index uses the `trigram` tokenizer (D5), the `session_search` tool still runs a query-layer plan builder that classifies the input query and constructs an explicit FTS5 MATCH expression, or falls back to a `LIKE` plan when FTS5 cannot answer correctly:
 
-- Query contains CJK characters AND has ≥3 CJK characters per run → rewrite to FTS5 trigram-style phrase queries (we wrap consecutive CJK runs into trigram MATCH clauses).
-- Query < 3 CJK chars → fall back to `LIKE '%query%'` on `messages.content_json` text portions (slower but correct for short queries).
-- Pure-ASCII query → pass through to FTS5 MATCH unchanged.
+- Query contains CJK characters AND has ≥3 CJK characters per run → emit explicit trigram phrase clauses wrapped in double-quotes, joined with FTS5 `AND` (e.g. `"数据库" AND "据库迁" AND "库迁移"`).
+- Any CJK run shorter than 3 characters anywhere in the query → abandon the FTS plan entirely; fall back to LIKE over `extract_text(content_json)`.
+- Pure-ASCII run → emit a lowercase ASCII literal token (not wrapped in trigram quotes).
 
-**Why**: `unicode61` alone splits CJK badly (each CJK char becomes its own token, drowning relevance). The Hermes approach of compiling a custom trigram tokenizer is cleaner but requires either a custom SQLite build or runtime tokenizer registration — `modernc.org/sqlite` does not expose tokenizer registration in pure Go. Doing the trigram synthesis in the query layer sidesteps that limitation.
+**Why this is still needed under the `trigram` tokenizer**: three independent reasons, each load-bearing:
+
+1. **Short-CJK queries cannot be indexed by trigram at all.** The `trigram` tokenizer requires at least 3 characters to produce a single token. A 2-character query like `"迁移"` would produce zero tokens and `MATCH "迁移"` returns nothing — even though "迁移" obviously appears in the corpus. The LIKE fallback is the ONLY correct path for these queries; nothing else recovers them.
+
+2. **Explicit phrase wrapping shields against FTS5 query-syntax injection.** Direct `MATCH ?` of arbitrary user input is dangerous: tokens like `AND`, `OR`, `NOT`, `NEAR`, leading `*`, unbalanced quotes, etc. are interpreted as FTS5 query operators or cause syntax errors. By constructing the MATCH expression token-by-token from a classified plan and quoting every CJK trigram, the tool guarantees the user's literal query bytes can never escape into the query grammar.
+
+3. **Mixed ASCII+CJK queries get a tighter plan than tokenizer-default behavior.** With raw `MATCH ?`, the trigram tokenizer would also apply 3-gram splitting to ASCII portions (e.g. `"hello"` → `"hel" "ell" "llo"`), which over-matches against unrelated tokens that happen to share trigrams. The plan builder keeps ASCII runs as whole tokens and reserves trigram synthesis for CJK runs only — matching how natural-language queries actually intend to be parsed.
+
+**Equivalence note**: for pure long-CJK queries (no ASCII, no short runs), the plan builder's output IS semantically equivalent to what the trigram tokenizer would produce from raw `MATCH ?`. The redundancy is the price of (2) and (3); we accept it because the cost is a handful of string concatenations per query and the alternative is implicit, fragile behavior.
 
 **Algorithm** (reference for task breakdown):
 
@@ -180,7 +190,7 @@ Output: FTS-eligible matchExpr OR fallback flag → LIKE plan
 
 **Implementation breakdown**: this is the largest single piece of new logic. It must be split across tasks (see tasks.md §8): (a) Unicode range classifier and run tokenizer; (b) trigram synthesizer; (c) ASCII+CJK combiner producing the final FTS expression; (d) LIKE fallback executor; (e) test fixtures with CJK Ext-A characters and Hangul/Kana.
 
-**Alternative**: Build a separate FTS table with `tokenize='trigram'`. Rejected for MVP — doubles index storage; deferrable if CJK recall proves insufficient. **Risk threshold**: if observed CJK recall during dogfooding falls below 80% of LIKE-baseline expected matches on representative queries, abandon the query-layer trigram approach in favor of a trigram-tokenized side-table.
+**Risk threshold**: if observed CJK recall during dogfooding falls below 80% of LIKE-baseline expected matches on representative queries, revisit the plan builder — likely culprits are the short-run threshold (3 chars may be too aggressive for Hangul jamo) or the ASCII-vs-CJK split point in mixed queries.
 
 ### D7: `session_search` returns raw matches + context, no LLM summary
 
@@ -258,7 +268,7 @@ The lock file is created on first use with mode `0600` and is never removed (an 
 - **Risk**: Backfilling FTS on a multi-GB existing `messages` table stalls startup → **Mitigation**: D8 progress logging; follow-up plan to make backfill lazy if reports come in.
 - **Risk**: User mutates `MEMORY.md` mid-session via an external editor and expects it to take effect → **Mitigation**: documented behavior; `memory_read` re-reads disk so the tool can surface drift; the snapshot-vs-disk gap is also surfaced in `--debug` logs.
 - **Risk**: Char-limit too tight for power users → **Mitigation**: configurable via `memory.memory_char_limit` / `memory.user_char_limit`; defaults match Hermes but operator can raise them.
-- **Trade-off**: D6's query-layer CJK trigram synthesis is uglier than a custom tokenizer but keeps us on pure-Go SQLite. Acceptable for MVP; revisit if recall complaints arise. **Concrete kill-switch**: if dogfooding shows < 80% CJK recall relative to a LIKE-only baseline on representative queries, switch to a `tokenize='trigram'` side-table within one follow-up change.
+- **Trade-off**: the index uses FTS5's built-in `trigram` tokenizer (D5), and the query-layer plan builder (D6) layers an explicit trigram-phrase construction on top of that. For pure long-CJK queries the two layers produce semantically identical MATCH expressions, which is redundant but cheap. We accept the redundancy because the plan builder is what makes short-CJK queries (LIKE fallback), syntax safety (no FTS5 operator injection), and mixed-language query precision possible — and none of those would be served by removing it. **Concrete kill-switch**: if dogfooding shows < 80% CJK recall relative to a LIKE-only baseline on representative queries, revisit the plan builder thresholds (Hangul jamo runs especially) rather than the tokenizer.
 - **Trade-off**: D8 backfill is synchronous and could be slow on huge histories; we accept this because the alternative (lazy backfill with a "is this session indexed yet?" check on every query) adds complexity that the current install base doesn't justify.
 - **Trade-off**: Frozen-snapshot semantics will confuse users at first ("I wrote to memory, why doesn't the agent know?"). Mitigation: `memory_write` response includes a `next_session_effective: true` hint string the model can relay to the user.
 
