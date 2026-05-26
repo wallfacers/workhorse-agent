@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"path"
 )
 
 // Validate enforces the numeric ranges and string enums listed in the
@@ -143,6 +144,14 @@ func validateTools(t ToolsConfig) error {
 	}
 	if t.Grep.TimeoutSeconds < 0 || t.Grep.TimeoutSeconds > 3600 {
 		return fmt.Errorf("invalid config: tools.grep.timeout_seconds must be 0-3600, got %d", t.Grep.TimeoutSeconds)
+	}
+	if t.Grep.Workers < 0 || t.Grep.Workers > 256 {
+		return fmt.Errorf("invalid config: tools.grep.workers must be 0-256 (0 means runtime.NumCPU()), got %d", t.Grep.Workers)
+	}
+	for i, pat := range t.Grep.DefaultExcludes {
+		if _, err := path.Match(pat, "x"); err != nil {
+			return fmt.Errorf("invalid config: tools.grep.default_excludes[%d] is not a valid glob: %v (pattern: %q)", i, err, pat)
+		}
 	}
 	return nil
 }

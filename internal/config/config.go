@@ -75,12 +75,22 @@ type ToolsConfig struct {
 	ToolResultMaxBytes    int         `yaml:"tool_result_max_bytes"`
 	Bash                  ToolTimeout `yaml:"bash"`
 	Read                  ToolTimeout `yaml:"read"`
-	Grep                  ToolTimeout `yaml:"grep"`
+	Grep                  ToolsGrep   `yaml:"grep"`
 	DefaultAllowedTools   []string    `yaml:"default_allowed_tools"`
 }
 
 type ToolTimeout struct {
 	TimeoutSeconds int `yaml:"timeout_seconds"`
+}
+
+// ToolsGrep configures the Grep tool. Beyond the shared timeout it carries
+// the gitignore + parallel-walker knobs documented in
+// openspec/changes/speed-up-grep/specs/configuration/spec.md.
+type ToolsGrep struct {
+	TimeoutSeconds   int      `yaml:"timeout_seconds"`
+	Workers          int      `yaml:"workers"`           // 0 = runtime.NumCPU(); 1 = serial codepath
+	RespectGitignore bool     `yaml:"respect_gitignore"` // overridden by Grep input.ignore_vcs
+	DefaultExcludes  []string `yaml:"default_excludes"`  // nil/empty = builtin list; non-empty = full replacement
 }
 
 type StoreConfig struct {
@@ -159,7 +169,12 @@ func Default() Config {
 			ToolResultMaxBytes:    1 << 20,
 			Bash:                  ToolTimeout{TimeoutSeconds: 120},
 			Read:                  ToolTimeout{TimeoutSeconds: 30},
-			Grep:                  ToolTimeout{TimeoutSeconds: 60},
+			Grep: ToolsGrep{
+				TimeoutSeconds:   60,
+				Workers:          0,
+				RespectGitignore: true,
+				DefaultExcludes:  nil,
+			},
 		},
 		Store:    StoreConfig{Path: "~/.workhorse-agent/state.db", BusyTimeoutMs: 5000},
 		Sessions: SessionsConfig{MaxConcurrent: 50},

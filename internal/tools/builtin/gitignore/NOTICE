@@ -1,0 +1,42 @@
+workhorse-agent / internal/tools/builtin/gitignore
+====================================================
+
+This package is a vendored copy of three source files from go-git, used here
+to provide .gitignore pattern matching for the Grep tool without pulling
+the full go-git module into go.mod.
+
+Upstream source
+---------------
+Repository : https://github.com/go-git/go-git
+Tag        : v5.19.1
+Commit SHA : 3c3be601aa6c
+Path       : plumbing/format/gitignore
+Retrieved  : 2026-05-26
+
+Files included
+--------------
+- pattern.go   (verbatim, no modifications)
+- matcher.go   (verbatim, no modifications)
+- doc.go       (verbatim, no modifications)
+- LICENSE      (Apache-2.0, from go-git repository root)
+
+Files NOT included
+------------------
+- dir.go / dir_test.go: depend on go-billy filesystem abstraction; not needed
+  here because workhorse-agent has its own walker (internal/tools/builtin).
+- pattern_test.go / matcher_test.go: upstream tests use the gopkg.in/check.v1
+  framework, which would re-introduce a transitive dependency. Equivalent
+  coverage is provided by tests in this directory written against the standard
+  library `testing` package.
+
+Modifications
+-------------
+None to vendored files. If we ever need to patch, record the change here.
+
+License
+-------
+The vendored files are licensed under the Apache License, Version 2.0.
+See LICENSE in this directory for the full text.
+
+Original copyright holder: go-git authors. See go-git's repository for the
+complete list of contributors.

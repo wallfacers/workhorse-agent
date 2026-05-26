@@ -235,6 +235,78 @@ func TestLoad_ResolveHomePaths(t *testing.T) {
 	}
 }
 
+// Scenario from speed-up-grep: 默认值正确装配
+func TestDefault_GrepWorkers(t *testing.T) {
+	c := config.Default()
+	if c.Tools.Grep.Workers != 0 {
+		t.Errorf("default workers must be 0 (= runtime.NumCPU()), got %d", c.Tools.Grep.Workers)
+	}
+	if !c.Tools.Grep.RespectGitignore {
+		t.Errorf("default respect_gitignore must be true")
+	}
+	if c.Tools.Grep.DefaultExcludes != nil {
+		t.Errorf("default default_excludes must be nil (use builtin list), got %v", c.Tools.Grep.DefaultExcludes)
+	}
+}
+
+// Scenario from speed-up-grep configuration spec: yaml 解析新键
+func TestLoad_GrepKeysFromYAML(t *testing.T) {
+	path := writeYAML(t, `
+tools:
+  grep:
+    workers: 4
+    respect_gitignore: false
+    default_excludes: ["only_this", "*.bin"]
+`)
+	cfg, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Tools.Grep.Workers != 4 {
+		t.Errorf("workers: got %d, want 4", cfg.Tools.Grep.Workers)
+	}
+	if cfg.Tools.Grep.RespectGitignore {
+		t.Errorf("respect_gitignore: got true, want false")
+	}
+	if len(cfg.Tools.Grep.DefaultExcludes) != 2 ||
+		cfg.Tools.Grep.DefaultExcludes[0] != "only_this" ||
+		cfg.Tools.Grep.DefaultExcludes[1] != "*.bin" {
+		t.Errorf("default_excludes: got %v", cfg.Tools.Grep.DefaultExcludes)
+	}
+}
+
+// Scenario: tools.grep.workers 越界启动失败
+func TestLoad_RejectsGrepWorkersOutOfRange(t *testing.T) {
+	path := writeYAML(t, `
+tools:
+  grep:
+    workers: 1000
+`)
+	_, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err == nil {
+		t.Fatal("expected workers=1000 to fail validation")
+	}
+	if !strings.Contains(err.Error(), "tools.grep.workers") {
+		t.Errorf("error message should mention tools.grep.workers, got: %v", err)
+	}
+}
+
+// Scenario: 非法 default_excludes glob 启动失败
+func TestLoad_RejectsInvalidGrepDefaultExcludes(t *testing.T) {
+	path := writeYAML(t, `
+tools:
+  grep:
+    default_excludes: ["[bad"]
+`)
+	_, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err == nil {
+		t.Fatal("expected invalid glob to fail validation")
+	}
+	if !strings.Contains(err.Error(), "default_excludes[0]") {
+		t.Errorf("error should pinpoint the offending entry, got: %v", err)
+	}
+}
+
 // helpers
 
 func writeYAML(t *testing.T, body string) string {

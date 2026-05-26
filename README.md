@@ -119,6 +119,46 @@ family** as the session's main model — Anthropic sessions compact with Haiku,
 OpenAI sessions compact with `gpt-4o-mini`. Compaction never crosses vendors.
 See `internal/provider/policy.go` (`ModelPolicy.PickFast`).
 
+## Grep behavior
+
+The built-in `Grep` tool ships gitignore-aware by default. On a typical Node
+or Python monorepo the practical effect is "search the source, not the
+build output":
+
+- `.git/`, `.hg/`, `.svn/` directories are **always** skipped (hard rule).
+- Dot-files and dot-dirs are skipped unless `hidden: true` is set per request.
+- Built-in default excludes (full list in
+  `internal/tools/builtin/gitignore_walker.go::builtinDefaultExcludes`)
+  prune `node_modules/`, `vendor/`, `dist/`, `build/`, `target/`, framework
+  caches (`.next/`, `.turbo/`, `.mypy_cache/` …), coverage reports,
+  `package-lock.json`, `*.min.js`, `*.lock`, `.DS_Store`, and similar.
+  These apply regardless of the `ignore_vcs` flag.
+- If the session workdir lives in a git repo, `.gitignore` is honored from the
+  repo root down to the workdir, including `.git/info/exclude` and nested
+  re-includes (`!important.log`).
+- Binary files are detected by a NUL byte in the first 8 KiB and silently
+  skipped — no garbled bytes leak into `tool_result.output`.
+
+Per-request overrides (input fields):
+
+- `ignore_vcs: false` — do not apply `.gitignore` (default excludes still
+  apply; hard VCS skip still applies).
+- `hidden: true` — walk into dot-files and dot-dirs.
+
+Operator overrides (`~/.workhorse-agent/config.yaml`):
+
+```yaml
+tools:
+  grep:
+    workers: 0                 # 0 = runtime.NumCPU(); 1 = serial codepath
+    respect_gitignore: true    # input.ignore_vcs takes precedence
+    default_excludes: []       # non-empty REPLACES the built-in list
+```
+
+The parallel walker pool (one walker goroutine + N workers) and
+gitignore-driven pruning together give a ~10–20× speedup on multi-thousand
+file repositories versus the original serial scan.
+
 ## Documentation
 
 - [Protocol reference](docs/protocol.md) — HTTP REST surface and Streamable

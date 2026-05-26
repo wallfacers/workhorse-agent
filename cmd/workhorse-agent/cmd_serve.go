@@ -226,6 +226,7 @@ func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skill
 		builtin.Edit{},
 		builtin.Grep{
 			Timeout: time.Duration(cfg.Tools.Grep.TimeoutSeconds) * time.Second,
+			Cfg:     cfg.Tools.Grep,
 		},
 		bash.Bash{
 			DefaultTimeoutSeconds: cfg.Tools.Bash.TimeoutSeconds,

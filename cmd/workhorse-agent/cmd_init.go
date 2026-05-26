@@ -184,7 +184,15 @@ func renderConfigYAML(a initAnswers) []byte {
 
 	sb.WriteString("logging:\n")
 	sb.WriteString("  level: info\n")
-	sb.WriteString("  format: json\n")
+	sb.WriteString("  format: json\n\n")
+
+	// Grep knobs are documented but not set, so defaults flow through.
+	// Uncomment any line below to override.
+	sb.WriteString("# tools:\n")
+	sb.WriteString("#   grep:\n")
+	sb.WriteString("#     workers: 0                # 0 = runtime.NumCPU(); 1 = serial fallback\n")
+	sb.WriteString("#     respect_gitignore: true   # apply .gitignore + builtin default_excludes\n")
+	sb.WriteString("#     default_excludes: []      # non-empty REPLACES builtin list entirely\n")
 
 	return []byte(sb.String())
 }
