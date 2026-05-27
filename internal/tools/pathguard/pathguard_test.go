@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wallfacers/workhorse-agent/internal/tools/pathguard"
@@ -118,5 +119,84 @@ func TestOpenRead_NoFollow(t *testing.T) {
 		// On platforms without O_NOFOLLOW the package falls back to Lstat,
 		// which we verify reports the symlink.
 		t.Errorf("OpenRead on a symlink leaf should fail")
+	}
+}
+
+// --- Memory resolver tests (Tasks 3.3-3.5) ---
+
+func TestResolveMemory_InvalidKind(t *testing.T) {
+	_, err := pathguard.ResolveMemory(t.TempDir(), "bad")
+	if !errors.Is(err, pathguard.ErrInvalidMemoryKind) {
+		t.Errorf("expected ErrInvalidMemoryKind, got %v", err)
+	}
+}
+
+func TestResolveMemoryForWrite_InvalidKind(t *testing.T) {
+	_, err := pathguard.ResolveMemoryForWrite(t.TempDir(), "../escape")
+	if !errors.Is(err, pathguard.ErrInvalidMemoryKind) {
+		t.Errorf("expected ErrInvalidMemoryKind, got %v", err)
+	}
+}
+
+func TestResolveMemory_ValidKinds(t *testing.T) {
+	profileDir := t.TempDir()
+	memDir := filepath.Join(profileDir, "memories")
+	os.MkdirAll(memDir, 0o700)
+
+	for _, kind := range []string{"memory", "user"} {
+		t.Run(kind, func(t *testing.T) {
+			got, err := pathguard.ResolveMemoryForWrite(profileDir, kind)
+			if err != nil {
+				t.Fatalf("ResolveMemoryForWrite(%q): %v", kind, err)
+			}
+			if !strings.Contains(got, "memories") {
+				t.Errorf("path should contain 'memories', got %q", got)
+			}
+			expected := "MEMORY.md"
+			if kind == "user" {
+				expected = "USER.md"
+			}
+			if !strings.HasSuffix(got, expected) {
+				t.Errorf("path should end with %s, got %q", expected, got)
+			}
+		})
+	}
+}
+
+func TestResolveMemory_SymlinkEscape(t *testing.T) {
+	profileDir := t.TempDir()
+	memDir := filepath.Join(profileDir, "memories")
+	os.MkdirAll(memDir, 0o700)
+
+	outside := t.TempDir()
+	outsideFile := filepath.Join(outside, "secret.md")
+	os.WriteFile(outsideFile, []byte("nope"), 0o600)
+
+	link := filepath.Join(memDir, "MEMORY.md")
+	if err := os.Symlink(outsideFile, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, err := pathguard.Resolve(profileDir, filepath.Join("memories", "MEMORY.md"))
+	if !errors.Is(err, pathguard.ErrPathEscape) {
+		t.Errorf("symlinked memory file should be rejected, got %v", err)
+	}
+}
+
+func TestResolveMemory_CannotEscapeWorkdir(t *testing.T) {
+	// Memory helpers are rooted at profileDir/memories, not session workdir.
+	profileDir := t.TempDir()
+	memDir := filepath.Join(profileDir, "memories")
+	os.MkdirAll(memDir, 0o700)
+
+	// A memory tool should not be able to resolve into workdir via kind
+	_, err := pathguard.ResolveMemory(profileDir, "memory")
+	// File doesn't exist yet, so this will fail with not-found, not escape
+	if err == nil {
+		t.Error("expected error for non-existent file")
+	}
+	// But importantly, it should NOT be ErrPathEscape since memories/ is valid
+	if errors.Is(err, pathguard.ErrPathEscape) {
+		t.Errorf("memory kind should resolve within memories dir, got %v", err)
 	}
 }

@@ -31,6 +31,7 @@ func ResolvePaths(c *Config) error {
 		&c.MCP.ConfigPath,
 		&c.Skills.Dir,
 		&c.Agents.Dir,
+		&c.Memory.Dir,
 	} {
 		v, err := ExpandPath(*slot)
 		if err != nil {

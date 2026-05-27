@@ -17,6 +17,7 @@ type Config struct {
 	MCP       MCPConfig       `yaml:"mcp"`
 	Skills    PathConfig      `yaml:"skills"`
 	Agents    PathConfig      `yaml:"agents"`
+	Memory    MemoryConfig    `yaml:"memory"`
 	Logging   LoggingConfig   `yaml:"logging"`
 	Debug     DebugConfig     `yaml:"debug"`
 }
@@ -120,6 +121,12 @@ type DebugConfig struct {
 	Enabled bool `yaml:"enabled"`
 }
 
+type MemoryConfig struct {
+	Dir             string `yaml:"dir"`
+	MemoryCharLimit int    `yaml:"memory_char_limit"`
+	UserCharLimit   int    `yaml:"user_char_limit"`
+}
+
 // Default returns a fully-populated Config using the built-in defaults
 // described in the configuration spec.
 func Default() Config {
@@ -182,6 +189,7 @@ func Default() Config {
 		Skills:   PathConfig{Dir: "~/.workhorse-agent/skills"},
 		Agents:   PathConfig{Dir: "~/.workhorse-agent/agents"},
 		Logging:  LoggingConfig{Level: "info", Format: "json", LogLLMPayload: false},
+		Memory:   MemoryConfig{MemoryCharLimit: 2200, UserCharLimit: 1375},
 		Debug:    DebugConfig{Enabled: false},
 	}
 }

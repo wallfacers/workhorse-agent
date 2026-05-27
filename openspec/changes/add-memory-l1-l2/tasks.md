@@ -33,7 +33,7 @@
 - [x] 4.2 Wire concatenation at `internal/agent/loop.go:371`: prepend `memory.Block(session.snapshot)` (with one blank line separator iff non-empty) to `l.SystemPromptBase` before calling `prompt.BuildSystemPrompt`. `prompt.BuildSystemPrompt`'s signature is **unchanged**
 - [x] 4.3 Tests on `memory.Block`: both empty → ""; only USER → contains USER section, no MEMORY section, no `---`; only MEMORY → contains MEMORY section, no USER section, no `---`; both present → exact byte sequence matches a golden string
 - [x] 4.4 Test: calling `memory.Block` twice with the same snapshot returns byte-identical strings (cache prefix stability)
-- [x] 4.5 Negative test: confirm `internal/prompt` package source has zero new imports and `BuildSystemPrompt`'s signature is untouched (a simple grep-based test in CI is sufficient — this is to prevent silent regression of the boundary)
+- [x] 4.5 Negative test: confirm `internal/prompt` package source has zero new imports and `BuildSystemPrompt`'s signature is untouched (a simple grep-based test in CI is sufficient — this is to prevent silent regression of the boundary). Implemented at `internal/prompt/boundary_test.go` via Go AST parsing: blocks any project-internal import; fails if `BuildSystemPrompt`'s `func(string) string` signature drifts
 
 ## 5. Agent loop wiring
 
@@ -89,7 +89,7 @@
 
 - [x] 9.1 End-to-end test: spin up server, create session A, write memory via `memory_write`, end session, create session B, assert session B's first model call's system prompt contains the written content while session A's never did
 - [x] 9.2 End-to-end test: send messages in two sessions, run `session_search` from a third session, verify hits + context structure end-to-end via HTTP. **Review note (2026-05-27)**: the current assertion checks only `message_id` and `session_id` presence; the implementation correctly returns `role`, `snippet`, `created_at`, `context_before`, `context_after` but the test does not assert their shape. Tracked as §9.7 follow-up; not a blocker because the spec Scenario "Result shape includes context messages" is satisfied behaviorally by the implementation
-- [ ] 9.7 Strengthen §9.2 assertions: assert every field of the hit object (`session_id`, `message_id`, `role`, `snippet`, `created_at`, `context_before`, `context_after`) and assert `context_before`/`context_after` lengths and message contents against the seeded fixture. Cheap and high-value follow-up to lock down regression coverage
+- [x] 9.7 Strengthen §9.2 assertions: assert every field of the hit object (`session_id`, `message_id`, `role`, `snippet`, `created_at`, `context_before`, `context_after`) and assert `context_before`/`context_after` lengths and message contents against the seeded fixture. Implemented at `test/e2e/e2e_test.go::TestE2E_SessionSearchHitShape`: seeds 5 messages with controlled timestamps in one session, runs search with context_before=2/context_after=2, asserts the full hit shape including context array lengths and the `message_id` of each adjacent message. Pinned interior fragment (`edlephras`) for snippet assertion to survive trigram-boundary trimming
 - [x] 9.3 Update `CLAUDE.md` with a short "Memory subsystem" section pointing at `internal/memory/`, the prompt slot, and the new tools
 - [x] 9.4 Add `~/.workhorse-agent/memories/` to the documented profile-dir layout (wherever that is currently listed)
 - [x] 9.5 Run `golangci-lint run` and `gofumpt -l .`; address any new findings introduced by this change

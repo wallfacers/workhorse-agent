@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wallfacers/workhorse-agent/internal/idgen"
+	"github.com/wallfacers/workhorse-agent/internal/memory"
 	"github.com/wallfacers/workhorse-agent/internal/permission"
 	"github.com/wallfacers/workhorse-agent/internal/prompt"
 	"github.com/wallfacers/workhorse-agent/internal/provider"
@@ -366,9 +367,14 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 			}
 		}
 
+		base := l.SystemPromptBase
+		if block := memory.Block(l.Session.MemorySnapshot); block != "" {
+			base = block + "\n\n" + base
+		}
+
 		req := provider.Request{
 			Model:     l.Config.Model,
-			System:    prompt.BuildSystemPrompt(l.SystemPromptBase),
+			System:    prompt.BuildSystemPrompt(base),
 			Messages:  l.Session.History(),
 			Tools:     l.buildToolSchemas(),
 			MaxTokens: l.Config.MaxTokens,

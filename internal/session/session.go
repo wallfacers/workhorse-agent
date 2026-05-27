@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/wallfacers/workhorse-agent/internal/idgen"
+	"github.com/wallfacers/workhorse-agent/internal/memory"
 	"github.com/wallfacers/workhorse-agent/internal/provider"
 	"github.com/wallfacers/workhorse-agent/internal/store"
 )
@@ -215,6 +216,11 @@ type Session struct {
 	// store, when non-nil and !Ephemeral, is the authoritative source for
 	// event idx (SQLite AUTOINCREMENT). Set via Options.Store at construction.
 	store store.Store
+
+	// MemorySnapshot holds the frozen memory content loaded at session start.
+	// Immutable for the session lifetime; mid-session memory_write calls do not
+	// affect this value.
+	MemorySnapshot *memory.Snapshot
 
 	mu        sync.Mutex
 	state     State

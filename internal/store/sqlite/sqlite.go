@@ -71,12 +71,23 @@ func Open(ctx context.Context, opts Options) (*Store, error) {
 	}
 
 	s := &Store{db: db}
+
+	if err := ProbeFTS5(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	if err := s.migrate(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
 }
+
+// DB returns the underlying *sql.DB. Intended for SQLite-specific consumers
+// only (e.g., session_search FTS5 queries). Store remains the portable
+// boundary for everything else.
+func (s *Store) DB() *sql.DB { return s.db }
 
 // Close closes the underlying handle. Safe to call multiple times.
 func (s *Store) Close() error {

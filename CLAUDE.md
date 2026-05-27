@@ -91,3 +91,23 @@ Session/message/agent IDs are ULIDs.
 `config.yaml` does NOT hot-reload (requires restart). Only
 `~/.workhorse-agent/agents/*.yaml` and `~/.workhorse-agent/skills/*/skill.yaml` are
 re-scanned dynamically.
+
+## Memory subsystem
+
+Two memory layers ship with the current version:
+
+- **L1 Prompt Memory**: `internal/memory/` owns `Snapshot`, `Writer`, and `Block`.
+  Two files (`MEMORY.md` and `USER.md`) live under `~/.workhorse-agent/memories/`.
+  Content is loaded once at session start as an immutable snapshot and injected
+  into the system prompt at the agent-loop call site (`internal/agent/loop.go`).
+  Mid-session writes via `memory_write` update disk but do **not** mutate the
+  snapshot (preserves Anthropic prompt-cache hit rate). Char limits are enforced
+  at write time (default: MEMORY ≤ 2200, USER ≤ 1375 code points).
+
+- **L2 Session Archive**: FTS5 virtual table `messages_fts` mirrors `messages`
+  via triggers; backfilled on migration. The `session_search` tool (`internal/tools/sessionsearch/`)
+  runs MATCH queries with CJK trigram synthesis and LIKE fallback, returning raw
+  matches + context. No LLM summarization.
+
+Three new built-in tools: `memory_read`, `memory_write`, `session_search`. They
+are registered through the existing tool registry and gated by `allowed_tools`.

@@ -34,6 +34,9 @@ func Validate(c Config) error {
 	if err := validateStore(c.Store); err != nil {
 		return err
 	}
+	if err := validateMemory(c.Memory); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -180,6 +183,16 @@ func validateStore(s StoreConfig) error {
 	}
 	if s.BusyTimeoutMs < 0 || s.BusyTimeoutMs > 60_000 {
 		return fmt.Errorf("invalid config: store.busy_timeout_ms must be 0-60000, got %d", s.BusyTimeoutMs)
+	}
+	return nil
+}
+
+func validateMemory(m MemoryConfig) error {
+	if m.MemoryCharLimit <= 0 {
+		return fmt.Errorf("invalid config: memory.memory_char_limit must be > 0, got %d", m.MemoryCharLimit)
+	}
+	if m.UserCharLimit <= 0 {
+		return fmt.Errorf("invalid config: memory.user_char_limit must be > 0, got %d", m.UserCharLimit)
 	}
 	return nil
 }

@@ -307,6 +307,54 @@ tools:
 	}
 }
 
+func TestDefault_MemoryConfig(t *testing.T) {
+	c := config.Default()
+	if c.Memory.MemoryCharLimit != 2200 {
+		t.Errorf("memory.memory_char_limit: got %d, want 2200", c.Memory.MemoryCharLimit)
+	}
+	if c.Memory.UserCharLimit != 1375 {
+		t.Errorf("memory.user_char_limit: got %d, want 1375", c.Memory.UserCharLimit)
+	}
+}
+
+func TestLoad_RejectsMemoryCharLimitZero(t *testing.T) {
+	path := writeYAML(t, `
+memory:
+  memory_char_limit: 0
+`)
+	_, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err == nil {
+		t.Fatal("expected validation error for memory_char_limit=0")
+	}
+	if !strings.Contains(err.Error(), "memory.memory_char_limit must be > 0") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestLoad_RejectsUserCharLimitNegative(t *testing.T) {
+	path := writeYAML(t, `
+memory:
+  user_char_limit: -1
+`)
+	_, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err == nil {
+		t.Fatal("expected validation error for user_char_limit=-1")
+	}
+	if !strings.Contains(err.Error(), "memory.user_char_limit must be > 0") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestLoad_MemoryDirOptional(t *testing.T) {
+	cfg, err := config.Load(config.LoadOptions{LookupEnv: emptyEnv})
+	if err != nil {
+		t.Fatalf("load without memory.dir: %v", err)
+	}
+	if cfg.Memory.Dir != "" {
+		t.Errorf("memory.dir should default to empty, got %q", cfg.Memory.Dir)
+	}
+}
+
 // helpers
 
 func writeYAML(t *testing.T, body string) string {

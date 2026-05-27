@@ -20,6 +20,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/config"
 	"github.com/wallfacers/workhorse-agent/internal/coord"
 	"github.com/wallfacers/workhorse-agent/internal/idgen"
+	"github.com/wallfacers/workhorse-agent/internal/memory"
 	"github.com/wallfacers/workhorse-agent/internal/permission"
 	"github.com/wallfacers/workhorse-agent/internal/provider"
 	"github.com/wallfacers/workhorse-agent/internal/provider/anthropic"
@@ -32,6 +33,8 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/tools/bash"
 	"github.com/wallfacers/workhorse-agent/internal/tools/builtin"
 	"github.com/wallfacers/workhorse-agent/internal/tools/dispatch"
+	"github.com/wallfacers/workhorse-agent/internal/tools/memorytool"
+	"github.com/wallfacers/workhorse-agent/internal/tools/sessionsearch"
 )
 
 // runServe boots the HTTP listener and the agent runtime. The wiring follows
@@ -80,7 +83,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	// 3. Tool registry (built-ins).
 	registry := tools.NewRegistry()
 	skillCatalog := skills.Scan(cfg.Skills.Dir)
-	if err := registerBuiltinTools(registry, cfg, skillCatalog); err != nil {
+	if err := registerBuiltinTools(registry, cfg, skillCatalog, st); err != nil {
 		_ = st.Close()
 		return fmt.Errorf("serve: register tools: %w", err)
 	}
@@ -90,7 +93,8 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	// events). Filled in before any tool actually runs.
 	var sessMgr *session.Manager
 
-	permMgr := permission.New(st,
+	permMgr := permission.New(
+		st,
 		permissionPromptUsingSessions(&sessMgr, logger),
 		dangerousCommandPredicate(),
 		time.Duration(cfg.Agent.PermissionRequestTimeoutSeconds)*time.Second,
@@ -217,7 +221,7 @@ func buildProviderRegistry(cfg config.Config) (def, fast map[string]provider.Pro
 	return def, fast, nil
 }
 
-func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skills.Catalog) error {
+func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skills.Catalog, st *sqlite.Store) error {
 	for _, t := range []tools.Tool{
 		builtin.Read{
 			MaxBytes: cfg.Tools.ToolResultMaxBytes,
@@ -235,12 +239,36 @@ func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skill
 			BaseEnv:               os.Environ(),
 		},
 		skills.NewLoadSkill(catalog),
+		&memorytool.Read{
+			ProfileDir:  profileDir(cfg),
+			MemoryLimit: cfg.Memory.MemoryCharLimit,
+			UserLimit:   cfg.Memory.UserCharLimit,
+		},
+		&memorytool.Write{
+			ProfileDir:  profileDir(cfg),
+			MemoryLimit: cfg.Memory.MemoryCharLimit,
+			UserLimit:   cfg.Memory.UserCharLimit,
+		},
+		&sessionsearch.Tool{DB: st.DB()},
 	} {
 		if err := reg.Register(t); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func profileDir(cfg config.Config) string {
+	dir := cfg.Memory.Dir
+	if dir != "" {
+		return dir
+	}
+	dir = cfg.Store.Path
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		return filepath.Join(home, ".workhorse-agent")
+	}
+	return filepath.Dir(dir)
 }
 
 func dangerousCommandPredicate() func(tool, resource string) (bool, string) {
@@ -332,7 +360,11 @@ func newRunnerFactory(
 	defaultProvName := cfg.Providers.Default
 	defaultModel := cfg.Models.Default
 	defaultFastModel := cfg.Models.Fast
+	memLoader := &memory.Loader{ProfileDir: profileDir(cfg)}
 	return func(sess *session.Session) session.Runner {
+		snap, _ := memLoader.Load()
+		sess.MemorySnapshot = snap
+
 		provName := sess.ProviderName
 		if provName == "" {
 			provName = defaultProvName
