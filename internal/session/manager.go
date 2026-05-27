@@ -76,6 +76,12 @@ func NewManager(opts ManagerOptions) *Manager {
 // its agent goroutine, and tracks it under the manager. Returns
 // ErrTooManyConcurrent when the cap is reached.
 func (m *Manager) CreateSession(ctx context.Context, opts Options) (*Session, error) {
+	workdir, err := ValidateWorkdir(opts.Workdir)
+	if err != nil {
+		return nil, err
+	}
+	opts.Workdir = workdir
+
 	if opts.Store == nil {
 		opts.Store = m.store
 	}

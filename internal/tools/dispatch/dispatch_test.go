@@ -336,3 +336,29 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+func TestDispatch_WorkdirEscalationRejected(t *testing.T) {
+	h := newDispatchHarness(t, t.TempDir())
+	parent := h.parent(t, session.Options{Workdir: "/tmp"})
+	defer h.mgr.DeleteSession(context.Background(), parent.ID, time.Second)
+
+	env := &tools.Env{SessionID: parent.ID, Workdir: parent.Workdir}
+
+	cases := []struct {
+		name    string
+		workdir string
+	}{
+		{"root", "/"},
+		{"unrelated", "/etc"},
+		{"sibling", "/var"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input, _ := json.Marshal(dispatch.DispatchInput{Prompt: "x", Workdir: tc.workdir})
+			res, _ := h.tool.Run(context.Background(), env, input)
+			if !res.IsError {
+				t.Fatalf("expected error for workdir=%q, got success", tc.workdir)
+			}
+		})
+	}
+}

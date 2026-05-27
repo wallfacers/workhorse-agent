@@ -151,6 +151,9 @@ func (t Tool) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*to
 	}
 
 	childOpts := buildChildOptions(parentSess, at, in, childDepth)
+	if err := session.AssertWorkdirWithin(parentSess.Workdir, childOpts.Workdir); err != nil {
+		return errResult(err.Error()), nil
+	}
 	childSess, err := t.Host.Manager.CreateSession(ctx, childOpts)
 	if err != nil {
 		return errResult("create child session: " + err.Error()), nil
