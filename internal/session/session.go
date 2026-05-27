@@ -222,6 +222,10 @@ type Session struct {
 	// affect this value.
 	MemorySnapshot *memory.Snapshot
 
+	// EnvSnapshot holds the frozen <environment> block rendered at session start.
+	// Immutable for the session lifetime. Empty when no tools or agents detected.
+	EnvSnapshot string
+
 	mu        sync.Mutex
 	state     State
 	history   []provider.Message

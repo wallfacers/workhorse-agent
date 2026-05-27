@@ -1,0 +1,27 @@
+name: aider
+binary: aider
+class: sub_agent
+invocation:
+  prompt_via: stdin
+  extra_args: ["--no-auto-commits", "--yes-always"]
+  env_passthrough: [ANTHROPIC_API_KEY, OPENAI_API_KEY]
+output:
+  format: text
+  stderr: separate
+control:
+  cancel_signal: SIGINT
+  cancel_grace_sec: 5
+  default_timeout_sec: 600
+  max_timeout_sec: 3600
+security:
+  network: allowed
+  filesystem: full
+  trusted: true
+smoke_test:
+  prompt: "Reply with exactly: WORKHORSE_SMOKE_OK"
+  expected_substring: "WORKHORSE_SMOKE_OK"
+  timeout_sec: 60
+description: "AI pair programming tool — excels at git-aware code modifications"
+usage_hints: "Use for targeted code changes that benefit from git integration and automatic commits"
+provenance:
+  source: builtin

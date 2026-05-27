@@ -355,6 +355,120 @@ func TestLoad_MemoryDirOptional(t *testing.T) {
 	}
 }
 
+func TestDefault_ExternalAgentsConfig(t *testing.T) {
+	c := config.Default()
+	if c.ExternalAgents.Dir != "~/.workhorse-agent/external-agents" {
+		t.Errorf("external_agents.dir: got %q, want ~/.workhorse-agent/external-agents", c.ExternalAgents.Dir)
+	}
+	if c.ExternalAgents.SmokeTest.CacheTTL != 168 {
+		t.Errorf("external_agents.smoke_test.cache_ttl: got %d, want 168", c.ExternalAgents.SmokeTest.CacheTTL)
+	}
+	if c.ExternalAgents.PathScan.CacheTTL != 24 {
+		t.Errorf("external_agents.pathscan.cache_ttl: got %d, want 24", c.ExternalAgents.PathScan.CacheTTL)
+	}
+	if c.ExternalAgents.Driver.KillOnOutputCap != true {
+		t.Error("external_agents.driver.kill_on_output_cap: got false, want true")
+	}
+}
+
+func TestLoad_ExternalAgentsYAML(t *testing.T) {
+	path := writeYAML(t, `
+external_agents:
+  dir: /opt/adapters
+  smoke_test:
+    cache_ttl: 72
+  pathscan:
+    cache_ttl: 12
+    extra: [poetry, helm]
+    disabled: [docker]
+  driver:
+    kill_on_output_cap: false
+`)
+	cfg, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ExternalAgents.Dir != "/opt/adapters" {
+		t.Errorf("dir: got %q, want /opt/adapters", cfg.ExternalAgents.Dir)
+	}
+	if cfg.ExternalAgents.SmokeTest.CacheTTL != 72 {
+		t.Errorf("smoke_test.cache_ttl: got %d, want 72", cfg.ExternalAgents.SmokeTest.CacheTTL)
+	}
+	if cfg.ExternalAgents.PathScan.CacheTTL != 12 {
+		t.Errorf("pathscan.cache_ttl: got %d, want 12", cfg.ExternalAgents.PathScan.CacheTTL)
+	}
+	if len(cfg.ExternalAgents.PathScan.Extra) != 2 || cfg.ExternalAgents.PathScan.Extra[0] != "poetry" {
+		t.Errorf("pathscan.extra: got %v", cfg.ExternalAgents.PathScan.Extra)
+	}
+	if len(cfg.ExternalAgents.PathScan.Disabled) != 1 || cfg.ExternalAgents.PathScan.Disabled[0] != "docker" {
+		t.Errorf("pathscan.disabled: got %v", cfg.ExternalAgents.PathScan.Disabled)
+	}
+	if cfg.ExternalAgents.Driver.KillOnOutputCap {
+		t.Error("driver.kill_on_output_cap: got true, want false")
+	}
+}
+
+func TestLoad_RejectsNegativeSmokeTestCacheTTL(t *testing.T) {
+	path := writeYAML(t, `
+external_agents:
+  smoke_test:
+    cache_ttl: -1
+`)
+	_, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err == nil {
+		t.Fatal("expected validation error for negative smoke_test.cache_ttl")
+	}
+	if !strings.Contains(err.Error(), "external_agents.smoke_test.cache_ttl") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestLoad_RejectsNegativePathScanCacheTTL(t *testing.T) {
+	path := writeYAML(t, `
+external_agents:
+  pathscan:
+    cache_ttl: -1
+`)
+	_, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err == nil {
+		t.Fatal("expected validation error for negative pathscan.cache_ttl")
+	}
+	if !strings.Contains(err.Error(), "external_agents.pathscan.cache_ttl") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// disabled wins over extra: both list the same name
+func TestLoad_DisabledWinsOverExtra(t *testing.T) {
+	path := writeYAML(t, `
+external_agents:
+  pathscan:
+    extra: [docker]
+    disabled: [docker]
+`)
+	cfg, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.ExternalAgents.PathScan.Extra) != 1 || cfg.ExternalAgents.PathScan.Extra[0] != "docker" {
+		t.Errorf("extra should still contain docker: %v", cfg.ExternalAgents.PathScan.Extra)
+	}
+	if len(cfg.ExternalAgents.PathScan.Disabled) != 1 || cfg.ExternalAgents.PathScan.Disabled[0] != "docker" {
+		t.Errorf("disabled should still contain docker: %v", cfg.ExternalAgents.PathScan.Disabled)
+	}
+}
+
+func TestLoad_ExternalAgentsDefaultsOptional(t *testing.T) {
+	path := writeYAML(t, `# empty config`)
+	cfg, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ExternalAgents.SmokeTest.CacheTTL != 168 {
+		t.Errorf("smoke_test.cache_ttl default: got %d", cfg.ExternalAgents.SmokeTest.CacheTTL)
+	}
+}
+
 // helpers
 
 func writeYAML(t *testing.T, body string) string {

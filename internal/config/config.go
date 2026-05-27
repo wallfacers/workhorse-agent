@@ -17,8 +17,9 @@ type Config struct {
 	MCP       MCPConfig       `yaml:"mcp"`
 	Skills    PathConfig      `yaml:"skills"`
 	Agents    PathConfig      `yaml:"agents"`
-	Memory    MemoryConfig    `yaml:"memory"`
-	Logging   LoggingConfig   `yaml:"logging"`
+	Memory         MemoryConfig         `yaml:"memory"`
+	ExternalAgents ExternalAgentsConfig `yaml:"external_agents"`
+	Logging        LoggingConfig        `yaml:"logging"`
 	Debug     DebugConfig     `yaml:"debug"`
 }
 
@@ -127,6 +128,27 @@ type MemoryConfig struct {
 	UserCharLimit   int    `yaml:"user_char_limit"`
 }
 
+type ExternalAgentsConfig struct {
+	Dir       string                      `yaml:"dir"`
+	SmokeTest ExternalAgentsSmokeTestConfig `yaml:"smoke_test"`
+	PathScan  ExternalAgentsPathScanConfig  `yaml:"pathscan"`
+	Driver    ExternalAgentsDriverConfig    `yaml:"driver"`
+}
+
+type ExternalAgentsSmokeTestConfig struct {
+	CacheTTL int `yaml:"cache_ttl"` // hours; default 168 (7 days)
+}
+
+type ExternalAgentsPathScanConfig struct {
+	CacheTTL int      `yaml:"cache_ttl"` // hours; default 24
+	Extra    []string `yaml:"extra"`
+	Disabled []string `yaml:"disabled"`
+}
+
+type ExternalAgentsDriverConfig struct {
+	KillOnOutputCap bool `yaml:"kill_on_output_cap"`
+}
+
 // Default returns a fully-populated Config using the built-in defaults
 // described in the configuration spec.
 func Default() Config {
@@ -190,6 +212,12 @@ func Default() Config {
 		Agents:   PathConfig{Dir: "~/.workhorse-agent/agents"},
 		Logging:  LoggingConfig{Level: "info", Format: "json", LogLLMPayload: false},
 		Memory:   MemoryConfig{MemoryCharLimit: 2200, UserCharLimit: 1375},
+		ExternalAgents: ExternalAgentsConfig{
+			Dir:       "~/.workhorse-agent/external-agents",
+			SmokeTest: ExternalAgentsSmokeTestConfig{CacheTTL: 168},
+			PathScan:  ExternalAgentsPathScanConfig{CacheTTL: 24},
+			Driver:    ExternalAgentsDriverConfig{KillOnOutputCap: true},
+		},
 		Debug:    DebugConfig{Enabled: false},
 	}
 }

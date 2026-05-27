@@ -26,6 +26,8 @@ func TestPackageBoundary(t *testing.T) {
 	allowedImports := map[string]bool{
 		"bytes":         true,
 		"fmt":           true,
+		"runtime":       true, // DetectOS uses runtime.GOOS
+		"sort":          true, // stable sort for byte-stable output
 		"strings":       true,
 		"text/template": true,
 	}
