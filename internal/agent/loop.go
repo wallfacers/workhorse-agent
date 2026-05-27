@@ -370,12 +370,14 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 		base := l.SystemPromptBase
 		// Composition order: environment → memory → base prompt, joined by
 		// "\n\n" only between non-empty pieces. Stable for prompt-cache prefix
-		// (add-external-agent-tool + add-memory-l1-l2).
-		if envBlock := l.Session.EnvSnapshot; envBlock != "" {
-			base = envBlock + "\n\n" + base
-		}
+		// (add-external-agent-tool + add-memory-l1-l2). Each prepend wraps the
+		// existing string, so memory is prepended first and environment last
+		// to land outermost — matching the documented order.
 		if block := memory.Block(l.Session.MemorySnapshot); block != "" {
 			base = block + "\n\n" + base
+		}
+		if envBlock := l.Session.EnvSnapshot; envBlock != "" {
+			base = envBlock + "\n\n" + base
 		}
 
 		req := provider.Request{

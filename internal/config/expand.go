@@ -32,6 +32,7 @@ func ResolvePaths(c *Config) error {
 		&c.Skills.Dir,
 		&c.Agents.Dir,
 		&c.Memory.Dir,
+		&c.ExternalAgents.Dir,
 	} {
 		v, err := ExpandPath(*slot)
 		if err != nil {

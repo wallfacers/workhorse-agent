@@ -133,17 +133,31 @@ func (l *Loader) Load(dir string) (*Snapshot, error) {
 		l.logger().Warn("extagent: failed to load builtins", "err", err)
 	}
 
-	// 2. Ensure directory exists.
+	// 2. Ensure directory exists. Best-effort: a read-only HOME or EROFS
+	// must not wipe out the embedded builtins, so we log and proceed with
+	// whatever was seeded above.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("extagent: create dir %s: %w", dir, err)
+		l.logger().Warn("extagent: failed to create adapter dir, builtins only",
+			"dir", dir, "err", err)
+		return &Snapshot{adapters: adapters}, nil
 	}
 
 	// 3. Load on-disk adapters (override builtins by name).
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("extagent: read dir %s: %w", dir, err)
+		l.logger().Warn("extagent: failed to read adapter dir, builtins only",
+			"dir", dir, "err", err)
+		return &Snapshot{adapters: adapters}, nil
 	}
 	for _, ent := range entries {
+		// add-llm-adapter-generator: hidden subdirs hold in-flight drafts
+		// (notably .drafts/). They MUST NEVER be loaded into a session's
+		// registry — drafts only become adapters via atomic rename after
+		// approval. The IsDir check below already skips them; this guard
+		// makes the intent explicit and survives accidental flattening.
+		if strings.HasPrefix(ent.Name(), ".") {
+			continue
+		}
 		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".yaml") {
 			continue
 		}

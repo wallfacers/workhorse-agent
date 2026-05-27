@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
 	"os/exec"
 	"runtime"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/wallfacers/workhorse-agent/internal/tools/bash"
 )
 
 // Entry represents one detected binary on PATH.
@@ -99,13 +102,20 @@ func Scan(logger *slog.Logger, allowlist []string) []Entry {
 }
 
 // Version probes a binary for its version string with a 2s timeout.
+// Strips dangerous env vars (LD_PRELOAD, NODE_OPTIONS=--require, DYLD_*)
+// via bash.Filter so a hostile parent env cannot ride into every probed
+// binary at server start.
 func Version(bin string, logger *slog.Logger) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, bin, "--version")
+	filtered, _ := bash.Filter(os.Environ())
+	cmd.Env = filtered
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
+	// Some tools (node, python old) print --version to stderr.
+	cmd.Stderr = &buf
 
 	if err := cmd.Run(); err != nil {
 		if logger != nil {

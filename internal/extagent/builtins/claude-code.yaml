@@ -14,8 +14,7 @@ output:
     session_id_path: $.session_id
 session:
   supports_resume: true
-  resume_flag: --resume
-  session_id_arg: --session-id
+  session_id_arg: --resume
 control:
   cancel_signal: SIGINT
   cancel_grace_sec: 5
