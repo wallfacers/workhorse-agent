@@ -111,20 +111,89 @@ func TestWrite_DoesNotAffectSessionSnapshot(t *testing.T) {
 	os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte("original"), 0o600)
 
 	loader := &memory.Loader{ProfileDir: dir}
-	// This simulates session A loading a snapshot before a write
-	// The test verifies that memory_read returns disk content (not snapshot)
+	snap, _ := loader.Load()
+
 	w := &memorytool.Write{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
 	r := &memorytool.Read{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
 
-	_ = loader // snapshot loaded at session start
+	_ = snap // snapshot loaded at session start
 	w.Run(context.Background(), testEnv(), []byte(`{"kind":"memory","content":"updated"}`))
+
+	// memory_read reads from disk, so it sees the new content
+	res, _ := r.Run(context.Background(), testEnv(), []byte(`{"kind":"memory"}`))
+	var out map[string]any
+	json.Unmarshal([]byte(res.Output), &out)
+	if out["content"] != "updated" {
+		t.Errorf("read after write: got %v", out["content"])
+	}
+
+	// The loaded snapshot should remain unchanged
+	if snap.MemoryMD != "original" {
+		t.Errorf("snapshot should be unchanged, got %q", snap.MemoryMD)
+	}
+}
+
+func TestWriteAndRead_UserKind(t *testing.T) {
+	dir := t.TempDir()
+	w := &memorytool.Write{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
+	r := &memorytool.Read{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
+
+	res, err := w.Run(context.Background(), testEnv(), []byte(`{"kind":"user","content":"I am a developer"}`))
+	if err != nil {
+		t.Fatalf("write user: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("write user failed: %s", res.Output)
+	}
+
+	res, err = r.Run(context.Background(), testEnv(), []byte(`{"kind":"user"}`))
+	if err != nil {
+		t.Fatalf("read user: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("read user failed: %s", res.Output)
+	}
+
+	var out map[string]any
+	json.Unmarshal([]byte(res.Output), &out)
+	if out["content"] != "I am a developer" {
+		t.Errorf("user content: got %v, want 'I am a developer'", out["content"])
+	}
+}
+
+func TestWrite_ModeDefaultsToReplace(t *testing.T) {
+	dir := t.TempDir()
+	w := &memorytool.Write{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
+	r := &memorytool.Read{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
+
+	w.Run(context.Background(), testEnv(), []byte(`{"kind":"memory","content":"first"}`))
+	// No mode field → defaults to replace, not append
+	w.Run(context.Background(), testEnv(), []byte(`{"kind":"memory","content":"second"}`))
 
 	res, _ := r.Run(context.Background(), testEnv(), []byte(`{"kind":"memory"}`))
 	var out map[string]any
 	json.Unmarshal([]byte(res.Output), &out)
-	// memory_read reads from disk, so it sees the new content
-	if out["content"] != "updated" {
-		t.Errorf("read after write: got %v", out["content"])
+	if out["content"] != "second" {
+		t.Errorf("default mode should be replace, got %v", out["content"])
+	}
+}
+
+func TestWrite_ReturnsNextSessionEffective(t *testing.T) {
+	dir := t.TempDir()
+	w := &memorytool.Write{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
+
+	res, err := w.Run(context.Background(), testEnv(), []byte(`{"kind":"memory","content":"data"}`))
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	var out map[string]any
+	json.Unmarshal([]byte(res.Output), &out)
+	if out["next_session_effective"] != true {
+		t.Errorf("expected next_session_effective true, got %v", out["next_session_effective"])
+	}
+	if out["accepted"] != true {
+		t.Errorf("expected accepted true, got %v", out["accepted"])
 	}
 }
 

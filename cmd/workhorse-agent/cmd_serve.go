@@ -362,7 +362,10 @@ func newRunnerFactory(
 	defaultFastModel := cfg.Models.Fast
 	memLoader := &memory.Loader{ProfileDir: profileDir(cfg)}
 	return func(sess *session.Session) session.Runner {
-		snap, _ := memLoader.Load()
+		snap, err := memLoader.Load()
+		if err != nil {
+			slog.Warn("memory snapshot load failed, proceeding without memory", "error", err)
+		}
 		sess.MemorySnapshot = snap
 
 		provName := sess.ProviderName

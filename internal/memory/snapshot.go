@@ -57,7 +57,10 @@ func readFile(path string) (string, error) {
 
 func memoriesDir(profileDir string) string {
 	if profileDir == "" {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			home = "."
+		}
 		return filepath.Join(home, ".workhorse-agent", "memories")
 	}
 	return filepath.Join(profileDir, "memories")

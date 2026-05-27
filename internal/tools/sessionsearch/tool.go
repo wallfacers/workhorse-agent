@@ -206,6 +206,9 @@ func (t *Tool) collectHits(ctx context.Context, rows *sql.Rows, limit, ctxBefore
 		}
 		hits = append(hits, h)
 	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("session_search: iterate rows", "err", err)
+	}
 
 	truncated := len(hits) > limit
 	if truncated {
@@ -251,6 +254,9 @@ func (t *Tool) fetchContext(ctx context.Context, sessionID string, createdAt int
 			"role":       role,
 			"created_at": ca,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("session_search: fetch context rows", "err", err)
 	}
 
 	if direction == "before" {
@@ -313,6 +319,9 @@ func scanIDs(rows *sql.Rows) ([]string, error) {
 			return nil, err
 		}
 		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return ids, nil
 }

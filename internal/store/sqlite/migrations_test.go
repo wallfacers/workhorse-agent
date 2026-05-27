@@ -3,7 +3,9 @@ package sqlite_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/wallfacers/workhorse-agent/internal/store/sqlite"
 )
@@ -134,5 +136,112 @@ func TestMigration_PartialStateRecovery(t *testing.T) {
 	if err := s.DB().QueryRowContext(ctx,
 		"SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").Scan(&name); err != nil {
 		t.Fatalf("messages_fts should exist after v2 migration: %v", err)
+	}
+}
+
+func TestMigration_V2UpdateTrigger(t *testing.T) {
+	ctx := context.Background()
+	s, err := sqlite.Open(ctx, sqlite.Options{DSN: ":memory:"})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+
+	db := s.DB()
+	mustCreateSession(t, s, "updtest")
+	_, err = db.ExecContext(ctx,
+		`INSERT INTO messages(id, session_id, role, content_json, token_count, created_at) VALUES (?,?,?,?,?,?)`,
+		"m1", "updtest", "user", `[{"type":"text","text":"original content"}]`, 0, 0)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	_, err = db.ExecContext(ctx,
+		`UPDATE messages SET content_json = ? WHERE id = ?`,
+		`[{"type":"text","text":"updated content"}]`, "m1")
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var content string
+	if err := db.QueryRowContext(ctx,
+		"SELECT content FROM messages_fts WHERE rowid=1").Scan(&content); err != nil {
+		t.Fatalf("query fts after update: %v", err)
+	}
+	if content != "updated content" {
+		t.Errorf("fts after update: got %q, want %q", content, "updated content")
+	}
+}
+
+func TestMigration_V2BackfillFromV1(t *testing.T) {
+	ctx := context.Background()
+	dbPath := t.TempDir() + "/backfill_test.db"
+
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	now := time.Now().UnixMicro()
+	for _, stmt := range []string{
+		`CREATE TABLE schema_version (version INTEGER PRIMARY KEY)`,
+		`INSERT INTO schema_version(version) VALUES (1)`,
+		`CREATE TABLE sessions (
+			id TEXT PRIMARY KEY, parent_id TEXT NOT NULL DEFAULT '',
+			state TEXT NOT NULL, workdir TEXT NOT NULL,
+			env_json TEXT NOT NULL DEFAULT '{}',
+			agent_type TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+			ephemeral INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER)`,
+		`CREATE TABLE messages (
+			id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL,
+			content_json TEXT NOT NULL, token_count INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE)`,
+		fmt.Sprintf(`INSERT INTO sessions(id, parent_id, state, workdir, env_json, agent_type, model, created_at, updated_at)
+			VALUES ('sess1','','idle','/tmp','{}','','',%d,%d)`, now, now),
+		fmt.Sprintf(`INSERT INTO messages(id, session_id, role, content_json, token_count, created_at)
+			VALUES ('m1','sess1','user','[{"type":"text","text":"backfill test alpha"}]',0,%d)`, now),
+		fmt.Sprintf(`INSERT INTO messages(id, session_id, role, content_json, token_count, created_at)
+			VALUES ('m2','sess1','assistant','[{"type":"text","text":"backfill test beta"}]',0,%d)`, now+1),
+		fmt.Sprintf(`INSERT INTO messages(id, session_id, role, content_json, token_count, created_at)
+			VALUES ('m3','sess1','user','[{"type":"tool_use","id":"t1","name":"bash"}]',0,%d)`, now+2),
+	} {
+		if _, err := rawDB.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("v1 setup: %s: %v", stmt[:60], err)
+		}
+	}
+	rawDB.Close()
+
+	s, err := sqlite.Open(ctx, sqlite.Options{DSN: dbPath})
+	if err != nil {
+		t.Fatalf("open for v2: %v", err)
+	}
+	defer s.Close()
+
+	db := s.DB()
+
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM messages_fts").Scan(&count); err != nil {
+		t.Fatalf("count fts: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("backfill: expected 3 FTS rows, got %d", count)
+	}
+
+	var content string
+	if err := db.QueryRowContext(ctx,
+		"SELECT content FROM messages_fts WHERE rowid=(SELECT rowid FROM messages WHERE id='m1')").Scan(&content); err != nil {
+		t.Fatalf("fts m1: %v", err)
+	}
+	if content != "backfill test alpha" {
+		t.Errorf("fts m1: got %q", content)
+	}
+
+	if err := db.QueryRowContext(ctx,
+		"SELECT content FROM messages_fts WHERE rowid=(SELECT rowid FROM messages WHERE id='m3')").Scan(&content); err != nil {
+		t.Fatalf("fts m3: %v", err)
+	}
+	if content != "" {
+		t.Errorf("fts m3 (tool_use only): got %q, want empty", content)
 	}
 }

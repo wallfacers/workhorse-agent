@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // Migration represents a single schema migration step. Up contains the
@@ -179,15 +180,22 @@ func (s *Store) applyMigration(ctx context.Context, m Migration) error {
 // readSchemaVersion returns the current schema version, or 0 if the table
 // does not yet exist (fresh database) or is empty.
 func (s *Store) readSchemaVersion(ctx context.Context) (int, error) {
-	var version int
+	var version *int
 	err := s.db.QueryRowContext(ctx,
 		`SELECT MAX(version) FROM schema_version`).Scan(&version)
 	if err != nil {
-		// MAX on an empty table returns NULL → sql.Scan to int fails.
-		// A missing table means v1 hasn't run yet — return 0 so it runs.
+		// Fresh database: schema_version table doesn't exist yet, or
+		// table exists but is empty (NULL → Scan to *int yields nil value, no error).
+		// Any other error (corruption, I/O) should propagate.
+		if isTableNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("sqlite: read schema version: %w", err)
+	}
+	if version == nil {
 		return 0, nil
 	}
-	return version, nil
+	return *version, nil
 }
 
 func truncateStmt(s string) string {
@@ -195,4 +203,9 @@ func truncateStmt(s string) string {
 		return s[:120] + "..."
 	}
 	return s
+}
+
+func isTableNotExist(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "no such table")
 }

@@ -62,6 +62,29 @@ func TestSnapshot_LoadsExistingFiles(t *testing.T) {
 	}
 }
 
+func TestSnapshot_IgnoresUnexpectedFiles(t *testing.T) {
+	dir := t.TempDir()
+	memDir := filepath.Join(dir, "memories")
+	os.MkdirAll(memDir, 0o700)
+	os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte("agent facts"), 0o600)
+	os.WriteFile(filepath.Join(memDir, "USER.md"), []byte("user prefs"), 0o600)
+	// Unexpected files that should be ignored
+	os.WriteFile(filepath.Join(memDir, "notes.txt"), []byte("junk"), 0o600)
+	os.WriteFile(filepath.Join(memDir, ".DS_Store"), []byte("mac junk"), 0o600)
+
+	loader := &memory.Loader{ProfileDir: dir}
+	snap, err := loader.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if snap.MemoryMD != "agent facts" {
+		t.Errorf("memory: got %q, want %q", snap.MemoryMD, "agent facts")
+	}
+	if snap.UserMD != "user prefs" {
+		t.Errorf("user: got %q, want %q", snap.UserMD, "user prefs")
+	}
+}
+
 func TestWriter_OverLimitRejected(t *testing.T) {
 	dir := t.TempDir()
 	w := &memory.Writer{
@@ -123,6 +146,47 @@ func TestWriter_AppendMode(t *testing.T) {
 	}
 	if content != "line1\nline2" {
 		t.Errorf("got %q, want %q", content, "line1\nline2")
+	}
+}
+
+func TestWriter_AppendToNonexistentFile(t *testing.T) {
+	dir := t.TempDir()
+	w := &memory.Writer{
+		ProfileDir:  dir,
+		MemoryLimit: 1000,
+		UserLimit:   1000,
+	}
+
+	err := w.Write(memory.KindMemory, "first append", memory.ModeAppend)
+	if err != nil {
+		t.Fatalf("append to nonexistent file: %v", err)
+	}
+
+	content, err := memory.ReadFile(dir, "memory")
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if content != "first append" {
+		t.Errorf("got %q, want %q", content, "first append")
+	}
+}
+
+func TestWriter_WriteEmptyContent(t *testing.T) {
+	dir := t.TempDir()
+	w := &memory.Writer{
+		ProfileDir:  dir,
+		MemoryLimit: 100,
+		UserLimit:   100,
+	}
+
+	err := w.Write(memory.KindMemory, "", memory.ModeReplace)
+	if err != nil {
+		t.Fatalf("write empty: %v", err)
+	}
+
+	content, _ := memory.ReadFile(dir, "memory")
+	if content != "" {
+		t.Errorf("got %q, want empty", content)
 	}
 }
 

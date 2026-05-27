@@ -1,11 +1,10 @@
 package memory
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"sync"
 	"unicode/utf8"
 )
 
@@ -18,6 +17,11 @@ type ErrMemoryTooLarge struct {
 func (e ErrMemoryTooLarge) Error() string {
 	return fmt.Sprintf("memory: content exceeds char limit (limit=%d, actual=%d)", e.Limit, e.Actual)
 }
+
+// writeMu serializes concurrent goroutine writes within the same process.
+// flock/LockFileEx are per-process, so two goroutines in the same process
+// would both "hold" the exclusive lock simultaneously.
+var writeMu sync.Mutex
 
 // Writer handles atomic writes to memory files with character-limit enforcement
 // and exclusive file locking.
@@ -83,6 +87,9 @@ func (w *Writer) CharLimit(kind Kind) int {
 // It enforces character limits, acquires an exclusive lock, and uses
 // atomic temp-file + rename to prevent partial writes.
 func (w *Writer) Write(kind Kind, content string, mode WriteMode) error {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+
 	memDir := memoriesDir(w.ProfileDir)
 	lockPath := filepath.Join(memDir, ".write.lock")
 	filePath := filepath.Join(memDir, kind.FileName())
@@ -101,7 +108,10 @@ func (w *Writer) Write(kind Kind, content string, mode WriteMode) error {
 
 	finalContent := content
 	if mode == ModeAppend {
-		existing, _ := readFile(filePath)
+		existing, err := readFile(filePath)
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("memory: read existing for append: %w", err)
+		}
 		if existing != "" && content != "" {
 			finalContent = existing + "\n" + content
 		} else if existing != "" {
@@ -159,11 +169,5 @@ func EnsureValidMode(mode string) WriteMode {
 	return ModeReplace
 }
 
-// StringsForError is a helper to check error type.
-var ErrInvalidKind = errors.New("memory: invalid kind")
-
 // ValidKinds for iteration.
 var ValidKinds = []Kind{KindMemory, KindUser}
-
-// StringsPool is a no-op to suppress unused import.
-var _ = strings.TrimSpace

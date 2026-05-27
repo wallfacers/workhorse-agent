@@ -53,12 +53,25 @@ func TestCJK_Classification(t *testing.T) {
 		{"CJK basic", 0x4E00, true},
 		{"CJK end", 0x9FFF, true},
 		{"Ext A start", 0x3400, true},
+		{"Ext B char", 0x20000, true},
+		{"Ext C char", 0x2A700, true},
+		{"Ext D char", 0x2B740, true},
+		{"Ext E char", 0x2B820, true},
+		{"Ext F char", 0x2CEB0, true},
+		{"Compatibility Ideographs", 0xF900, true},
+		{"Radicals Supplement", 0x2E80, true},
+		{"CJK Symbols and Punctuation", 0x3000, true},
 		{"Hiragana", 0x3041, true},
 		{"Katakana", 0x30A1, true},
+		{"Katakana Phonetic Extensions", 0x31F0, true},
 		{"Hangul", 0xAC00, true},
 		{"Jamo", 0x1100, true},
+		{"Hangul Compatibility Jamo", 0x3130, true},
+		{"Halfwidth Katakana", 0xFF65, true},
+		{"Halfwidth Katakana end", 0xFF9F, true},
 		{"ASCII a", 'a', false},
 		{"digit 5", '5', false},
+		{"Latin ext", 0x00E9, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -202,4 +215,99 @@ func TestSearch_TruncatedFlag(t *testing.T) {
 	if out["truncated"] != true {
 		t.Error("expected truncated=true")
 	}
+	hits := out["hits"].([]any)
+	if len(hits) != 10 {
+		t.Errorf("expected 10 hits, got %d", len(hits))
+	}
+}
+
+func TestSearch_TruncatedFalseExactBoundary(t *testing.T) {
+	s := setupDB(t)
+	db := s.DB()
+	mustCreateSession(t, s, "sess1", "")
+
+	// Insert exactly 10 matching messages
+	for i := 0; i < 10; i++ {
+		mustInsertMessage(t, db, fmt.Sprintf("m%d", i), "sess1", "user",
+			`[{"type":"text","text":"exactBoundary keyword"}]`)
+	}
+
+	tool := &sessionsearch.Tool{DB: db}
+	res, _ := tool.Run(context.Background(), &tools.Env{},
+		[]byte(`{"query":"exactBoundary","session_id":"sess1","limit":10}`))
+
+	var out map[string]any
+	json.Unmarshal([]byte(res.Output), &out)
+	if out["truncated"] == true {
+		t.Error("expected truncated=false when results equal limit")
+	}
+	hits := out["hits"].([]any)
+	if len(hits) != 10 {
+		t.Errorf("expected 10 hits, got %d", len(hits))
+	}
+}
+
+func TestBuildPlan_FTS5OperatorInjection(t *testing.T) {
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{"AND operator", "hello AND world"},
+		{"OR operator", "hello OR world"},
+		{"NOT operator", "hello NOT world"},
+		{"star wildcard", "hello*"},
+		{"NEAR operator", "hello NEAR world"},
+		{"parentheses", "hello (world)"},
+		{"unbalanced quote", `hello "world`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// buildPlan should not panic or produce a malformed expression
+			expr, ok := sessionsearch.BuildPlan(tt.query)
+			if !ok {
+				// Fallback is acceptable — safety is preserved either way
+				return
+			}
+			// If we got an FTS expression, verify it does not contain
+			// raw FTS5 operators (they should be tokenized away)
+			for _, op := range []string{" OR ", " NOT ", " NEAR "} {
+				if containsStr(expr, op) {
+					t.Errorf("FTS expression contains raw operator %q: %q", op, expr)
+				}
+			}
+		})
+	}
+}
+
+func TestSearch_ScopeSessionOnly(t *testing.T) {
+	s := setupDB(t)
+	db := s.DB()
+	mustCreateSession(t, s, "parent", "")
+	mustCreateSession(t, s, "child", "parent")
+	mustInsertMessage(t, db, "m1", "parent", "user", `[{"type":"text","text":"scopeTest parent message"}]`)
+	mustInsertMessage(t, db, "m2", "child", "user", `[{"type":"text","text":"scopeTest child message"}]`)
+
+	tool := &sessionsearch.Tool{DB: db}
+	res, _ := tool.Run(context.Background(), &tools.Env{},
+		[]byte(`{"query":"scopeTest","session_id":"child","scope":"session"}`))
+
+	var out map[string]any
+	json.Unmarshal([]byte(res.Output), &out)
+	hits := out["hits"].([]any)
+	if len(hits) != 1 {
+		t.Fatalf("scope:session should return 1 hit, got %d", len(hits))
+	}
+	hm := hits[0].(map[string]any)
+	if hm["session_id"] != "child" {
+		t.Errorf("expected session_id=child, got %v", hm["session_id"])
+	}
+}
+
+func containsStr(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }

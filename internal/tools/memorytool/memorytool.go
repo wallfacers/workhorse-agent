@@ -147,7 +147,10 @@ func (w *Write) Run(_ context.Context, _ *tools.Env, raw json.RawMessage) (*tool
 	}
 
 	// Re-read to get accurate char count
-	content, _ := memory.ReadFile(w.ProfileDir, in.Kind)
+	content, err := memory.ReadFile(w.ProfileDir, in.Kind)
+	if err != nil {
+		content = in.Content
+	}
 	limit := writer.CharLimit(kind)
 
 	out, _ := json.Marshal(map[string]any{
