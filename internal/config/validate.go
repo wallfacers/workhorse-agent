@@ -37,6 +37,9 @@ func Validate(c Config) error {
 	if err := validateMemory(c.Memory); err != nil {
 		return err
 	}
+	if err := validateExternalAgents(c.ExternalAgents); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -194,5 +197,17 @@ func validateMemory(m MemoryConfig) error {
 	if m.UserCharLimit <= 0 {
 		return fmt.Errorf("invalid config: memory.user_char_limit must be > 0, got %d", m.UserCharLimit)
 	}
+	return nil
+}
+
+func validateExternalAgents(e ExternalAgentsConfig) error {
+	if e.SmokeTest.CacheTTL < 0 {
+		return fmt.Errorf("invalid config: external_agents.smoke_test.cache_ttl must be >= 0, got %d", e.SmokeTest.CacheTTL)
+	}
+	if e.PathScan.CacheTTL < 0 {
+		return fmt.Errorf("invalid config: external_agents.pathscan.cache_ttl must be >= 0, got %d", e.PathScan.CacheTTL)
+	}
+	// Check for overlap: disabled wins over extra, but warn-worthy overlap is allowed.
+	// No validation error for overlap per spec.
 	return nil
 }

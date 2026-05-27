@@ -43,6 +43,10 @@ type Env struct {
 	// inherit. It has already passed through internal/tools/bash/envfilter.
 	Env    map[string]string
 	Logger *slog.Logger
+	// ExtAgentRegistry holds the per-session external agent registry.
+	// Typed as any to avoid import cycles; the ExternalAgent tool
+	// type-asserts this to *extagent.Registry.
+	ExtAgentRegistry any
 }
 
 // Result is the outcome of one tool call. Output is the canonical string the

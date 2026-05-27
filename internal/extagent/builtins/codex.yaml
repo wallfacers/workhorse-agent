@@ -1,0 +1,28 @@
+name: codex
+binary: codex
+class: sub_agent
+invocation:
+  prompt_via: arg
+  prompt_arg: --prompt
+  extra_args: ["--quiet"]
+  env_passthrough: [OPENAI_API_KEY]
+output:
+  format: text
+  stderr: separate
+control:
+  cancel_signal: SIGINT
+  cancel_grace_sec: 5
+  default_timeout_sec: 600
+  max_timeout_sec: 3600
+security:
+  network: allowed
+  filesystem: full
+  trusted: true
+smoke_test:
+  prompt: "Reply with exactly: WORKHORSE_SMOKE_OK"
+  expected_substring: "WORKHORSE_SMOKE_OK"
+  timeout_sec: 60
+description: "OpenAI Codex CLI — good for code review and quick edits"
+usage_hints: "Use for code review tasks or when an OpenAI model perspective is preferred"
+provenance:
+  source: builtin

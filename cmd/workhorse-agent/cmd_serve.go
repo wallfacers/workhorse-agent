@@ -33,8 +33,13 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/tools/bash"
 	"github.com/wallfacers/workhorse-agent/internal/tools/builtin"
 	"github.com/wallfacers/workhorse-agent/internal/tools/dispatch"
+	extagenttool "github.com/wallfacers/workhorse-agent/internal/tools/extagent"
 	"github.com/wallfacers/workhorse-agent/internal/tools/memorytool"
 	"github.com/wallfacers/workhorse-agent/internal/tools/sessionsearch"
+	"github.com/wallfacers/workhorse-agent/internal/extagent"
+	extagentdriver "github.com/wallfacers/workhorse-agent/internal/extagent/driver"
+	"github.com/wallfacers/workhorse-agent/internal/extagent/smoke"
+	"github.com/wallfacers/workhorse-agent/internal/prompt"
 )
 
 // runServe boots the HTTP listener and the agent runtime. The wiring follows
@@ -88,6 +93,31 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("serve: register tools: %w", err)
 	}
 
+	// 3b. External agent adapter loading.
+	var extReg *extagent.Registry
+	extLoader := &extagent.Loader{Logger: logger}
+	extSnap, err := extLoader.Load(cfg.ExternalAgents.Dir)
+	if err != nil {
+		logger.Warn("extagent: load failed, proceeding without external agents", "error", err)
+	}
+	if extSnap != nil {
+		extReg = extagent.NewRegistry(extSnap)
+		cacheDir := filepath.Join(profileDir(cfg), "cache", "smoke")
+		os.MkdirAll(cacheDir, 0o755)
+		smoke.RunCachedAll(extReg, cacheDir, cfg.ExternalAgents.SmokeTest.CacheTTL, logger)
+		eaTool := extagenttool.New(&extagenttool.Host{
+			Registry:        extReg,
+			Driver:          &extagentdriver.Driver{Logger: logger},
+			OutputCapBytes:  cfg.Tools.ToolResultMaxBytes,
+			KillOnOutputCap: cfg.ExternalAgents.Driver.KillOnOutputCap,
+		})
+		if eaTool != nil {
+			if err := registry.Register(eaTool); err != nil {
+				logger.Warn("extagent: register ExternalAgent tool", "error", err)
+			}
+		}
+	}
+
 	// 4. Forward-declared session manager — needed by the permission prompt
 	// callback (which looks up sessions by ID to drive permission_request
 	// events). Filled in before any tool actually runs.
@@ -118,7 +148,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	sessMgr = session.NewManager(session.ManagerOptions{
 		Store:         st,
 		MaxConcurrent: cfg.Sessions.MaxConcurrent,
-		RunnerFactory: newRunnerFactory(cfg, providers, fastProviders, registry, permMgr, skillCatalog, logger),
+		RunnerFactory: newRunnerFactory(cfg, providers, fastProviders, registry, permMgr, skillCatalog, extReg, logger),
 	})
 	dispatchHost.Manager = sessMgr
 
@@ -337,6 +367,7 @@ func newRunnerFactory(
 	reg *tools.Registry,
 	permMgr *permission.Manager,
 	skillCatalog *skills.Catalog,
+	extReg *extagent.Registry,
 	logger *slog.Logger,
 ) session.RunnerFactory {
 	orch := &agent.Orchestrator{
@@ -406,9 +437,24 @@ func newRunnerFactory(
 		}
 		loop.Config.Model = modelID
 		loop.ToolEnv = &tools.Env{
-			SessionID: sess.ID,
-			Workdir:   sess.Workdir,
-			Env:       sess.Env,
+			SessionID:        sess.ID,
+			Workdir:          sess.Workdir,
+			Env:              sess.Env,
+			ExtAgentRegistry: extReg,
+		}
+
+		// Build environment block for the system prompt.
+		if extReg != nil {
+			healthy := extReg.HealthySubAgents()
+			if len(healthy) > 0 {
+				envInput := prompt.EnvironmentInput{
+					OS:        prompt.DetectOS(),
+					Shell:     "bash",
+					CWD:       sess.Workdir,
+					SubAgents: buildSubAgentHints(healthy),
+				}
+				sess.EnvSnapshot = prompt.EnvironmentBlock(envInput)
+			}
 		}
 		loop.Registry = reg
 		loop.Compactor = &agent.Compactor{
@@ -420,6 +466,18 @@ func newRunnerFactory(
 		loop.Tools = buildProviderToolSchemas(reg, sess.AllowedTools())
 		return loop
 	}
+}
+
+func buildSubAgentHints(adapters []*extagent.Adapter) []prompt.SubAgentHint {
+	out := make([]prompt.SubAgentHint, len(adapters))
+	for i, a := range adapters {
+		out[i] = prompt.SubAgentHint{
+			Name:        a.Name,
+			Description: a.Description,
+			Resumable:   a.Session.SupportsResume,
+		}
+	}
+	return out
 }
 
 // buildProviderToolSchemas converts the registry's tools into the

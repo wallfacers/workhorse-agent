@@ -430,11 +430,12 @@ This mirrors how `Dispatch` handles its own semantics internally (child-session 
 
 **Why**: Avoids leaking adapter-registry knowledge into the orchestrator's permission flow. Keeps `extractResource` simple. Matches the existing pattern of "tools with internal semantics keep them internal".
 
-**Alternative considered: pre-populate `AllowSession` rules for builtin adapters at session start**. This would require adding a public `AllowSession(sessionID, tool, resource string)` method to `permission.Manager` (since `addSession` is currently private) AND requires `extractResource` to include `"agent_name"` in its lookup list so the resource passed to `Permissions.Check` matches the prefilled rule. It is a reasonable approach and would not require the `InternalGated` interface. We rejected it for two reasons:
+**Alternative considered: pre-populate `AllowSession` rules for builtin adapters at session start**. This would require adding a public `AllowSession(sessionID, tool, resource string)` method to `permission.Manager` (since `addSession` is currently private) AND requires `extractResource` to include `"agent_name"` in its lookup list so the resource passed to `Permissions.Check` matches the prefilled rule. It is a reasonable approach and would not require the `InternalGated` interface. **Rejected** for three reasons:
 1. The `AllowSession` rule applies cleanly to builtins (always trusted) but the untrusted-adapter prompt flow still has to live somewhere — either inside Run (so we're doing both) or via a one-shot prompt that `Permissions.Check` triggers (which conflates "approve this resource" with "approve this adapter").
 2. The `InternalGated` interface is a single new symbol; the `AllowSession` path adds a public Manager method plus an extra entry in `extractResource`'s key list, expanding two surfaces.
+3. The follow-up change `add-llm-adapter-generator` introduces a second tool (`agent_setup`) that also needs internal-gating semantics for the same reasons. Locking to `InternalGated` here means both tools share one mechanism; the `AllowSession` path would force Change 2 to either replicate the divergence or re-litigate the choice.
 
-Both approaches achieve the same observable outcome (builtins skip prompts, non-builtins prompt once per session). Pick whichever the implementer finds cleaner during code review — record the choice as a follow-up in tasks.md.
+**Choice locked**: `InternalGated`. The approved-set state lives on the tool's `Host`. The `adapter-generation` capability (Change 2) interacts with this state through a thin `Host.MarkApproved(sessionID, agentName)` method added in Change 2; no public `permission.Manager` API is added by either change.
 
 ### D22: Filesystem permission policy — 0600 for files, 0700 for directories, single rationale
 

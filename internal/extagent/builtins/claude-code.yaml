@@ -1,0 +1,35 @@
+name: claude-code
+binary: claude
+class: sub_agent
+invocation:
+  prompt_via: arg
+  prompt_arg: --prompt
+  extra_args: ["--non-interactive"]
+  env_passthrough: [ANTHROPIC_API_KEY]
+output:
+  format: streaming-json
+  stderr: separate
+  parser:
+    assistant_text: $.delta.text
+    session_id_path: $.session_id
+session:
+  supports_resume: true
+  resume_flag: --resume
+  session_id_arg: --session-id
+control:
+  cancel_signal: SIGINT
+  cancel_grace_sec: 5
+  default_timeout_sec: 600
+  max_timeout_sec: 3600
+security:
+  network: allowed
+  filesystem: full
+  trusted: true
+smoke_test:
+  prompt: "Reply with exactly: WORKHORSE_SMOKE_OK"
+  expected_substring: "WORKHORSE_SMOKE_OK"
+  timeout_sec: 60
+description: "Anthropic's official coding agent — best for complex multi-file edits and refactoring"
+usage_hints: "Use when the task requires deep code understanding, multi-file changes, or interactive coding sessions"
+provenance:
+  source: builtin

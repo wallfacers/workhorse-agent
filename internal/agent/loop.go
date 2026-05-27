@@ -368,6 +368,12 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 		}
 
 		base := l.SystemPromptBase
+		// Composition order: environment → memory → base prompt, joined by
+		// "\n\n" only between non-empty pieces. Stable for prompt-cache prefix
+		// (add-external-agent-tool + add-memory-l1-l2).
+		if envBlock := l.Session.EnvSnapshot; envBlock != "" {
+			base = envBlock + "\n\n" + base
+		}
 		if block := memory.Block(l.Session.MemorySnapshot); block != "" {
 			base = block + "\n\n" + base
 		}
@@ -602,6 +608,15 @@ func (l *Loop) checkPermissions(ctx context.Context, calls []ToolCall) (cleared 
 	}
 	awaitEntered := false
 	for _, c := range calls {
+		// InternalGated tools handle their own permission flow.
+		if l.Registry != nil {
+			if t, ok := l.Registry.Get(c.Name); ok {
+				if ig, ok := t.(interface{ IsInternalGated() bool }); ok && ig.IsInternalGated() {
+					cleared = append(cleared, c)
+					continue
+				}
+			}
+		}
 		resource := extractResource(c.Name, c.Input)
 		// Emit permission_request event (the prompt callback may do the same;
 		// having one here lets tests without a real prompt still observe it).

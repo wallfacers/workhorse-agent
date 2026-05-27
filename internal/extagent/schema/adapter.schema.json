@@ -1,0 +1,228 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ExternalAgentAdapter",
+  "description": "Schema for a workhorse-agent external adapter manifest",
+  "type": "object",
+  "required": ["name", "binary", "class", "description", "security", "provenance"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "description": "Adapter identity; must match filename stem"
+    },
+    "binary": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Binary name (resolved via PATH) or absolute path"
+    },
+    "class": {
+      "type": "string",
+      "enum": ["sub_agent", "cli_tool"],
+      "description": "sub_agent: managed child process via ExternalAgent tool; cli_tool: surfaced in environment block only"
+    },
+    "invocation": {
+      "type": "object",
+      "description": "Required for sub_agent class",
+      "required": ["prompt_via"],
+      "properties": {
+        "prompt_via": {
+          "type": "string",
+          "enum": ["arg", "stdin", "file"],
+          "description": "How to pass the prompt to the binary"
+        },
+        "prompt_arg": {
+          "type": "string",
+          "description": "Flag name for prompt_via=arg (e.g. --prompt)"
+        },
+        "extra_args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Additional fixed arguments appended to every invocation"
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Override working directory (empty = inherit parent session workdir)"
+        },
+        "env_passthrough": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Parent env variable names to pass through to the child"
+        },
+        "env_override": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Key-value env overrides applied on top of passthrough"
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "properties": {
+        "supports_resume": {
+          "type": "boolean",
+          "default": false
+        },
+        "resume_flag": {
+          "type": "string",
+          "description": "Flag name for resume (e.g. --resume)"
+        },
+        "session_id_arg": {
+          "type": "string",
+          "description": "Flag name for session id (e.g. --session-id)"
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "description": "Required for sub_agent class",
+      "required": ["format"],
+      "properties": {
+        "format": {
+          "type": "string",
+          "enum": ["text", "jsonl", "streaming-json", "sse"]
+        },
+        "stderr": {
+          "type": "string",
+          "enum": ["separate", "merge", "ignore"],
+          "default": "separate"
+        },
+        "parser": {
+          "type": "object",
+          "properties": {
+            "assistant_text": {
+              "type": "string",
+              "pattern": "^\\$(\\.[A-Za-z_][A-Za-z0-9_]*|\\[(-?[0-9]+|\\*)\\])*$",
+              "description": "JSONPath to extract assistant text from output chunks"
+            },
+            "session_id_path": {
+              "type": "string",
+              "pattern": "^\\$(\\.[A-Za-z_][A-Za-z0-9_]*|\\[(-?[0-9]+|\\*)\\])*$",
+              "description": "JSONPath to extract session id for resume"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "control": {
+      "type": "object",
+      "description": "Required for sub_agent class",
+      "properties": {
+        "cancel_signal": {
+          "type": "string",
+          "default": "SIGINT",
+          "description": "Signal name for graceful cancellation"
+        },
+        "cancel_grace_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 5,
+          "description": "Seconds to wait before SIGKILL after cancel signal"
+        },
+        "default_timeout_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 600,
+          "description": "Default per-invocation timeout"
+        },
+        "max_timeout_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3600,
+          "description": "Maximum allowed per-invocation timeout"
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "required": ["network", "filesystem", "trusted"],
+      "properties": {
+        "network": {
+          "type": "string",
+          "enum": ["allowed", "restricted", "none"]
+        },
+        "filesystem": {
+          "type": "string",
+          "enum": ["workdir", "full"]
+        },
+        "trusted": {
+          "type": "boolean",
+          "default": false,
+          "description": "true = no first-invocation approval prompt; builtins default true"
+        }
+      }
+    },
+    "smoke_test": {
+      "type": "object",
+      "description": "Required for sub_agent class",
+      "required": ["prompt", "expected_substring"],
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Minimal prompt for smoke validation"
+        },
+        "expected_substring": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Substring that must appear in smoke output"
+        },
+        "timeout_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 60,
+          "description": "Hard timeout for smoke test"
+        }
+      }
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "description": "One-paragraph summary: WHAT this binary is"
+    },
+    "usage_hints": {
+      "type": "string",
+      "description": "WHEN the orchestrator should pick this over alternatives"
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": ["builtin", "user_yaml", "llm_generated"]
+        },
+        "generated_by": {
+          "type": "string",
+          "description": "Model that generated this adapter (llm_generated only)"
+        },
+        "generated_at": {
+          "type": "string",
+          "description": "Timestamp of generation (llm_generated only)"
+        },
+        "tool_version": {
+          "type": "string"
+        },
+        "reviewed_by": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "class": { "const": "sub_agent" } } },
+      "then": {
+        "required": ["invocation", "output", "control", "smoke_test"]
+      }
+    },
+    {
+      "if": { "properties": { "class": { "const": "cli_tool" } } },
+      "then": {
+        "not": { "required": ["invocation", "output", "control", "smoke_test"] }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

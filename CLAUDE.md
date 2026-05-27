@@ -111,3 +111,36 @@ Two memory layers ship with the current version:
 
 Three new built-in tools: `memory_read`, `memory_write`, `session_search`. They
 are registered through the existing tool registry and gated by `allowed_tools`.
+
+## External agents
+
+External sub-agent CLIs (claude, codex, aider, etc.) are exposed to the LLM via
+the `ExternalAgent` tool. Each adapter is defined by a YAML file validated against
+`internal/extagent/schema/adapter.schema.json`.
+
+**Adapter location**: Builtin adapters live in `internal/extagent/builtins/*.yaml`
+(embedded via `//go:embed`). User-defined adapters go in
+`~/.workhorse-agent/external-agents/*.yaml`. On-disk files override builtins by
+name.
+
+**Classes**: `sub_agent` (invoke via ExternalAgent tool) vs `cli_tool` (invoke
+via Bash). Only `sub_agent` adapters appear in the tool's `agent_name` enum.
+
+**Security model**: `security.trusted: true` (builtins) skip the per-session
+approval prompt. Untrusted adapters prompt once per session; approval is not
+persisted across sessions.
+
+**Smoke tests**: Each adapter declares a `smoke_test` stanza. Results are cached
+in `~/.workhorse-agent/cache/smoke/<name>.smoke` with a configurable TTL
+(default 168 hours = 7 days). Adapters that fail smoke are excluded from the
+tool surface.
+
+**PATH scanning**: `internal/extagent/pathscan/` probes a curated allowlist of
+binary names on `$PATH` to detect installed CLIs. Extend via
+`external_agents.pathscan.extra` in config; disable specific probes via
+`external_agents.pathscan.disabled`.
+
+**To add a new adapter manually**: create a YAML file in
+`~/.workhorse-agent/external-agents/` following the schema. Filename stem must
+match the `name:` field. Restart the server (adapter YAMLs are loaded at
+session creation, not hot-reloaded).
