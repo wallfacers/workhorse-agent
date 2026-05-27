@@ -34,6 +34,8 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/tools/builtin"
 	"github.com/wallfacers/workhorse-agent/internal/tools/dispatch"
 	extagenttool "github.com/wallfacers/workhorse-agent/internal/tools/extagent"
+	"github.com/wallfacers/workhorse-agent/internal/tools/extagent/drafttool"
+	"github.com/wallfacers/workhorse-agent/internal/tools/extagent/genbash"
 	"github.com/wallfacers/workhorse-agent/internal/tools/memorytool"
 	"github.com/wallfacers/workhorse-agent/internal/tools/sessionsearch"
 	"github.com/wallfacers/workhorse-agent/internal/extagent"
@@ -41,6 +43,27 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/extagent/smoke"
 	"github.com/wallfacers/workhorse-agent/internal/prompt"
 )
+
+// adapterPermGate bridges permission.Manager to extagenttool.PermissionGate.
+type adapterPermGate struct {
+	mgr *permission.Manager
+}
+
+func (g *adapterPermGate) Prompt(ctx context.Context, sessionID, toolName, adapterName string) (bool, error) {
+	if g.mgr == nil {
+		return false, fmt.Errorf("permission manager not initialized")
+	}
+	decision, err := g.mgr.Check(ctx, sessionID, toolName, adapterName)
+	if err != nil {
+		return false, err
+	}
+	switch decision {
+	case permission.AllowOnce, permission.AllowSession, permission.AllowPermanent:
+		return true, nil
+	default:
+		return false, nil
+	}
+}
 
 // runServe boots the HTTP listener and the agent runtime. The wiring follows
 // the api-protocol "Graceful Shutdown" requirement on the exit path: SIGTERM
@@ -103,19 +126,10 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	if extSnap != nil {
 		extReg = extagent.NewRegistry(extSnap)
 		cacheDir := filepath.Join(profileDir(cfg), "cache", "smoke")
-		os.MkdirAll(cacheDir, 0o755)
-		smoke.RunCachedAll(extReg, cacheDir, cfg.ExternalAgents.SmokeTest.CacheTTL, logger)
-		eaTool := extagenttool.New(&extagenttool.Host{
-			Registry:        extReg,
-			Driver:          &extagentdriver.Driver{Logger: logger},
-			OutputCapBytes:  cfg.Tools.ToolResultMaxBytes,
-			KillOnOutputCap: cfg.ExternalAgents.Driver.KillOnOutputCap,
-		})
-		if eaTool != nil {
-			if err := registry.Register(eaTool); err != nil {
-				logger.Warn("extagent: register ExternalAgent tool", "error", err)
-			}
+		if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+			logger.Warn("extagent: failed to create smoke cache dir", "dir", cacheDir, "error", err)
 		}
+		smoke.RunCachedAll(extReg, cacheDir, cfg.ExternalAgents.SmokeTest.CacheTTL, logger)
 	}
 
 	// 4. Forward-declared session manager — needed by the permission prompt
@@ -129,6 +143,22 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		dangerousCommandPredicate(),
 		time.Duration(cfg.Agent.PermissionRequestTimeoutSeconds)*time.Second,
 	)
+
+	// 3c. Register ExternalAgent tool (after permMgr exists for gating).
+	if extReg != nil {
+		eaTool := extagenttool.New(&extagenttool.Host{
+			Registry:        extReg,
+			PermissionGate:  &adapterPermGate{mgr: permMgr},
+			Driver:          &extagentdriver.Driver{Logger: logger},
+			OutputCapBytes:  cfg.Tools.ToolResultMaxBytes,
+			KillOnOutputCap: cfg.ExternalAgents.Driver.KillOnOutputCap,
+		})
+		if eaTool != nil {
+			if err := registry.Register(eaTool); err != nil {
+				logger.Warn("extagent: register ExternalAgent tool", "error", err)
+			}
+		}
+	}
 
 	// 5. Dispatch tool wiring (multi-agent). Loader rescans yamls on every
 	// call so edits to ~/.workhorse-agent/agents/*.yaml take effect on the
@@ -215,7 +245,7 @@ func buildLogger(cfg config.LoggingConfig, w io.Writer) *slog.Logger {
 // buildProviderRegistry constructs every available provider (anthropic +
 // openai) so that per-session ProviderName can pick one — required by the
 // multi-agent spec's "child overrides parent provider" scenario. The default
-// entry under cfg.Providers.Default is also reachable via that name.
+// entry under cfg.Providers.Default is also reachable by that name.
 //
 // Returns (default+fast) maps keyed by provider name. An entry is only
 // included when its API key is configured; missing keys for the default
@@ -456,14 +486,43 @@ func newRunnerFactory(
 				sess.EnvSnapshot = prompt.EnvironmentBlock(envInput)
 			}
 		}
-		loop.Registry = reg
+		// adapter-generator sessions get a per-session registry overlay: the
+		// real Bash is shadowed by genbash (read-only probes only) and
+		// WriteAdapterDraft is added. The global registry is left untouched
+		// so non-generator sessions cannot see either tool.
+		sessReg := reg
+		sessOrch := orch
+		if sess.AgentType == coord.AdapterGeneratorTypeName {
+			sessReg = reg.Clone()
+			extDir := cfg.ExternalAgents.Dir
+			_ = sessReg.Replace(genbash.Tool{
+				Host: &genbash.Host{},
+				Backend: bash.Bash{
+					DefaultTimeoutSeconds: cfg.Tools.Bash.TimeoutSeconds,
+					MaxOutputBytes:        cfg.Tools.ToolResultMaxBytes,
+					BaseEnv:               os.Environ(),
+				},
+			})
+			_ = sessReg.Register(drafttool.Tool{
+				Host: &drafttool.Host{ExternalAgentsDir: extDir},
+			})
+			sessOrch = &agent.Orchestrator{
+				Registry:        sessReg,
+				MaxParallel:     orch.MaxParallel,
+				DefaultTimeout:  orch.DefaultTimeout,
+				PerToolTimeouts: orch.PerToolTimeouts,
+				MaxResultBytes:  orch.MaxResultBytes,
+			}
+			loop.Orchestrator = sessOrch
+		}
+		loop.Registry = sessReg
 		loop.Compactor = &agent.Compactor{
 			Provider:   fast,
 			Model:      fastModelID,
 			RecentKeep: cfg.Agent.CompactRecentKeep,
 		}
 		// Per-session AllowedTools filters the schema list the LLM sees.
-		loop.Tools = buildProviderToolSchemas(reg, sess.AllowedTools())
+		loop.Tools = buildProviderToolSchemas(sessReg, sess.AllowedTools())
 		return loop
 	}
 }

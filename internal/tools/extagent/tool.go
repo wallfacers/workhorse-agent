@@ -50,12 +50,6 @@ type externalAgentInput struct {
 	ResumeSessionID string         `json:"resume_session_id,omitempty"`
 }
 
-// approved tracks per-session adapter approvals.
-type approvalKey struct {
-	sessionID  string
-	agentName  string
-}
-
 var _ tools.Tool = (*Tool)(nil)
 var _ InternalGated = (*Tool)(nil)
 
@@ -133,9 +127,9 @@ func (t *Tool) Run(ctx context.Context, env *tools.Env, input json.RawMessage) (
 		}, nil
 	}
 
-	// Permission gate for untrusted adapters.
+	// Permission gate for untrusted adapters. Session-scoped caching is
+	// handled by the PermissionGate implementation (permission.Manager).
 	if !adapter.Security.Trusted && t.Host.PermissionGate != nil {
-		key := approvalKey{sessionID: env.SessionID, agentName: in.AgentName}
 		approved, err := t.Host.PermissionGate.Prompt(ctx, env.SessionID, "ExternalAgent", in.AgentName)
 		if err != nil {
 			return &tools.Result{Output: fmt.Sprintf("permission check failed: %v", err), IsError: true}, nil
@@ -143,7 +137,6 @@ func (t *Tool) Run(ctx context.Context, env *tools.Env, input json.RawMessage) (
 		if !approved {
 			return &tools.Result{Output: fmt.Sprintf("permission denied for adapter %q", in.AgentName), IsError: true}, nil
 		}
-		_ = key
 	}
 
 	// Compute timeout.

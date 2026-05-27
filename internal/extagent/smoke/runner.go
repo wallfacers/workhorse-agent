@@ -41,12 +41,14 @@ func Run(adapter *extagent.Adapter, logger *slog.Logger) SmokeResult {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// Use the driver to invoke.
+	// Use the driver to invoke — driver.buildEnv handles env_passthrough
+	// and env_override from the adapter definition.
 	d := &driver.Driver{Logger: logger}
 	result, err := d.Run(ctx, adapter, adapter.SmokeTest.Prompt, driver.Opts{
-		SessionID:    "smoke",
-		CallID:       fmt.Sprintf("smoke-%d", time.Now().UnixNano()),
-		TimeoutSec:   adapter.SmokeTest.TimeoutSec,
+		SessionID:      "smoke",
+		CallID:         fmt.Sprintf("smoke-%d", time.Now().UnixNano()),
+		TimeoutSec:     adapter.SmokeTest.TimeoutSec,
+		Workdir:        sandboxDir,
 		OutputCapBytes: 1 << 20,
 		KillOnOutputCap: true,
 	})
@@ -83,10 +85,17 @@ func Run(adapter *extagent.Adapter, logger *slog.Logger) SmokeResult {
 	}
 }
 
-// RunCachedAll runs cached smoke tests for all adapters in the registry,
+// RunCachedAll runs cached smoke tests for sub_agent adapters in the registry,
 // updating each adapter's SmokePassed/SmokeError/BinaryMissing fields.
+// Non-sub_agent adapters (cli_tool) are skipped — they don't declare smoke_test.
 func RunCachedAll(reg *extagent.Registry, cacheDir string, cacheTTLHours int, logger *slog.Logger) {
 	for _, a := range reg.Adapters() {
+		if a.Class != extagent.ClassSubAgent {
+			continue
+		}
+		if a.SmokeTest.Prompt == "" {
+			continue
+		}
 		passed := RunCached(a, cacheDir, cacheTTLHours, logger)
 		a.SmokePassed = passed
 		if !passed {
@@ -138,13 +147,6 @@ func readSmokeCache(path string, adapter *extagent.Adapter, cacheTTLHours int, l
 			}
 		}
 	}
-
-	// Check adapter mtime vs cache mtime.
-	// If adapter YAML was modified after the cache, invalidate.
-	if _, err := os.Stat(path); err != nil {
-		return nil
-	}
-	// The adapter might not have a file path (builtins), so skip mtime check for those.
 
 	return &sr
 }

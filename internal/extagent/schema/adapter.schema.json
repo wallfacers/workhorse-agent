@@ -207,7 +207,8 @@
         "reviewed_by": {
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     }
   },
   "allOf": [
@@ -220,7 +221,12 @@
     {
       "if": { "properties": { "class": { "const": "cli_tool" } } },
       "then": {
-        "not": { "required": ["invocation", "output", "control", "smoke_test"] }
+        "allOf": [
+          { "not": { "required": ["invocation"] } },
+          { "not": { "required": ["output"] } },
+          { "not": { "required": ["control"] } },
+          { "not": { "required": ["smoke_test"] } }
+        ]
       }
     }
   ],

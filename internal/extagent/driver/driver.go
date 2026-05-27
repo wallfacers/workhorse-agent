@@ -59,12 +59,24 @@ func (d *Driver) Run(ctx context.Context, adapter *extagent.Adapter, promptText 
 		opts.OutputCapBytes = 1 << 20 // 1 MiB default
 	}
 
-	// Compute effective timeout.
-	effectiveTimeout := time.Duration(adapter.Control.DefaultTimeoutSec) * time.Second
+	// Compute effective timeout. santhosh-tekuri/jsonschema does not apply
+	// schema "default" values into the Go struct, so adapters that omit the
+	// control block land here with DefaultTimeoutSec=0 / MaxTimeoutSec=0.
+	// Treat <=0 as "unset" and substitute the documented defaults; never
+	// clamp a positive timeout to zero (that produces context.WithTimeout(_,0)
+	// which fires instantly).
+	defaultTimeout := time.Duration(adapter.Control.DefaultTimeoutSec) * time.Second
+	if defaultTimeout <= 0 {
+		defaultTimeout = 600 * time.Second
+	}
+	effectiveTimeout := defaultTimeout
 	if opts.TimeoutSec > 0 {
 		effectiveTimeout = time.Duration(opts.TimeoutSec) * time.Second
 	}
 	maxTimeout := time.Duration(adapter.Control.MaxTimeoutSec) * time.Second
+	if maxTimeout <= 0 {
+		maxTimeout = 3600 * time.Second
+	}
 	if effectiveTimeout > maxTimeout {
 		effectiveTimeout = maxTimeout
 	}
@@ -74,12 +86,13 @@ func (d *Driver) Run(ctx context.Context, adapter *extagent.Adapter, promptText 
 	defer timeoutCancel()
 
 	// Build argv.
-	cmd, cleanup, err := d.buildCmd(timeoutCtx, adapter, promptText, opts)
+	cr, err := d.buildCmd(timeoutCtx, adapter, promptText, opts)
 	if err != nil {
 		return Result{}, err
 	}
-	if cleanup != nil {
-		defer cleanup()
+	cmd := cr.cmd
+	if cr.cleanup != nil {
+		defer cr.cleanup()
 	}
 
 	// Set process group.
@@ -88,20 +101,42 @@ func (d *Driver) Run(ctx context.Context, adapter *extagent.Adapter, promptText 
 	// Build env.
 	cmd.Env, err = d.buildEnv(adapter)
 	if err != nil {
+		if cr.stdinPipe != nil {
+			cr.stdinPipe.Close()
+		}
 		return Result{}, err
 	}
-	if cmd.Dir == "" && opts.Workdir != "" {
+	// Adapter Cwd overrides session workdir when set.
+	if adapter.Invocation.Cwd != "" {
+		cmd.Dir = adapter.Invocation.Cwd
+	} else if cmd.Dir == "" && opts.Workdir != "" {
 		cmd.Dir = opts.Workdir
 	}
 
 	// Pipes.
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
+		if cr.stdinPipe != nil {
+			cr.stdinPipe.Close()
+		}
 		return Result{}, fmt.Errorf("stdout pipe: %w", err)
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
+		if cr.stdinPipe != nil {
+			cr.stdinPipe.Close()
+		}
 		return Result{}, fmt.Errorf("stderr pipe: %w", err)
+	}
+
+	// Start stdin writer right before cmd.Start so there's no window for
+	// a goroutine leak — if Start fails, the goroutine exits when the pipe
+	// is closed by GC. Earlier failures (buildEnv, pipes) close explicitly.
+	if cr.stdinPipe != nil {
+		go func() {
+			io.WriteString(cr.stdinPipe, promptText)
+			cr.stdinPipe.Close()
+		}()
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -117,11 +152,27 @@ func (d *Driver) Run(ctx context.Context, adapter *extagent.Adapter, promptText 
 	stdoutCh := make(chan output, 1)
 	stderrCh := make(chan output, 1)
 
+	// Recover in each goroutine: CLAUDE.md mandates the agent loop has a
+	// top-level recover, but these collector goroutines live outside that
+	// scope. A panic here would kill the whole server. Always send a value
+	// on the channel so the main goroutine doesn't deadlock.
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("driver: stdout collector panic", "panic", r)
+				stdoutCh <- output{}
+			}
+		}()
 		data, trunc, truncAt := collectOutput(stdoutPipe, opts.OutputCapBytes)
 		stdoutCh <- output{data, trunc, truncAt}
 	}()
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("driver: stderr collector panic", "panic", r)
+				stderrCh <- output{}
+			}
+		}()
 		data, trunc, truncAt := collectOutput(stderrPipe, opts.OutputCapBytes)
 		stderrCh <- output{data, trunc, truncAt}
 	}()
@@ -146,8 +197,12 @@ func (d *Driver) Run(ctx context.Context, adapter *extagent.Adapter, promptText 
 		result.Cancelled = true
 	}
 
-	// If truncated and kill-on-cap, run teardown.
-	if result.Truncated && opts.KillOnOutputCap {
+	// If output was truncated with kill-on-cap, or the process was
+	// cancelled/timed out, tear down the process group. Without this,
+	// exec.CommandContext only kills the direct child; grandchild
+	// processes spawned under Setpgid=true become orphans.
+	needTeardown := (result.Truncated && opts.KillOnOutputCap) || result.Cancelled
+	if needTeardown {
 		d.teardown(cmd, adapter)
 	}
 
@@ -160,21 +215,25 @@ func (d *Driver) Run(ctx context.Context, adapter *extagent.Adapter, promptText 
 	// Apply stderr handling.
 	result.Stdout = d.applyStderr(adapter, result.Stdout, result.Stderr)
 
-	// Add session ID footer if applicable.
+	// Add session ID footer if applicable. Take the LAST non-empty match
+	// rather than the first: streaming-json adapters (claude-code) emit the
+	// session id in both the init event and the final event, and in
+	// nested/multi-turn flows the canonical id to resume against is the
+	// last one written.
 	if adapter.Session.SupportsResume && adapter.Output.Parser != nil && adapter.Output.Parser.SessionIDPath != "" {
 		p, err := jsonpath.Compile(adapter.Output.Parser.SessionIDPath)
 		if err == nil {
-			var lines []string
+			var lastSID string
 			for _, line := range splitLines(rawStdout) {
 				var obj any
 				if json.Unmarshal([]byte(line), &obj) == nil {
 					if sid := p.Extract(obj, logger); sid != "" {
-						lines = append(lines, sid)
+						lastSID = sid
 					}
 				}
 			}
-			if len(lines) > 0 {
-				result.Stdout += fmt.Sprintf("\n[SESSION_ID: %s]", lines[0])
+			if lastSID != "" {
+				result.Stdout += fmt.Sprintf("\n[SESSION_ID: %s]", lastSID)
 			}
 		}
 	}
@@ -218,7 +277,13 @@ func (d *Driver) Run(ctx context.Context, adapter *extagent.Adapter, promptText 
 	return result, nil
 }
 
-func (d *Driver) buildCmd(ctx context.Context, adapter *extagent.Adapter, promptText string, opts Opts) (*exec.Cmd, func(), error) {
+type cmdResult struct {
+	cmd       *exec.Cmd
+	cleanup   func()
+	stdinPipe io.WriteCloser
+}
+
+func (d *Driver) buildCmd(ctx context.Context, adapter *extagent.Adapter, promptText string, opts Opts) (*cmdResult, error) {
 	var args []string
 	var cleanup func()
 
@@ -231,12 +296,12 @@ func (d *Driver) buildCmd(ctx context.Context, adapter *extagent.Adapter, prompt
 	case "file":
 		f, err := os.CreateTemp(os.TempDir(), "workhorse-extagent-prompt-*.txt")
 		if err != nil {
-			return nil, nil, fmt.Errorf("temp file: %w", err)
+			return nil, fmt.Errorf("temp file: %w", err)
 		}
 		if err := os.WriteFile(f.Name(), []byte(promptText), 0o600); err != nil {
 			f.Close()
 			os.Remove(f.Name())
-			return nil, nil, err
+			return nil, err
 		}
 		f.Close()
 		filePath := f.Name()
@@ -244,7 +309,7 @@ func (d *Driver) buildCmd(ctx context.Context, adapter *extagent.Adapter, prompt
 		args = append([]string{adapter.ResolvedBinary}, adapter.Invocation.PromptArg, filePath)
 		args = append(args, adapter.Invocation.ExtraArgs...)
 	default:
-		return nil, nil, fmt.Errorf("unknown prompt_via: %q", adapter.Invocation.PromptVia)
+		return nil, fmt.Errorf("unknown prompt_via: %q", adapter.Invocation.PromptVia)
 	}
 
 	// Add resume args.
@@ -259,18 +324,16 @@ func (d *Driver) buildCmd(ctx context.Context, adapter *extagent.Adapter, prompt
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 
+	var stdinPipe io.WriteCloser
 	if adapter.Invocation.PromptVia == "stdin" {
-		stdin, err := cmd.StdinPipe()
+		var err error
+		stdinPipe, err = cmd.StdinPipe()
 		if err != nil {
-			return nil, cleanup, err
+			return nil, err
 		}
-		go func() {
-			io.WriteString(stdin, promptText)
-			stdin.Close()
-		}()
 	}
 
-	return cmd, cleanup, nil
+	return &cmdResult{cmd: cmd, cleanup: cleanup, stdinPipe: stdinPipe}, nil
 }
 
 func (d *Driver) buildEnv(adapter *extagent.Adapter) ([]string, error) {
@@ -348,6 +411,18 @@ func (d *Driver) parseJSONL(raw string, adapter *extagent.Adapter, logger *slog.
 
 	path := adapter.Output.Parser
 
+	// Compile the JSONPath once, not per line. For long streaming-json
+	// outputs (claude-code transcripts emit thousands of events) this
+	// turns O(lines × pathTokens) into O(lines).
+	var compiled jsonpath.Path
+	var compileErr error
+	if path != nil && path.AssistantText != "" {
+		compiled, compileErr = jsonpath.Compile(path.AssistantText)
+		if compileErr != nil {
+			logger.Debug("driver: invalid jsonpath", "path", path.AssistantText, "err", compileErr)
+		}
+	}
+
 	for i, line := range lines {
 		if line == "" {
 			continue
@@ -361,12 +436,10 @@ func (d *Driver) parseJSONL(raw string, adapter *extagent.Adapter, logger *slog.
 			continue
 		}
 		if path != nil && path.AssistantText != "" {
-			p, err := jsonpath.Compile(path.AssistantText)
-			if err != nil {
-				logger.Debug("driver: invalid jsonpath", "path", path.AssistantText, "err", err)
+			if compileErr != nil {
 				continue
 			}
-			if s := p.Extract(obj, logger); s != "" {
+			if s := compiled.Extract(obj, logger); s != "" {
 				extracted = append(extracted, s)
 			}
 		} else {
@@ -390,6 +463,13 @@ func (d *Driver) parseSSE(raw string, adapter *extagent.Adapter, logger *slog.Lo
 	var extracted []string
 	path := adapter.Output.Parser
 
+	// Compile the JSONPath once, not per line.
+	var compiled jsonpath.Path
+	var compileErr error
+	if path != nil && path.AssistantText != "" {
+		compiled, compileErr = jsonpath.Compile(path.AssistantText)
+	}
+
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "data: ") {
@@ -404,12 +484,8 @@ func (d *Driver) parseSSE(raw string, adapter *extagent.Adapter, logger *slog.Lo
 			logger.Debug("driver: sse data parse error", "data", data, "err", err)
 			continue
 		}
-		if path != nil && path.AssistantText != "" {
-			p, err := jsonpath.Compile(path.AssistantText)
-			if err != nil {
-				continue
-			}
-			if s := p.Extract(obj, logger); s != "" {
+		if path != nil && path.AssistantText != "" && compileErr == nil {
+			if s := compiled.Extract(obj, logger); s != "" {
 				extracted = append(extracted, s)
 			}
 		}
@@ -443,11 +519,22 @@ func (d *Driver) teardown(cmd *exec.Cmd, adapter *extagent.Adapter) {
 		return
 	}
 	sig := syscall.SIGINT
-	if adapter.Control.CancelSignal == "SIGTERM" {
+	switch adapter.Control.CancelSignal {
+	case "SIGTERM":
 		sig = syscall.SIGTERM
+	case "SIGINT":
+		// already default
+	default:
+		d.logger().Warn("driver: unknown cancel_signal, falling back to SIGINT",
+			"signal", adapter.Control.CancelSignal, "adapter", adapter.Name)
 	}
 	pgid := -cmd.Process.Pid
 	_ = syscall.Kill(pgid, sig)
+
+	// Skip grace period if the process has already exited.
+	if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+		return
+	}
 
 	grace := time.Duration(adapter.Control.CancelGraceSec) * time.Second
 	if grace <= 0 {
@@ -467,21 +554,18 @@ func (d *Driver) logger() *slog.Logger {
 // collectOutput reads from r up to cap bytes, draining excess to Discard.
 func collectOutput(r io.Reader, cap int) (data []byte, truncated bool, truncatedAt int) {
 	buf := make([]byte, 0, cap)
-	truncatedAt = cap
 	limited := io.LimitReader(r, int64(cap))
 	n, _ := io.ReadFull(limited, buf[:cap])
 	buf = buf[:n]
 	data = buf
 
-	// Check if there's more.
-	_, err := io.Copy(io.Discard, r)
-	_ = err
-	// If the LimitReader hit EOF vs limit, we can tell from the read count.
-	if n >= cap {
-		// Drain completed — there was more data.
+	// Drain remaining output. If the drain actually read bytes, the
+	// LimitReader capped us — that's genuine truncation. If n == cap but
+	// the drain read nothing, the output was exactly cap bytes (no truncation).
+	drained, _ := io.Copy(io.Discard, r)
+	if drained > 0 {
 		truncated = true
-	} else {
-		truncatedAt = 0
+		truncatedAt = cap + int(drained)
 	}
 	return data, truncated, truncatedAt
 }
