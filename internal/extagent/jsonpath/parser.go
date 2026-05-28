@@ -19,9 +19,9 @@ type Path struct {
 }
 
 type segment struct {
-	kind   segKind // field, index, wildcard
-	ident  string  // for field
-	idx    int     // for index
+	kind  segKind // field, index, wildcard
+	ident string  // for field
+	idx   int     // for index
 }
 
 type segKind int

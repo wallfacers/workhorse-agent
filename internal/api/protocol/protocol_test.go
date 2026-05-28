@@ -22,9 +22,13 @@ func TestClientMessageType_IsKnown(t *testing.T) {
 	}
 }
 
-func TestServerEventTypes_Eleven(t *testing.T) {
-	if got := len(AllServerEventTypes); got != 11 {
-		t.Fatalf("api-protocol spec requires 11 event types, got %d", got)
+func TestServerEventTypes_FullSet(t *testing.T) {
+	// 11 spec-defined event types from the api-protocol MVP plus 3 added
+	// by add-llm-adapter-generator (adapter_approval_request,
+	// adapter_approval_resolved, adapter_approval_expired) → 14.
+	const want = 14
+	if got := len(AllServerEventTypes); got != want {
+		t.Fatalf("event-type catalog drifted: got %d, want %d", got, want)
 	}
 }
 

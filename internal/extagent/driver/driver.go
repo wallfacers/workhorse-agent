@@ -22,14 +22,14 @@ import (
 
 // Result holds the outcome of a sub-process invocation.
 type Result struct {
-	Stdout         string
-	Stderr         string
-	ExitCode       int
-	Cancelled      bool
-	TimedOut       bool
-	Truncated      bool
+	Stdout           string
+	Stderr           string
+	ExitCode         int
+	Cancelled        bool
+	TimedOut         bool
+	Truncated        bool
 	TruncatedAtBytes int
-	RawDumpPath    string
+	RawDumpPath      string
 }
 
 // Opts controls the invocation.
@@ -145,8 +145,8 @@ func (d *Driver) Run(ctx context.Context, adapter *extagent.Adapter, promptText 
 
 	// Collect output concurrently.
 	type output struct {
-		data []byte
-		truncated bool
+		data        []byte
+		truncated   bool
 		truncatedAt int
 	}
 	stdoutCh := make(chan output, 1)

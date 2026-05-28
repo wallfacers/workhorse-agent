@@ -14,8 +14,8 @@ import (
 
 	"github.com/wallfacers/workhorse-agent/internal/extagent"
 	"github.com/wallfacers/workhorse-agent/internal/extagent/driver"
-	extagenttool "github.com/wallfacers/workhorse-agent/internal/tools/extagent"
 	"github.com/wallfacers/workhorse-agent/internal/tools"
+	extagenttool "github.com/wallfacers/workhorse-agent/internal/tools/extagent"
 )
 
 func buildFakeAgent(t *testing.T, behavior string) string {
@@ -164,8 +164,8 @@ func fakeExtAgent(bin string) *extagent.Adapter {
 			Stderr: "separate",
 		},
 		Control: extagent.Control{
-			CancelSignal:     "SIGINT",
-			CancelGraceSec:   1,
+			CancelSignal:      "SIGINT",
+			CancelGraceSec:    1,
 			DefaultTimeoutSec: 30,
 			MaxTimeoutSec:     60,
 		},
@@ -196,8 +196,8 @@ func TestExtAgent_BasicInvocation(t *testing.T) {
 		"prompt":     "hello e2e",
 	})
 	env := &tools.Env{
-		SessionID:       "e2e-session",
-		Workdir:         t.TempDir(),
+		SessionID:        "e2e-session",
+		Workdir:          t.TempDir(),
 		ExtAgentRegistry: reg,
 	}
 	result, err := tool.Run(context.Background(), env, input)
@@ -230,8 +230,8 @@ func TestExtAgent_OutputTruncation(t *testing.T) {
 		"prompt":     "generate huge",
 	})
 	env := &tools.Env{
-		SessionID:       "e2e-trunc",
-		Workdir:         t.TempDir(),
+		SessionID:        "e2e-trunc",
+		Workdir:          t.TempDir(),
 		ExtAgentRegistry: reg,
 	}
 	result, err := tool.Run(context.Background(), env, input)
@@ -261,8 +261,8 @@ func TestExtAgent_Cancellation(t *testing.T) {
 		"prompt":     "wait",
 	})
 	env := &tools.Env{
-		SessionID:       "e2e-cancel",
-		Workdir:         t.TempDir(),
+		SessionID:        "e2e-cancel",
+		Workdir:          t.TempDir(),
 		ExtAgentRegistry: reg,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -295,13 +295,13 @@ func TestExtAgent_Timeout(t *testing.T) {
 	tool := extagenttool.New(host)
 
 	input, _ := json.Marshal(map[string]any{
-		"agent_name": "test-fake",
-		"prompt":     "wait",
+		"agent_name":  "test-fake",
+		"prompt":      "wait",
 		"timeout_sec": 1,
 	})
 	env := &tools.Env{
-		SessionID:       "e2e-timeout",
-		Workdir:         t.TempDir(),
+		SessionID:        "e2e-timeout",
+		Workdir:          t.TempDir(),
 		ExtAgentRegistry: reg,
 	}
 	result, err := tool.Run(context.Background(), env, input)
@@ -332,8 +332,8 @@ func TestExtAgent_PerSessionRegistry(t *testing.T) {
 		"prompt":     "session A",
 	})
 	envA := &tools.Env{
-		SessionID:       "session-A",
-		Workdir:         t.TempDir(),
+		SessionID:        "session-A",
+		Workdir:          t.TempDir(),
 		ExtAgentRegistry: reg,
 	}
 	resultA, err := tool.Run(context.Background(), envA, inputA)
@@ -351,8 +351,8 @@ func TestExtAgent_PerSessionRegistry(t *testing.T) {
 		"prompt":     "session B",
 	})
 	envB := &tools.Env{
-		SessionID:       "session-B",
-		Workdir:         t.TempDir(),
+		SessionID:        "session-B",
+		Workdir:          t.TempDir(),
 		ExtAgentRegistry: emptyReg,
 	}
 	resultB, err := tool.Run(context.Background(), envB, inputB)
@@ -382,8 +382,8 @@ func TestExtAgent_NonZeroExit(t *testing.T) {
 		"prompt":     "fail",
 	})
 	env := &tools.Env{
-		SessionID:       "e2e-fail",
-		Workdir:         t.TempDir(),
+		SessionID:        "e2e-fail",
+		Workdir:          t.TempDir(),
 		ExtAgentRegistry: reg,
 	}
 	result, err := tool.Run(context.Background(), env, input)

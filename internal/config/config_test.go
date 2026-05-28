@@ -369,6 +369,117 @@ func TestDefault_ExternalAgentsConfig(t *testing.T) {
 	if c.ExternalAgents.Driver.KillOnOutputCap != true {
 		t.Error("external_agents.driver.kill_on_output_cap: got false, want true")
 	}
+	if !c.ExternalAgents.Generation.Enabled {
+		t.Error("external_agents.generation.enabled: got false, want true")
+	}
+	if c.ExternalAgents.Generation.ApprovalTimeoutSec != 300 {
+		t.Errorf("external_agents.generation.approval_timeout_sec: got %d, want 300", c.ExternalAgents.Generation.ApprovalTimeoutSec)
+	}
+	if !c.ExternalAgents.Generation.ImplicitTriggerEnabled {
+		t.Error("external_agents.generation.implicit_trigger_enabled: got false, want true")
+	}
+	if len(c.ExternalAgents.Generation.AllowedModels) != 0 {
+		t.Errorf("external_agents.generation.allowed_models: got %v, want empty", c.ExternalAgents.Generation.AllowedModels)
+	}
+}
+
+func TestLoad_ExternalAgentsGenerationYAML(t *testing.T) {
+	path := writeYAML(t, `
+external_agents:
+  generation:
+    enabled: false
+    approval_timeout_sec: 600
+    implicit_trigger_enabled: false
+    allowed_models: [anthropic:claude-opus-4-7, anthropic:claude-sonnet-4-6]
+`)
+	cfg, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ExternalAgents.Generation.Enabled {
+		t.Error("enabled: got true, want false")
+	}
+	if cfg.ExternalAgents.Generation.ApprovalTimeoutSec != 600 {
+		t.Errorf("approval_timeout_sec: got %d, want 600", cfg.ExternalAgents.Generation.ApprovalTimeoutSec)
+	}
+	if cfg.ExternalAgents.Generation.ImplicitTriggerEnabled {
+		t.Error("implicit_trigger_enabled: got true, want false")
+	}
+	if len(cfg.ExternalAgents.Generation.AllowedModels) != 2 ||
+		cfg.ExternalAgents.Generation.AllowedModels[0] != "anthropic:claude-opus-4-7" {
+		t.Errorf("allowed_models: got %v", cfg.ExternalAgents.Generation.AllowedModels)
+	}
+}
+
+func TestLoad_GenerationDefaultsApplyOnEmptyConfig(t *testing.T) {
+	path := writeYAML(t, `# empty`)
+	cfg, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.ExternalAgents.Generation.Enabled {
+		t.Error("generation.enabled default lost")
+	}
+	if cfg.ExternalAgents.Generation.ApprovalTimeoutSec != 300 {
+		t.Errorf("generation.approval_timeout_sec default lost: %d", cfg.ExternalAgents.Generation.ApprovalTimeoutSec)
+	}
+	if !cfg.ExternalAgents.Generation.ImplicitTriggerEnabled {
+		t.Error("generation.implicit_trigger_enabled default lost")
+	}
+}
+
+func TestLoad_RejectsBadGenerationApprovalTimeout(t *testing.T) {
+	for _, v := range []int{0, -1, 3601} {
+		path := writeYAML(t, "external_agents:\n  generation:\n    approval_timeout_sec: "+itoa(v))
+		_, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+		if err == nil {
+			t.Fatalf("approval_timeout_sec=%d: expected validation error", v)
+		}
+		if !strings.Contains(err.Error(), "external_agents.generation.approval_timeout_sec") {
+			t.Errorf("approval_timeout_sec=%d: unexpected error: %v", v, err)
+		}
+	}
+}
+
+func TestLoad_GenerationAllowedModelsEmptyMeansAny(t *testing.T) {
+	// An empty list is the documented "any model" semantics; it must validate cleanly
+	// and surface as nil/empty so downstream code reads it as "no restriction".
+	for _, body := range []string{
+		`external_agents: {generation: {allowed_models: []}}`,
+		`external_agents: {generation: {}}`,
+		`# empty`,
+	} {
+		path := writeYAML(t, body)
+		cfg, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+		if err != nil {
+			t.Fatalf("body=%q: %v", body, err)
+		}
+		if len(cfg.ExternalAgents.Generation.AllowedModels) != 0 {
+			t.Errorf("body=%q: allowed_models should be empty, got %v", body, cfg.ExternalAgents.Generation.AllowedModels)
+		}
+	}
+}
+
+func itoa(v int) string { // local helper avoids strconv import in the test file
+	if v == 0 {
+		return "0"
+	}
+	neg := v < 0
+	if neg {
+		v = -v
+	}
+	var buf [20]byte
+	i := len(buf)
+	for v > 0 {
+		i--
+		buf[i] = byte('0' + v%10)
+		v /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
 }
 
 func TestLoad_ExternalAgentsYAML(t *testing.T) {

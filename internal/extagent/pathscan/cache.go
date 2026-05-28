@@ -12,10 +12,10 @@ import (
 )
 
 type CacheFile struct {
-	ScannedAt          time.Time `json:"scanned_at"`
-	ExtraFingerprint   string    `json:"extra_fingerprint"`
-	DisabledFingerprint string   `json:"disabled_fingerprint"`
-	Entries            []Entry   `json:"entries"`
+	ScannedAt           time.Time `json:"scanned_at"`
+	ExtraFingerprint    string    `json:"extra_fingerprint"`
+	DisabledFingerprint string    `json:"disabled_fingerprint"`
+	Entries             []Entry   `json:"entries"`
 }
 
 // fingerprint computes a stable hash for a sorted string slice.

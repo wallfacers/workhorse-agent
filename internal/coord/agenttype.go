@@ -68,48 +68,72 @@ func (l *Loader) Get(name string) (AgentType, error) {
 	return AgentType{}, fmt.Errorf("%w: %s", ErrNotFound, name)
 }
 
-// List rescans the directory and returns every AgentType in deterministic
-// (alphabetical) order. A missing directory returns (nil, nil) — operating
-// without agent types is valid.
+// List rescans the directory, merges embedded builtins, and returns every
+// AgentType in deterministic (alphabetical) order. A missing directory is
+// fine — the builtins still appear. On-disk entries with the same name
+// override the builtin, EXCEPT that adapter-generator's effective tool
+// surface is always re-clamped by applyAdapterGeneratorLockdown so a
+// hand-edited yaml cannot escalate privileges.
 func (l *Loader) List() ([]AgentType, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.dir == "" {
-		return nil, nil
-	}
-	entries, err := os.ReadDir(l.dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("agent_type: read dir %q: %w", l.dir, err)
+	merged := map[string]AgentType{}
+	for _, at := range loadBuiltinAgentsOrEmpty() {
+		merged[at.Name] = at
 	}
 
-	seen := map[string]string{}
-	out := make([]AgentType, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
+	if l.dir != "" {
+		entries, err := os.ReadDir(l.dir)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			// No on-disk overrides; builtins-only is a valid configuration.
+		case err != nil:
+			return nil, fmt.Errorf("agent_type: read dir %q: %w", l.dir, err)
+		default:
+			seen := map[string]string{}
+			for _, e := range entries {
+				if e.IsDir() {
+					continue
+				}
+				base := e.Name()
+				if !strings.HasSuffix(base, ".yaml") && !strings.HasSuffix(base, ".yml") {
+					continue
+				}
+				path := filepath.Join(l.dir, base)
+				at, err := parseFile(path)
+				if err != nil {
+					return nil, err
+				}
+				if prev, dup := seen[at.Name]; dup {
+					return nil, fmt.Errorf("agent_type: duplicate name %q (in %q and %q)",
+						at.Name, prev, path)
+				}
+				seen[at.Name] = path
+				applyAdapterGeneratorLockdown(&at)
+				merged[at.Name] = at
+			}
 		}
-		base := e.Name()
-		if !strings.HasSuffix(base, ".yaml") && !strings.HasSuffix(base, ".yml") {
-			continue
-		}
-		path := filepath.Join(l.dir, base)
-		at, err := parseFile(path)
-		if err != nil {
-			return nil, err
-		}
-		if prev, dup := seen[at.Name]; dup {
-			return nil, fmt.Errorf("agent_type: duplicate name %q (in %q and %q)",
-				at.Name, prev, path)
-		}
-		seen[at.Name] = path
+	}
+
+	out := make([]AgentType, 0, len(merged))
+	for _, at := range merged {
 		out = append(out, at)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// loadBuiltinAgentsOrEmpty wraps loadBuiltinAgents, swallowing errors. A
+// failure to load embedded agents is a build-time bug, not a user-visible
+// runtime error; the rest of the agent type system should keep working with
+// whatever did parse (or nothing).
+func loadBuiltinAgentsOrEmpty() []AgentType {
+	out, err := loadBuiltinAgents()
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 type agentYAML struct {

@@ -94,12 +94,12 @@ func TestGrep_GitignoreMonorepo(t *testing.T) {
 		}
 	}
 	mustNotContain := []string{
-		"noise.log",         // excluded by *.log
-		"node_modules",      // default-excluded
-		"dist/",             // default-excluded
-		"yarn.lock",         // matches *.lock default-exclude
-		".git/",             // hard VCS skip
-		"data.bin",          // binary sniff
+		"noise.log",    // excluded by *.log
+		"node_modules", // default-excluded
+		"dist/",        // default-excluded
+		"yarn.lock",    // matches *.lock default-exclude
+		".git/",        // hard VCS skip
+		"data.bin",     // binary sniff
 	}
 	for _, frag := range mustNotContain {
 		if strings.Contains(res.Output, frag) {

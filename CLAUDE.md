@@ -143,4 +143,58 @@ binary names on `$PATH` to detect installed CLIs. Extend via
 **To add a new adapter manually**: create a YAML file in
 `~/.workhorse-agent/external-agents/` following the schema. Filename stem must
 match the `name:` field. Restart the server (adapter YAMLs are loaded at
-session creation, not hot-reloaded).
+session creation, not hot-reloaded). For the LLM-driven alternative see the
+section below.
+
+## LLM-generated adapters
+
+Adapters can be authored by an LLM via the `adapter-generator` agent type, so
+operators don't need to hand-write YAML against the schema. Two trigger paths:
+
+- **Explicit**: the orchestrator's `agent_setup` tool. The LLM (or operator)
+  calls it with `{binary: "gemini"}`. The tool drives the full flow.
+- **Implicit**: the agent loop intercepts `ExternalAgent` calls against
+  unknown `agent_name` values whose binary resolves on PATH and synthesises
+  an `agent_setup` invocation. Disable via
+  `external_agents.generation.implicit_trigger_enabled: false`.
+
+**Flow**: `agent_setup` collects `--help` / `--version` / man / README,
+renders the `AdapterGeneration` prompt (in `internal/prompt/builtins.go`),
+dispatches the `adapter-generator` subagent (locked-down tool surface:
+`[Bash, Read, WriteAdapterDraft]`; restricted `Bash` via `genbash` inspector;
+denied tools: `Dispatch`, `ExternalAgent`, `agent_setup`, `Write`, `Edit`),
+parses + schema-validates the draft, runs the smoke test, then submits an
+approval request via the SSE channel.
+
+**Approval surface**: `POST /v1/sessions/{id}/approvals/{approval_id}` with
+body `{"decision": "approve"|"reject"|"edit", "edited_yaml": "..."}`.
+Three SSE events flank the flow: `adapter_approval_request` (carries draft +
+smoke result + diff against prior YAML), `adapter_approval_resolved`,
+`adapter_approval_expired`. Default approval TTL is 5 minutes; tune via
+`external_agents.generation.approval_timeout_sec`.
+
+**Drafts directory**: `<external-agents-dir>/.drafts/` (mode 0700). The
+registry loader explicitly skips dot-prefixed subdirectories so half-baked
+drafts never land in a session's registry. The `WriteAdapterDraft` tool
+(scoped to `adapter-generator` sessions only) is the only path that writes
+there. Approved drafts atomically rename onto the live dir; a sibling
+`<name>.genmeta` JSON file captures the audit trail (model id, captured
+`--help` output, timestamps).
+
+**Drift detection**: at startup, `internal/extagent/regen.Check` runs
+`<binary> --version` against every `provenance.source: llm_generated`
+adapter and logs/surfaces drift when the current version doesn't contain
+the stored `provenance.tool_version`. Empty stored versions are skipped to
+avoid false positives. Drift is surfaced via `GET /v1/diagnostics` under
+`external_agents.drift`.
+
+**Security**: the `adapter-generator` agent type's tool surface is fixed in
+code (`internal/coord/builtin_agents.go`), not in YAML — tampered YAML
+cannot escalate. The `genbash` wrapper rejects every command outside the
+read-only-probe regex set (`which`, `<bin> --help`, `man <bin>`, `cat
+<readme>`, etc.) and rejects all shell metacharacters. Generated adapters
+also pass through a dangerous-command pattern scan on `invocation.extra_args`
+and `invocation.env_override` values.
+
+**To regenerate**: `workhorse-agent setup-agent <binary> --regenerate`. The
+diff against the prior YAML is included in the approval payload.

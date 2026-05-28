@@ -1,4 +1,9 @@
-## ADDED Requirements
+# environment-detection Specification
+
+## Purpose
+TBD - created by archiving change add-external-agent-tool. Update Purpose after archive.
+
+## Requirements
 
 ### Requirement: Curated PATH allowlist for CLI tool discovery
 

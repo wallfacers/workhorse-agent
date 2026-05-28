@@ -22,9 +22,11 @@ USAGE
   workhorse-agent <command> [flags]
 
 COMMANDS
-  init      generate ~/.workhorse-agent/{config.yaml,mcp.json,skills,agents} on first run
-  serve     start the HTTP + MCP Streamable HTTP server
-  version   print build version
+  init          generate ~/.workhorse-agent/{config.yaml,mcp.json,skills,agents} on first run
+  serve         start the HTTP + MCP Streamable HTTP server
+  setup-agent   trigger adapter generation for a newly installed CLI (talks to a running server)
+  approve       resolve a pending adapter-generation approval by id
+  version       print build version
 
 GLOBAL FLAGS
   --config <path>      path to config.yaml (default: ~/.workhorse-agent/config.yaml)
@@ -59,6 +61,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runInit(args[1:], stdout, stderr)
 	case "serve":
 		return runServe(args[1:], stdout, stderr)
+	case "setup-agent":
+		return runSetupAgent(args[1:], stdout, stderr)
+	case "approve":
+		return runApprove(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		return runVersion(stdout)
 	case "help", "--help", "-h":

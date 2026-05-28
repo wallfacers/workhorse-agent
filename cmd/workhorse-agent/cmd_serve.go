@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,9 +20,16 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/api"
 	"github.com/wallfacers/workhorse-agent/internal/config"
 	"github.com/wallfacers/workhorse-agent/internal/coord"
+	"github.com/wallfacers/workhorse-agent/internal/extagent"
+	"github.com/wallfacers/workhorse-agent/internal/extagent/approval"
+	"github.com/wallfacers/workhorse-agent/internal/extagent/draft"
+	extagentdriver "github.com/wallfacers/workhorse-agent/internal/extagent/driver"
+	"github.com/wallfacers/workhorse-agent/internal/extagent/regen"
+	"github.com/wallfacers/workhorse-agent/internal/extagent/smoke"
 	"github.com/wallfacers/workhorse-agent/internal/idgen"
 	"github.com/wallfacers/workhorse-agent/internal/memory"
 	"github.com/wallfacers/workhorse-agent/internal/permission"
+	"github.com/wallfacers/workhorse-agent/internal/prompt"
 	"github.com/wallfacers/workhorse-agent/internal/provider"
 	"github.com/wallfacers/workhorse-agent/internal/provider/anthropic"
 	"github.com/wallfacers/workhorse-agent/internal/provider/openai"
@@ -30,6 +38,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/store"
 	"github.com/wallfacers/workhorse-agent/internal/store/sqlite"
 	"github.com/wallfacers/workhorse-agent/internal/tools"
+	"github.com/wallfacers/workhorse-agent/internal/tools/agentsetup"
 	"github.com/wallfacers/workhorse-agent/internal/tools/bash"
 	"github.com/wallfacers/workhorse-agent/internal/tools/builtin"
 	"github.com/wallfacers/workhorse-agent/internal/tools/dispatch"
@@ -38,10 +47,6 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/tools/extagent/genbash"
 	"github.com/wallfacers/workhorse-agent/internal/tools/memorytool"
 	"github.com/wallfacers/workhorse-agent/internal/tools/sessionsearch"
-	"github.com/wallfacers/workhorse-agent/internal/extagent"
-	extagentdriver "github.com/wallfacers/workhorse-agent/internal/extagent/driver"
-	"github.com/wallfacers/workhorse-agent/internal/extagent/smoke"
-	"github.com/wallfacers/workhorse-agent/internal/prompt"
 )
 
 // adapterPermGate bridges permission.Manager to extagenttool.PermissionGate.
@@ -130,6 +135,12 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 			logger.Warn("extagent: failed to create smoke cache dir", "dir", cacheDir, "error", err)
 		}
 		smoke.RunCachedAll(extReg, cacheDir, cfg.ExternalAgents.SmokeTest.CacheTTL, logger)
+		// Drift check: surfaces llm_generated adapters whose binary has
+		// changed version since generation. Log-only; never auto-regen.
+		driftEntries := regen.Check(extReg, logger)
+		if len(driftEntries) > 0 {
+			logger.Info("extagent: drift detected", "count", len(driftEntries))
+		}
 	}
 
 	// 4. Forward-declared session manager — needed by the permission prompt
@@ -169,9 +180,38 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		Loader:   loader,
 		MaxDepth: cfg.Agent.MaxDepth,
 	}
-	if err := registry.Register(dispatch.Tool{Host: dispatchHost}); err != nil {
+	dispatchTool := dispatch.Tool{Host: dispatchHost}
+	if err := registry.Register(dispatchTool); err != nil {
 		_ = st.Close()
 		return fmt.Errorf("serve: register dispatch: %w", err)
+	}
+
+	// 5b. agent_setup tool (LLM-driven adapter generation). The approval
+	// manager is wired without an emitter for now — §9 wires the SSE side.
+	// The dispatcher is a thin closure delegating to the registered Dispatch
+	// tool with agent_type pinned to adapter-generator.
+	// approvalMgr is constructed up front; its Emitter / Publisher (which
+	// depend on sessMgr and the live external-agents dir) are wired in step 7
+	// after sessMgr exists.
+	approvalMgr := approval.New(approval.Options{
+		Timeout: time.Duration(cfg.ExternalAgents.Generation.ApprovalTimeoutSec) * time.Second,
+	})
+
+	if cfg.ExternalAgents.Generation.Enabled {
+		examples := loadBuiltinAdapterExamples(logger)
+		setupHost := &agentsetup.Host{
+			Registry:          extReg,
+			ExternalAgentsDir: cfg.ExternalAgents.Dir,
+			Dispatcher:        newAdapterGeneratorDispatcher(dispatchTool),
+			Approval:          approvalMgr,
+			SchemaJSON:        loadAdapterSchemaJSON(logger),
+			Examples:          examples,
+			ModelDefault:      cfg.Models.Default,
+			AllowedModels:     append([]string(nil), cfg.ExternalAgents.Generation.AllowedModels...),
+		}
+		if err := registry.Register(agentsetup.Tool{Host: setupHost}); err != nil {
+			logger.Warn("agent_setup: register failed", "error", err)
+		}
 	}
 
 	// 6. Session manager with the agent-loop runner factory.
@@ -182,9 +222,19 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	})
 	dispatchHost.Manager = sessMgr
 
+	// 6b. Late-wire the approval manager hooks that depend on sessMgr / the
+	// live external-agents dir.
+	approvalMgr.SetEmitter(api.NewSessionEventEmitter(sessMgr))
+	approvalMgr.SetPublisher(&draftPublisher{liveDir: cfg.ExternalAgents.Dir})
+	approvalMgr.SetDedupClearer(&sessionDedupClearer{manager: sessMgr})
+
 	// 7. API server.
 	apiCfg := apiConfigFrom(cfg)
 	srv := api.NewServer(apiCfg, sessMgr, st, logger)
+	srv.SetApprovalManager(approvalMgr)
+	if extReg != nil {
+		srv.SetDriftSnapshot(regen.Check(extReg, nil))
+	}
 	exit, err := srv.Start()
 	if err != nil {
 		_ = st.Close()
@@ -521,6 +571,20 @@ func newRunnerFactory(
 			Model:      fastModelID,
 			RecentKeep: cfg.Agent.CompactRecentKeep,
 		}
+
+		// Implicit-trigger interceptor: only attached to top-level sessions.
+		// Child sessions (Dispatch-spawned subagents) MUST NOT recursively
+		// trigger adapter generation — that would risk infinite loops.
+		if sess.ParentID == "" && cfg.ExternalAgents.Generation.ImplicitTriggerEnabled {
+			if t, ok := sessReg.Get("agent_setup"); ok {
+				loop.ImplicitTriggerInterceptor = agent.MakeImplicitTriggerHook(agent.ImplicitTriggerConfig{
+					Enabled:   true,
+					SetupTool: t,
+					Env:       loop.ToolEnv,
+				})
+			}
+		}
+
 		// Per-session AllowedTools filters the schema list the LLM sees.
 		loop.Tools = buildProviderToolSchemas(sessReg, sess.AllowedTools())
 		return loop
@@ -553,6 +617,122 @@ func buildProviderToolSchemas(reg *tools.Registry, allowed []string) []provider.
 		})
 	}
 	return out
+}
+
+// adapterGeneratorDispatcher implements agentsetup.Dispatcher by invoking the
+// registered Dispatch tool with agent_type pinned to adapter-generator.
+type adapterGeneratorDispatcher struct {
+	tool dispatch.Tool
+}
+
+func newAdapterGeneratorDispatcher(t dispatch.Tool) *adapterGeneratorDispatcher {
+	return &adapterGeneratorDispatcher{tool: t}
+}
+
+// Dispatch invokes the underlying Dispatch tool. The env map is passed
+// through via the inputs payload — Dispatch doesn't carry per-call env yet,
+// so for now we rely on the runner factory to seed the session's Env from
+// parent + dispatch overlay. The genbash install-prefix env var is the
+// cross-cutting hint the generator subagent needs.
+func (d *adapterGeneratorDispatcher) Dispatch(ctx context.Context, parentSessionID, p, model string, _ map[string]string) (string, error) {
+	in := dispatch.DispatchInput{
+		Prompt:    p,
+		AgentType: coord.AdapterGeneratorTypeName,
+		Mode:      "blocking",
+		Model:     model,
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		return "", err
+	}
+	res, err := d.tool.Run(ctx, &tools.Env{SessionID: parentSessionID}, raw)
+	if err != nil {
+		return "", err
+	}
+	if res.IsError {
+		return "", fmt.Errorf("dispatch failed: %s", res.Output)
+	}
+	return res.Output, nil
+}
+
+// loadBuiltinAdapterExamples reads each embedded adapter YAML and returns it
+// as a few-shot example for the AdapterGeneration template.
+func loadBuiltinAdapterExamples(logger *slog.Logger) []prompt.AdapterGenerationExample {
+	loader := &extagent.Loader{Logger: logger}
+	snap, err := loader.Load(os.TempDir()) // dir unused; only builtins are needed
+	if err != nil {
+		logger.Warn("agent_setup: load builtin examples failed", "error", err)
+		return nil
+	}
+	out := make([]prompt.AdapterGenerationExample, 0)
+	for _, a := range extagent.NewRegistry(snap).All() {
+		if a.Provenance.Source != "builtin" {
+			continue
+		}
+		body, ok := extagent.BuiltinAdapterYAML(a.Name)
+		if !ok {
+			continue
+		}
+		out = append(out, prompt.AdapterGenerationExample{Name: a.Name, Body: string(body)})
+	}
+	return out
+}
+
+// sessionDedupClearer implements approval.DedupClearer by walking the
+// session manager to find the originating session and clearing its
+// adapter-setup dedup entry. On approval the entry is removed so the next
+// retry sees the adapter as freshly available.
+type sessionDedupClearer struct {
+	manager *session.Manager
+}
+
+func (c *sessionDedupClearer) ClearImplicitTriggerDedup(sessionID, agentName string) {
+	if c == nil || c.manager == nil || sessionID == "" {
+		return
+	}
+	sess, err := c.manager.GetSession(sessionID)
+	if err != nil {
+		return
+	}
+	sess.SetAdapterSetupState(agentName, "")
+}
+
+func (c *sessionDedupClearer) MarkAdapterSetupUnavailable(sessionID, agentName, _ string) {
+	if c == nil || c.manager == nil || sessionID == "" {
+		return
+	}
+	sess, err := c.manager.GetSession(sessionID)
+	if err != nil {
+		return
+	}
+	sess.SetAdapterSetupState(agentName, "unavailable")
+}
+
+// draftPublisher adapts the draft.Publisher to the approval.Publisher
+// interface. The approval manager calls Publish on approve; this wrapper
+// builds the GenmetaPayload from the provenance fields the manager carries.
+type draftPublisher struct {
+	liveDir string
+}
+
+func (p *draftPublisher) Publish(draftPath string, prov approval.Provenance) (string, error) {
+	pub := &draft.Publisher{LiveDir: p.liveDir}
+	return pub.Publish(draftPath, draft.GenmetaPayload{
+		GeneratedBy: prov.GeneratedBy,
+		GeneratedAt: prov.GeneratedAt,
+		ToolVersion: prov.ToolVersion,
+	})
+}
+
+// loadAdapterSchemaJSON returns the embedded adapter JSON schema as a string,
+// for interpolation into the generator's system prompt.
+func loadAdapterSchemaJSON(logger *slog.Logger) string {
+	body, ok := extagent.AdapterSchemaJSON()
+	if !ok {
+		logger.Warn("agent_setup: adapter schema embed missing")
+		return "{}"
+	}
+	return string(body)
 }
 
 func apiConfigFrom(cfg config.Config) api.Config {

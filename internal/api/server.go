@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/wallfacers/workhorse-agent/internal/extagent/approval"
 	"github.com/wallfacers/workhorse-agent/internal/session"
 	"github.com/wallfacers/workhorse-agent/internal/store"
 )
@@ -61,6 +62,16 @@ type Server struct {
 	// shutdownInFlight switches to true once Shutdown begins so handlers can
 	// refuse new POSTs while still letting SSE writers drain.
 	shutdownInFlight atomic.Bool
+
+	// approvals is the adapter-generation approval manager. Wired by
+	// cmd/serve via SetApprovalManager so the api package doesn't depend on
+	// the cmd-level wiring path. May be nil — the approvals endpoint then
+	// responds with 503.
+	approvals *approval.Manager
+
+	// drift is the adapter-drift snapshot surfaced via /v1/diagnostics.
+	// Populated by SetDriftSnapshot during server start.
+	drift *driftSnapshot
 }
 
 // NewServer builds a Server but does NOT start it. Caller wires routes via
@@ -113,9 +124,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/sessions/{id}", s.handleDeleteSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/cancel", s.handleCancelSession)
 	mux.HandleFunc("POST /v1/sessions/{id}/compact", s.handleCompactSession)
+	mux.HandleFunc("POST /v1/sessions/{id}/approvals/{aid}", s.handleAdapterApproval)
 	mux.HandleFunc("/v1/sessions/{id}/stream", s.handleStream)
 
 	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /v1/diagnostics", s.handleDiagnostics)
 	mux.HandleFunc("GET /debug/sessions/{id}/events", s.handleDebugEvents)
 
 	ui := s.handleUI()

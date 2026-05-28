@@ -15,6 +15,7 @@ import (
 
 // Non-recursive glob: add-llm-adapter-generator places agent-type YAMLs in builtins/agents/;
 // a recursive glob would pick those up and reject as schema-invalid every startup.
+//
 //go:embed builtins/*.yaml
 var builtinFS embed.FS
 

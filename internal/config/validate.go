@@ -207,6 +207,9 @@ func validateExternalAgents(e ExternalAgentsConfig) error {
 	if e.PathScan.CacheTTL < 0 {
 		return fmt.Errorf("invalid config: external_agents.pathscan.cache_ttl must be >= 0, got %d", e.PathScan.CacheTTL)
 	}
+	if e.Generation.ApprovalTimeoutSec < 1 || e.Generation.ApprovalTimeoutSec > 3600 {
+		return fmt.Errorf("invalid config: external_agents.generation.approval_timeout_sec must be 1-3600, got %d", e.Generation.ApprovalTimeoutSec)
+	}
 	// Check for overlap: disabled wins over extra, but warn-worthy overlap is allowed.
 	// No validation error for overlap per spec.
 	return nil

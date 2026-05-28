@@ -74,8 +74,8 @@ func TestCache_WriteAndLoad(t *testing.T) {
 	cachePath := filepath.Join(dir, "pathscan.json")
 
 	cf := &pathscan.CacheFile{
-		ScannedAt:         time.Now(),
-		ExtraFingerprint:  "a",
+		ScannedAt:           time.Now(),
+		ExtraFingerprint:    "a",
 		DisabledFingerprint: "b",
 		Entries: []pathscan.Entry{
 			{Name: "git", Path: "/usr/bin/git", Version: "2.43.0"},
@@ -128,8 +128,8 @@ func TestCachedScan_CacheHit(t *testing.T) {
 
 	// Write a valid cache.
 	cf := &pathscan.CacheFile{
-		ScannedAt:         time.Now(),
-		ExtraFingerprint:  "",
+		ScannedAt:           time.Now(),
+		ExtraFingerprint:    "",
 		DisabledFingerprint: "",
 		Entries: []pathscan.Entry{
 			{Name: "fake-tool", Path: "/usr/bin/fake-tool", Version: "1.0"},
@@ -150,8 +150,8 @@ func TestCachedScan_TTLExpired(t *testing.T) {
 	cachePath := filepath.Join(dir, "pathscan.json")
 
 	cf := &pathscan.CacheFile{
-		ScannedAt:         time.Now().Add(-48 * time.Hour), // expired
-		ExtraFingerprint:  "",
+		ScannedAt:           time.Now().Add(-48 * time.Hour), // expired
+		ExtraFingerprint:    "",
 		DisabledFingerprint: "",
 		Entries: []pathscan.Entry{
 			{Name: "fake-tool", Path: "/usr/bin/fake-tool"},
@@ -175,8 +175,8 @@ func TestCachedScan_FingerprintMismatch(t *testing.T) {
 	cachePath := filepath.Join(dir, "pathscan.json")
 
 	cf := &pathscan.CacheFile{
-		ScannedAt:         time.Now(),
-		ExtraFingerprint:  "old",
+		ScannedAt:           time.Now(),
+		ExtraFingerprint:    "old",
 		DisabledFingerprint: "",
 		Entries: []pathscan.Entry{
 			{Name: "fake-tool", Path: "/usr/bin/fake-tool"},

@@ -6,21 +6,21 @@ package config
 // Config is the full runtime configuration tree. Every field maps 1:1 to the
 // schema in openspec/changes/init-workhorse-agent-mvp/specs/configuration/spec.md.
 type Config struct {
-	Server    ServerConfig    `yaml:"server"`
-	Auth      AuthConfig      `yaml:"auth"`
-	Providers ProvidersConfig `yaml:"providers"`
-	Models    ModelsConfig    `yaml:"models"`
-	Agent     AgentConfig     `yaml:"agent"`
-	Tools     ToolsConfig     `yaml:"tools"`
-	Store     StoreConfig     `yaml:"store"`
-	Sessions  SessionsConfig  `yaml:"sessions"`
-	MCP       MCPConfig       `yaml:"mcp"`
-	Skills    PathConfig      `yaml:"skills"`
-	Agents    PathConfig      `yaml:"agents"`
+	Server         ServerConfig         `yaml:"server"`
+	Auth           AuthConfig           `yaml:"auth"`
+	Providers      ProvidersConfig      `yaml:"providers"`
+	Models         ModelsConfig         `yaml:"models"`
+	Agent          AgentConfig          `yaml:"agent"`
+	Tools          ToolsConfig          `yaml:"tools"`
+	Store          StoreConfig          `yaml:"store"`
+	Sessions       SessionsConfig       `yaml:"sessions"`
+	MCP            MCPConfig            `yaml:"mcp"`
+	Skills         PathConfig           `yaml:"skills"`
+	Agents         PathConfig           `yaml:"agents"`
 	Memory         MemoryConfig         `yaml:"memory"`
 	ExternalAgents ExternalAgentsConfig `yaml:"external_agents"`
 	Logging        LoggingConfig        `yaml:"logging"`
-	Debug     DebugConfig     `yaml:"debug"`
+	Debug          DebugConfig          `yaml:"debug"`
 }
 
 type ServerConfig struct {
@@ -129,10 +129,11 @@ type MemoryConfig struct {
 }
 
 type ExternalAgentsConfig struct {
-	Dir       string                      `yaml:"dir"`
-	SmokeTest ExternalAgentsSmokeTestConfig `yaml:"smoke_test"`
-	PathScan  ExternalAgentsPathScanConfig  `yaml:"pathscan"`
-	Driver    ExternalAgentsDriverConfig    `yaml:"driver"`
+	Dir        string                         `yaml:"dir"`
+	SmokeTest  ExternalAgentsSmokeTestConfig  `yaml:"smoke_test"`
+	PathScan   ExternalAgentsPathScanConfig   `yaml:"pathscan"`
+	Driver     ExternalAgentsDriverConfig     `yaml:"driver"`
+	Generation ExternalAgentsGenerationConfig `yaml:"generation"`
 }
 
 type ExternalAgentsSmokeTestConfig struct {
@@ -147,6 +148,13 @@ type ExternalAgentsPathScanConfig struct {
 
 type ExternalAgentsDriverConfig struct {
 	KillOnOutputCap bool `yaml:"kill_on_output_cap"`
+}
+
+type ExternalAgentsGenerationConfig struct {
+	Enabled                bool     `yaml:"enabled"`
+	ApprovalTimeoutSec     int      `yaml:"approval_timeout_sec"`
+	ImplicitTriggerEnabled bool     `yaml:"implicit_trigger_enabled"`
+	AllowedModels          []string `yaml:"allowed_models"`
 }
 
 // Default returns a fully-populated Config using the built-in defaults
@@ -217,7 +225,13 @@ func Default() Config {
 			SmokeTest: ExternalAgentsSmokeTestConfig{CacheTTL: 168},
 			PathScan:  ExternalAgentsPathScanConfig{CacheTTL: 24},
 			Driver:    ExternalAgentsDriverConfig{KillOnOutputCap: true},
+			Generation: ExternalAgentsGenerationConfig{
+				Enabled:                true,
+				ApprovalTimeoutSec:     300,
+				ImplicitTriggerEnabled: true,
+				AllowedModels:          nil,
+			},
 		},
-		Debug:    DebugConfig{Enabled: false},
+		Debug: DebugConfig{Enabled: false},
 	}
 }

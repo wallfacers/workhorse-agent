@@ -45,11 +45,11 @@ func Run(adapter *extagent.Adapter, logger *slog.Logger) SmokeResult {
 	// and env_override from the adapter definition.
 	d := &driver.Driver{Logger: logger}
 	result, err := d.Run(ctx, adapter, adapter.SmokeTest.Prompt, driver.Opts{
-		SessionID:      "smoke",
-		CallID:         fmt.Sprintf("smoke-%d", time.Now().UnixNano()),
-		TimeoutSec:     adapter.SmokeTest.TimeoutSec,
-		Workdir:        sandboxDir,
-		OutputCapBytes: 1 << 20,
+		SessionID:       "smoke",
+		CallID:          fmt.Sprintf("smoke-%d", time.Now().UnixNano()),
+		TimeoutSec:      adapter.SmokeTest.TimeoutSec,
+		Workdir:         sandboxDir,
+		OutputCapBytes:  1 << 20,
 		KillOnOutputCap: true,
 	})
 	if err != nil {

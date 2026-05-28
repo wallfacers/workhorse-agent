@@ -62,10 +62,10 @@ type Parser struct {
 }
 
 type Control struct {
-	CancelSignal    string `yaml:"cancel_signal"`
-	CancelGraceSec  int    `yaml:"cancel_grace_sec"`
-	DefaultTimeoutSec int  `yaml:"default_timeout_sec"`
-	MaxTimeoutSec   int    `yaml:"max_timeout_sec"`
+	CancelSignal      string `yaml:"cancel_signal"`
+	CancelGraceSec    int    `yaml:"cancel_grace_sec"`
+	DefaultTimeoutSec int    `yaml:"default_timeout_sec"`
+	MaxTimeoutSec     int    `yaml:"max_timeout_sec"`
 }
 
 type Security struct {

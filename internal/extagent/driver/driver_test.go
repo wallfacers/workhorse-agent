@@ -31,10 +31,10 @@ func fakeAdapter(t *testing.T, binPath string) *extagent.Adapter {
 			Stderr: "separate",
 		},
 		Control: extagent.Control{
-			CancelSignal:     "SIGINT",
-			CancelGraceSec:   1,
+			CancelSignal:      "SIGINT",
+			CancelGraceSec:    1,
 			DefaultTimeoutSec: 60,
-			MaxTimeoutSec:    300,
+			MaxTimeoutSec:     300,
 		},
 		Security:    extagent.Security{Network: "none", Filesystem: "full", Trusted: true},
 		SmokeTest:   extagent.SmokeTest{Prompt: "test", ExpectedSubstring: "OK"},

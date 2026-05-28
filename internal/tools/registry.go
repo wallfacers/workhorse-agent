@@ -45,6 +45,39 @@ func (r *Registry) Unregister(name string) {
 	delete(r.tools, name)
 }
 
+// Clone returns a shallow copy of the registry. The returned Registry shares
+// the same Tool instances (which are stateless or thread-safe by contract)
+// but holds its own map, so callers can Register or Replace entries without
+// touching the source. Used by the runner factory to assemble per-session
+// tool surfaces (e.g. adapter-generator overlays).
+func (r *Registry) Clone() *Registry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := NewRegistry()
+	for n, t := range r.tools {
+		out.tools[n] = t
+	}
+	return out
+}
+
+// Replace registers t under its Name(), overwriting any prior entry. Used
+// when a per-session overlay wants to substitute a stricter version of an
+// existing tool (e.g. swapping Bash for the adapter-generator's restricted
+// genbash variant).
+func (r *Registry) Replace(t Tool) error {
+	if t == nil {
+		return errors.New("registry: nil tool")
+	}
+	name := t.Name()
+	if name == "" {
+		return errors.New("registry: tool has empty Name()")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tools[name] = t
+	return nil
+}
+
 // Get returns the named tool. The second result is false when no such tool
 // exists.
 func (r *Registry) Get(name string) (Tool, bool) {

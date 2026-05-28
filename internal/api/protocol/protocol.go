@@ -39,27 +39,31 @@ func (t ClientMessageType) IsKnown() bool {
 type ServerEventType string
 
 const (
-	EventAssistantTextDelta ServerEventType = "assistant_text_delta"
-	EventAssistantTextDone  ServerEventType = "assistant_text_done"
-	EventToolCallStart      ServerEventType = "tool_call_start"
-	EventToolCallDone       ServerEventType = "tool_call_done"
-	EventPermissionRequest  ServerEventType = "permission_request"
-	EventSubagentEvent      ServerEventType = "subagent_event"
-	EventCompaction         ServerEventType = "compaction"
-	EventProviderRetry      ServerEventType = "provider_retry"
-	EventError              ServerEventType = "error"
-	EventInterrupted        ServerEventType = "interrupted"
-	EventPong               ServerEventType = "pong"
+	EventAssistantTextDelta    ServerEventType = "assistant_text_delta"
+	EventAssistantTextDone     ServerEventType = "assistant_text_done"
+	EventToolCallStart         ServerEventType = "tool_call_start"
+	EventToolCallDone          ServerEventType = "tool_call_done"
+	EventPermissionRequest     ServerEventType = "permission_request"
+	EventSubagentEvent         ServerEventType = "subagent_event"
+	EventCompaction            ServerEventType = "compaction"
+	EventProviderRetry         ServerEventType = "provider_retry"
+	EventError                 ServerEventType = "error"
+	EventInterrupted           ServerEventType = "interrupted"
+	EventPong                  ServerEventType = "pong"
+	EventAdapterApprovalReq    ServerEventType = "adapter_approval_request"
+	EventAdapterApprovalResolv ServerEventType = "adapter_approval_resolved"
+	EventAdapterApprovalExp    ServerEventType = "adapter_approval_expired"
 )
 
-// AllServerEventTypes is the canonical 11-entry list used by tests and the
-// debug snapshot endpoint to validate event sets.
+// AllServerEventTypes is the canonical list used by tests and the debug
+// snapshot endpoint to validate event sets.
 var AllServerEventTypes = []ServerEventType{
 	EventAssistantTextDelta, EventAssistantTextDone,
 	EventToolCallStart, EventToolCallDone,
 	EventPermissionRequest, EventSubagentEvent,
 	EventCompaction, EventProviderRetry,
 	EventError, EventInterrupted, EventPong,
+	EventAdapterApprovalReq, EventAdapterApprovalResolv, EventAdapterApprovalExp,
 }
 
 // IsKnown reports whether t matches one of the eleven spec-defined event types.

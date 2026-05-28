@@ -57,7 +57,7 @@ func TestEnvironmentBlock_Full(t *testing.T) {
 
 func TestEnvironmentBlock_ByteStable(t *testing.T) {
 	input := prompt.EnvironmentInput{
-		OS:   "linux",
+		OS:    "linux",
 		Shell: "bash",
 		CLITools: []prompt.CLIToolEntry{
 			{Name: "b-tool", Path: "/b"},

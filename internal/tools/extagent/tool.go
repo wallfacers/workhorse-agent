@@ -26,10 +26,10 @@ type PermissionGate interface {
 
 // Host holds the runtime dependencies injected at construction.
 type Host struct {
-	Registry       *extagent.Registry
-	PermissionGate PermissionGate
-	Driver         *driver.Driver
-	OutputCapBytes int
+	Registry        *extagent.Registry
+	PermissionGate  PermissionGate
+	Driver          *driver.Driver
+	OutputCapBytes  int
 	KillOnOutputCap bool
 }
 
@@ -37,8 +37,8 @@ type Host struct {
 type Tool struct {
 	Host *Host
 
-	cachedSchema json.RawMessage
-	cachedDesc   string
+	cachedSchema  json.RawMessage
+	cachedDesc    string
 	cachedTimeout time.Duration
 }
 
@@ -162,13 +162,13 @@ func (t *Tool) Run(ctx context.Context, env *tools.Env, input json.RawMessage) (
 	}
 
 	result, err := drv.Run(ctx, adapter, in.Prompt, driver.Opts{
-		SessionID:        env.SessionID,
-		CallID:           fmt.Sprintf("%d", time.Now().UnixNano()),
-		TimeoutSec:       effectiveTimeout,
-		ResumeSessionID:  in.ResumeSessionID,
-		Workdir:          env.Workdir,
-		OutputCapBytes:   outputCap,
-		KillOnOutputCap:  t.Host.KillOnOutputCap,
+		SessionID:       env.SessionID,
+		CallID:          fmt.Sprintf("%d", time.Now().UnixNano()),
+		TimeoutSec:      effectiveTimeout,
+		ResumeSessionID: in.ResumeSessionID,
+		Workdir:         env.Workdir,
+		OutputCapBytes:  outputCap,
+		KillOnOutputCap: t.Host.KillOnOutputCap,
 	})
 	if err != nil {
 		return &tools.Result{Output: fmt.Sprintf("invocation error: %v", err), IsError: true}, nil
@@ -185,7 +185,7 @@ func (t *Tool) buildSchema(adapters []*extagent.Adapter) json.RawMessage {
 	sort.Strings(names)
 
 	schema := map[string]any{
-		"type": "object",
+		"type":     "object",
 		"required": []string{"agent_name", "prompt"},
 		"properties": map[string]any{
 			"agent_name": map[string]any{

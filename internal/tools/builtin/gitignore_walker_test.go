@@ -137,13 +137,13 @@ func TestGitignoreStack_nested_inheritance(t *testing.T) {
 
 func TestIsHardVCSDir(t *testing.T) {
 	cases := map[string]bool{
-		".git":            true,
-		".hg":             true,
-		".svn":            true,
-		"git":             false,
-		".github":         false,
-		"node_modules":    false,
-		".gitignore":      false,
+		".git":         true,
+		".hg":          true,
+		".svn":         true,
+		"git":          false,
+		".github":      false,
+		"node_modules": false,
+		".gitignore":   false,
 	}
 	for name, want := range cases {
 		if got := isHardVCSDir(name); got != want {

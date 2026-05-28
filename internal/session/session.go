@@ -233,6 +233,18 @@ type Session struct {
 	pending   map[string]PendingToolUse
 	allowed   []string
 	updatedAt time.Time
+
+	// adapterSetupDedup tracks per-session adapter-generation state for the
+	// implicit-trigger Plan A flow (add-llm-adapter-generator §10.2). The
+	// map survives across turns within a session and is discarded with the
+	// session. Reads/writes happen under mu.
+	//
+	// State values are: "pending" — a generation is in flight, retries
+	// short-circuit with a "wait for user" message; "unavailable" — user
+	// rejected or approval expired, retries return a "use a different
+	// approach" message; "approved" — collapses to no entry (the map deletes
+	// on approve so the next retry succeeds).
+	adapterSetupDedup map[string]string
 }
 
 // Options bundles construction parameters so Manager.CreateSession stays
@@ -481,6 +493,33 @@ func (s *Session) NextIdx() int64 {
 	defer s.mu.Unlock()
 	s.idx++
 	return s.idx
+}
+
+// AdapterSetupState reports the dedup state for an unknown ExternalAgent
+// agent_name. Returns "" when no entry exists. Possible non-empty values:
+// "pending" | "unavailable". See add-llm-adapter-generator §10.2.
+func (s *Session) AdapterSetupState(name string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.adapterSetupDedup == nil {
+		return ""
+	}
+	return s.adapterSetupDedup[name]
+}
+
+// SetAdapterSetupState records the dedup state. Empty state removes the
+// entry, leaving the next retry free to re-trigger generation.
+func (s *Session) SetAdapterSetupState(name, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.adapterSetupDedup == nil {
+		s.adapterSetupDedup = map[string]string{}
+	}
+	if state == "" {
+		delete(s.adapterSetupDedup, name)
+		return
+	}
+	s.adapterSetupDedup[name] = state
 }
 
 // Emit pushes one event to Outbox. In persistent mode (store != nil and

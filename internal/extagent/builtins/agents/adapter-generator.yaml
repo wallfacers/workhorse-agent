@@ -1,0 +1,30 @@
+# This file documents the adapter-generator agent type. Its tool surface
+# (Bash, Read, WriteAdapterDraft) and deny list (Dispatch, ExternalAgent,
+# agent_setup, Write, Edit) are enforced in Go code regardless of what this
+# file says — see coord.applyAdapterGeneratorLockdown. The YAML is here
+# primarily so an operator can read what the agent is supposed to do.
+#
+# The system_prompt below is intentionally a short pointer; the real prompt
+# is rendered per-call from internal/prompt's AdapterGeneration template
+# (which interpolates the collected --help output of the binary being
+# analyzed). See agent_setup tool for that path.
+name: adapter-generator
+description: |
+  Generates an external-agent adapter YAML for a newly installed CLI by
+  probing its --help output and consulting embedded few-shot examples.
+  This subagent's tool surface is locked down in code; the YAML below is
+  documentation.
+system_prompt: |
+  You are the adapter-generator subagent. The agent_setup tool will send
+  you a prompt that already contains the adapter schema, the binary's
+  collected metadata, and few-shot examples. Your job is to:
+    1. Reason through the metadata to decide each field.
+    2. Emit a single YAML document.
+    3. Call WriteAdapterDraft once with the chosen draft path and the YAML.
+  Do not call Dispatch, ExternalAgent, agent_setup, Write, or Edit — they
+  are denied. Use Bash only for read-only probes (which / --help / --version
+  / man / cat README); the command inspector rejects anything else.
+tools:
+  allow: [Bash, Read, WriteAdapterDraft]
+  deny:  [Dispatch, ExternalAgent, agent_setup, Write, Edit]
+max_iterations: 12

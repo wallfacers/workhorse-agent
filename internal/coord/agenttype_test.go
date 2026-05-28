@@ -14,14 +14,20 @@ func writeYAML(t *testing.T, dir, name, body string) {
 	}
 }
 
+// builtinCount is the number of embedded agent types the test environment
+// expects (currently: adapter-generator). Tests that inspect List() output
+// reference this so we don't have to update them every time a new builtin
+// agent ships.
+const builtinCount = 1
+
 func TestLoader_List_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
 	got, err := NewLoader(dir).List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(got) != 0 {
-		t.Fatalf("expected 0, got %d", len(got))
+	if len(got) != builtinCount {
+		t.Fatalf("expected %d builtins, got %d", builtinCount, len(got))
 	}
 }
 
@@ -30,8 +36,8 @@ func TestLoader_List_MissingDirIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(got) != 0 {
-		t.Fatalf("expected 0, got %d", len(got))
+	if len(got) != builtinCount {
+		t.Fatalf("expected %d builtins even with missing dir, got %d", builtinCount, len(got))
 	}
 }
 
@@ -130,7 +136,71 @@ func TestLoader_List_IgnoresNonYAML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("expected 1, got %d", len(got))
+	if len(got) != 1+builtinCount {
+		t.Fatalf("expected %d (1 on-disk + builtins), got %d", 1+builtinCount, len(got))
+	}
+}
+
+func TestLoader_BuiltinAdapterGenerator(t *testing.T) {
+	// With no on-disk overrides the builtin adapter-generator must be
+	// discoverable, and its tool surface must be the locked-down list
+	// regardless of what the YAML says.
+	dir := t.TempDir()
+	at, err := NewLoader(dir).Get(AdapterGeneratorTypeName)
+	if err != nil {
+		t.Fatalf("Get %s: %v", AdapterGeneratorTypeName, err)
+	}
+	wantAllow := []string{"Bash", "Read", "WriteAdapterDraft"}
+	if len(at.AllowTools) != len(wantAllow) {
+		t.Fatalf("AllowTools: got %v, want %v", at.AllowTools, wantAllow)
+	}
+	for i, name := range wantAllow {
+		if at.AllowTools[i] != name {
+			t.Errorf("AllowTools[%d]: got %q, want %q", i, at.AllowTools[i], name)
+		}
+	}
+	for _, denied := range []string{"Dispatch", "ExternalAgent", "agent_setup", "Write", "Edit"} {
+		found := false
+		for _, d := range at.DenyTools {
+			if d == denied {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("DenyTools missing %q: got %v", denied, at.DenyTools)
+		}
+	}
+}
+
+func TestLoader_AdapterGenerator_OnDiskTamperingIgnored(t *testing.T) {
+	// A user dropping adapter-generator.yaml on disk with bogus allow/deny
+	// must NOT change the locked-down surface — the lockdown is enforced in
+	// code regardless of the loaded YAML.
+	dir := t.TempDir()
+	writeYAML(t, dir, "adapter-generator.yaml", `
+name: adapter-generator
+description: tampered
+system_prompt: pwned
+tools:
+  allow: [Bash, Write, Edit, Dispatch, ExternalAgent]
+  deny: []
+max_iterations: 99
+`)
+	at, err := NewLoader(dir).Get(AdapterGeneratorTypeName)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	// Override took effect for non-locked fields (system_prompt) but tools
+	// list MUST stay locked.
+	if at.SystemPrompt != "pwned" {
+		t.Errorf("system_prompt override should still apply: %q", at.SystemPrompt)
+	}
+	for _, banned := range []string{"Write", "Edit", "Dispatch", "ExternalAgent"} {
+		for _, a := range at.AllowTools {
+			if a == banned {
+				t.Errorf("allow list leaked banned tool %q", banned)
+			}
+		}
 	}
 }

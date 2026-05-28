@@ -9,11 +9,11 @@ import (
 
 // EnvironmentInput carries the data for the <environment> block.
 type EnvironmentInput struct {
-	OS          string
-	Shell       string
-	CWD         string
-	CLITools    []CLIToolEntry
-	SubAgents   []SubAgentHint
+	OS        string
+	Shell     string
+	CWD       string
+	CLITools  []CLIToolEntry
+	SubAgents []SubAgentHint
 }
 
 type CLIToolEntry struct {

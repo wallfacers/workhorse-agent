@@ -117,3 +117,45 @@ func memoryTarget(profileDir, kind string) (filename, memDir string, err error) 
 	memDir = filepath.Join(profileDir, "memories")
 	return filename, memDir, nil
 }
+
+// DraftsDir returns the resolved drafts directory under the external-agents
+// profile location: <externalAgentsDir>/.drafts/. Used by the adapter-generator
+// subagent's WriteAdapterDraft tool as the only writable location.
+func DraftsDir(externalAgentsDir string) string {
+	return filepath.Join(externalAgentsDir, ".drafts")
+}
+
+// ResolveDraft validates that path resolves to a file directly under the
+// drafts directory of externalAgentsDir. The file must already exist.
+// Symlinks are followed (and the resolved target must still be inside the
+// drafts dir). Use this when reading or smoke-testing a previously written
+// draft.
+func ResolveDraft(externalAgentsDir, path string) (string, error) {
+	return (&resolver{root: DraftsDir(externalAgentsDir)}).resolve(path, false)
+}
+
+// ResolveDraftForWrite is the create/overwrite variant: the leaf may not yet
+// exist, but its parent must be the drafts directory itself (no nested
+// subdirectories — drafts are flat). The WriteAdapterDraft tool uses this.
+//
+// Symlinks at the leaf are rejected outright (whether the target exists or
+// not) because allow-missing path resolution would otherwise quietly accept a
+// dangling symlink. Runtime O_NOFOLLOW on OpenWrite is the second line of
+// defense; this check is the first.
+func ResolveDraftForWrite(externalAgentsDir, path string) (string, error) {
+	abs, err := (&resolver{root: DraftsDir(externalAgentsDir)}).resolve(path, true)
+	if err != nil {
+		return "", err
+	}
+	if fi, lerr := os.Lstat(abs); lerr == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%w: draft path is a symlink: %s", ErrPathEscape, abs)
+	}
+	wdResolved, derr := filepath.EvalSymlinks(DraftsDir(externalAgentsDir))
+	if derr != nil {
+		return "", fmt.Errorf("pathguard: resolve drafts root: %w", derr)
+	}
+	if filepath.Dir(abs) != wdResolved {
+		return "", fmt.Errorf("%w: drafts must be flat (no subdirs): %s", ErrPathEscape, abs)
+	}
+	return abs, nil
+}

@@ -98,7 +98,7 @@ func testAdapter(bin string) *extagent.Adapter {
 			DefaultTimeoutSec: 60,
 			MaxTimeoutSec:     300,
 		},
-		Security:    extagent.Security{Network: "none", Filesystem: "full", Trusted: true},
+		Security: extagent.Security{Network: "none", Filesystem: "full", Trusted: true},
 		SmokeTest: extagent.SmokeTest{
 			Prompt:            "WORKHORSE_SMOKE_OK",
 			ExpectedSubstring: "WORKHORSE_SMOKE_OK",

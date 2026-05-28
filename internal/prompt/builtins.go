@@ -40,6 +40,107 @@ var SkillManifest = MustParse("skill_manifest",
 		"</available_skills>\n\n"+
 		"You can use the LoadSkill tool to load full instructions.\n")
 
+// adapterGenerationBody is the AdapterGeneration template source. It is
+// intentionally a string constant (not a file) so the prompt package stays
+// IO-free per the boundary test. The caller (agent_setup) is responsible for
+// reading the schema, few-shot examples, and collected metadata from disk
+// and passing them in.
+//
+// Template inputs (all strings unless noted):
+//   - SchemaJSON       — full adapter JSON Schema body
+//   - BinaryName       — short name the user asked to set up
+//   - BinaryPath       — absolute path from `which`
+//   - HelpOutput       — captured `<bin> --help` text
+//   - VersionOutput    — captured `<bin> --version` (empty when probe failed)
+//   - ManOutput        — optional, may be ""
+//   - ReadmeOutput     — optional, may be ""
+//   - DescriptionHint  — optional caller-provided hint (may be "")
+//   - Examples         — []map[string]string with keys: Name, Body. Body is
+//     the raw YAML of one builtin adapter. May be empty.
+//
+// The disclaimer wedge between schema and examples is unconditional so that
+// even an empty Examples slice still produces output framing the LLM correctly.
+const adapterGenerationBody = `You are the adapter-generator. Your sole job is to produce a single YAML document conforming to the adapter schema below, then call the WriteAdapterDraft tool with that document.
+
+# Adapter schema
+
+The output MUST validate against this JSON Schema. Fields not listed here are extra and will be rejected.
+
+` + "```json\n" + `{{.SchemaJSON}}
+` + "```" + `
+
+# Binary under analysis
+
+- Name supplied by user: {{.BinaryName}}
+- Resolved absolute path (from ` + "`which`" + `): {{.BinaryPath}}
+{{if .DescriptionHint}}- User-provided description hint: {{.DescriptionHint}}
+{{end}}
+## Captured ` + "`--help`" + ` output
+
+` + "```text\n" + `{{.HelpOutput}}
+` + "```" + `
+{{if .VersionOutput}}
+## Captured ` + "`--version`" + ` output
+
+` + "```text\n" + `{{.VersionOutput}}
+` + "```" + `
+{{end}}{{if .ManOutput}}
+## ` + "`man`" + ` page excerpt
+
+` + "```text\n" + `{{.ManOutput}}
+` + "```" + `
+{{end}}{{if .ReadmeOutput}}
+## README excerpt
+
+` + "```text\n" + `{{.ReadmeOutput}}
+` + "```" + `
+{{end}}
+# Few-shot disclaimer
+
+The embedded examples below are snapshots from when this binary was built. Tools evolve — always prefer behavior observed in the actual --help output above over what the examples suggest. If --help contradicts an example, follow --help.
+
+# Few-shot examples
+
+{{if .Examples}}{{range $e := .Examples}}## Example: {{$e.Name}}
+
+` + "```yaml\n" + `{{$e.Body}}
+` + "```" + `
+
+{{end}}{{else}}(No examples bundled in this build.)
+{{end}}
+# Field-by-field reasoning instructions
+
+When you choose each field, apply these rules in addition to the schema:
+
+1. **prompt_via**: Look for ` + "`--prompt`" + `, ` + "`--message`" + `, ` + "`--input`" + `, or ` + "`--ask`" + ` flags in the --help output. If present, set ` + "`invocation.prompt_via: arg`" + ` and record the flag in ` + "`invocation.prompt_arg_flag`" + `. If --help shows stdin-based interactive use OR no prompt-passing flag at all but the CLI is described as conversational, set ` + "`prompt_via: stdin`" + `. Do NOT default to ` + "`arg`" + ` just because builtin examples use it — many Unix tools follow the stdin convention.
+2. **binary path**: Set ` + "`binary`" + ` to the absolute path captured from ` + "`which`" + ` (above), not the alias the user typed. This protects against PATH changes on the user's machine.
+3. **output.parser.* JSONPath**: The parser values must match the schema's restricted JSONPath grammar (no ` + "`$..`" + ` recursive descent, no filters). If the CLI's structured output doesn't fit the restricted subset, drop back to ` + "`format: text`" + `.
+4. **smoke_test.expected_substring**: Choose a substring that the binary will emit when it merely echoes a fixed prompt; ` + "`WORKHORSE_SMOKE_OK`" + ` is the convention used by the builtins.
+5. **provenance.source**: Always set to ` + "`llm_generated`" + `.
+
+# cli_tool refusal
+
+If the --help output shows NO prompt-passing convention (no --prompt / --message / --input / --ask flag, AND no documented stdin-based interactive use), do NOT write a draft. Instead respond with a plain text message starting with the marker ` + "`CLI_TOOL_REFUSAL`" + `, naming the binary, and recommending the user add it to the ` + "`external_agents.pathscan.extra`" + ` config key. Do not call WriteAdapterDraft in that case.
+
+# Final action
+
+When the YAML is ready, call WriteAdapterDraft exactly once with:
+- ` + "`path`" + `: ` + "`<externalAgentsDir>/.drafts/{{.BinaryName}}.yaml`" + `
+- ` + "`content`" + `: the YAML body, no triple-backtick fences
+
+Do not call WriteAdapterDraft more than once. Do not call any other tool after WriteAdapterDraft succeeds.`
+
+// AdapterGeneration is the system prompt for the adapter-generator subagent.
+// Render with all template fields populated (some may be the empty string).
+var AdapterGeneration = MustParse("adapter_generation", adapterGenerationBody)
+
+// AdapterGenerationExample is the typed input shape for one few-shot example.
+// Callers populate Name (e.g. "claude-code") and Body (the raw YAML).
+type AdapterGenerationExample struct {
+	Name string
+	Body string
+}
+
 // BuildSystemPrompt is the drop-in replacement for agent.BuildSystemPrompt.
 // It trims trailing whitespace from base and renders the SystemPrompt template.
 // On the (impossible-by-construction) Execute error, falls back to a manual

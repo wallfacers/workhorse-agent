@@ -217,6 +217,48 @@ func TestLoad_NonYAMLFilesIgnored(t *testing.T) {
 	_ = snap
 }
 
+func TestLoad_DotPrefixedSubdirIgnored(t *testing.T) {
+	// .drafts/ holds in-flight adapter generation drafts (add-llm-adapter-generator
+	// G2): valid YAML files there MUST NOT be loaded into a session's registry.
+	dir := t.TempDir()
+	drafts := filepath.Join(dir, ".drafts")
+	if err := os.MkdirAll(drafts, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	validInDrafts := []byte(`
+name: leaky-draft
+binary: leaky-draft-bin
+class: cli_tool
+description: "Should never appear in a registry"
+security:
+  network: none
+  filesystem: full
+  trusted: false
+provenance:
+  source: llm_generated
+`)
+	if err := os.WriteFile(filepath.Join(drafts, "leaky-draft.yaml"), validInDrafts, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Also drop a dot-prefixed file at the top level — already excluded by the
+	// .yaml suffix check, but the new guard should catch it independently.
+	if err := os.WriteFile(filepath.Join(dir, ".hidden.yaml"), validInDrafts, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loader := &extagent.Loader{}
+	snap, err := loader.Load(dir)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	reg := extagent.NewRegistry(snap)
+	if reg.Get("leaky-draft") != nil {
+		t.Error("YAML under .drafts/ must not be loaded into the registry")
+	}
+	if reg.Get(".hidden") != nil || reg.Get("hidden") != nil {
+		t.Error("dot-prefixed top-level YAML must not be loaded")
+	}
+}
+
 func TestRegistry_Healthy(t *testing.T) {
 	dir := t.TempDir()
 	loader := &extagent.Loader{}

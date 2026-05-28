@@ -72,6 +72,15 @@ type Loop struct {
 	ToolEnv          *tools.Env
 	Registry         *tools.Registry
 
+	// ImplicitTriggerInterceptor, when non-nil, is invoked before
+	// checkPermissions on every tool batch. It is the hook the
+	// adapter-generator Plan A flow uses to intercept ExternalAgent calls
+	// against unknown agent_names whose binary resolves on PATH (see
+	// add-llm-adapter-generator §10). The interceptor may return synthetic
+	// tool results for some calls (which skip the orchestrator entirely)
+	// and a filtered list for the rest.
+	ImplicitTriggerInterceptor ImplicitTriggerHook
+
 	Config LoopConfig
 
 	// activeTurnCancel holds the cancel func of the in-progress turn so an
@@ -508,10 +517,27 @@ func (l *Loop) consumeProviderStream(ctx context.Context, events <-chan provider
 	return toolCalls, false
 }
 
+// ImplicitTriggerHook is the runner-factory-supplied hook for synthesising
+// tool results for ExternalAgent calls against unknown adapters. Returning
+// `intercepted` for a call means the original call is skipped and the
+// caller emits the synthetic result back to the model verbatim.
+type ImplicitTriggerHook func(ctx context.Context, sess *session.Session, calls []ToolCall) (passThrough []ToolCall, intercepted []ToolCallResult)
+
 // runToolBatch handles the permission gate, executes the orchestrator batch,
 // emits tool_call_start / tool_call_done events, and appends the tool_result
 // blocks to history.
 func (l *Loop) runToolBatch(ctx context.Context, calls []ToolCall) {
+	// 0. Implicit-trigger interceptor: short-circuits ExternalAgent calls
+	// against unknown adapter names so the adapter-generation flow can take
+	// over without ever reaching the orchestrator. The intercepted results
+	// flow back through the standard tool_call_done path (see resultsByID
+	// merge below) so the model sees uniform shape.
+	origCalls := calls
+	var intercepted []ToolCallResult
+	if l.ImplicitTriggerInterceptor != nil {
+		calls, intercepted = l.ImplicitTriggerInterceptor(ctx, l.Session, calls)
+	}
+
 	// 1. Permission check — sequential, transitions through AwaitPerm.
 	cleared, denied := l.checkPermissions(ctx, calls)
 	if ctx.Err() != nil {
@@ -527,12 +553,20 @@ func (l *Loop) runToolBatch(ctx context.Context, calls []ToolCall) {
 		_ = l.Session.Transition(session.StateThinking, session.StateExecuting)
 	}
 
-	// 3. Emit tool_call_start for every cleared call.
+	// 3. Emit tool_call_start for every cleared call. Intercepted calls
+	// (handled by the implicit-trigger hook) also need a start event so
+	// observers see a complete start/done pair.
 	for _, c := range cleared {
 		_ = l.Session.Emit(ctx, "tool_call_start", map[string]any{
 			"id":    c.ID,
 			"tool":  c.Name,
 			"input": json.RawMessage(c.Input),
+		})
+	}
+	for _, ic := range intercepted {
+		_ = l.Session.Emit(ctx, "tool_call_start", map[string]any{
+			"id":   ic.ID,
+			"tool": ic.Name,
 		})
 	}
 
@@ -549,8 +583,8 @@ func (l *Loop) runToolBatch(ctx context.Context, calls []ToolCall) {
 		return
 	}
 
-	// 5. Map results back by ID, splice in denied entries in original order,
-	// emit tool_call_done events, append to history.
+	// 5. Map results back by ID, splice in denied + intercepted entries in
+	// original order, emit tool_call_done events, append to history.
 	resultsByID := make(map[string]ToolCallResult, len(results))
 	for _, r := range results {
 		resultsByID[r.ID] = r
@@ -558,9 +592,12 @@ func (l *Loop) runToolBatch(ctx context.Context, calls []ToolCall) {
 	for _, d := range denied {
 		resultsByID[d.ID] = d
 	}
+	for _, ic := range intercepted {
+		resultsByID[ic.ID] = ic
+	}
 
-	contentBlocks := make([]provider.ContentBlock, 0, len(calls))
-	for _, c := range calls {
+	contentBlocks := make([]provider.ContentBlock, 0, len(origCalls))
+	for _, c := range origCalls {
 		r, ok := resultsByID[c.ID]
 		if !ok {
 			// Lost between checkPermissions and run — synthesise an error.
