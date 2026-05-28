@@ -98,4 +98,4 @@
 ## 10. Sign-off and archive
 
 - [x] 10.1 Mark every checkbox above complete only after the corresponding scenario in the spec files passes
-- [ ] 10.2 Move the change into archive per repo convention (`openspec/changes/archive/<date>-add-memory-l1-l2/`) once merged
+- [x] 10.2 Move the change into archive per repo convention (`openspec/changes/archive/<date>-add-memory-l1-l2/`) once merged
