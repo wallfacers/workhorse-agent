@@ -54,15 +54,19 @@ func (s *stubPublisher) Publish(draftPath string, _ approval.Provenance) (string
 }
 
 type stubInjector struct {
-	called    int
-	sessionID string
-	agent     string
+	called        int
+	sessionID     string
+	agent         string
+	publishedPath string
+	smokePassed   bool
 }
 
-func (s *stubInjector) Inject(sessionID, agentName string) {
+func (s *stubInjector) Inject(sessionID, agentName, publishedPath string, smokePassed bool) {
 	s.called++
 	s.sessionID = sessionID
 	s.agent = agentName
+	s.publishedPath = publishedPath
+	s.smokePassed = smokePassed
 }
 
 type stubDedup struct {

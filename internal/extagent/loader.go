@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,8 +22,13 @@ var builtinFS embed.FS
 
 var filenameStemRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
-// Snapshot is an immutable registry snapshot. Created once per session.
+// Snapshot is a registry snapshot. Created once per session and treated as
+// immutable EXCEPT for the single Inject chokepoint (used by the
+// adapter-generation approval flow to add a just-approved adapter to the
+// originating session without waiting for a new session). All readers acquire
+// the embedded RWMutex so injection cannot race with iteration.
 type Snapshot struct {
+	mu       sync.RWMutex
 	adapters map[string]*Adapter
 }
 
@@ -45,6 +51,21 @@ func NewSnapshot(adapters []*Adapter) *Snapshot {
 	return &Snapshot{adapters: m}
 }
 
+// Inject adds (or replaces) an adapter in the snapshot. This is the SINGLE
+// sanctioned mutation path on a live snapshot — every other code path treats
+// the snapshot as immutable. The caller must own the adapter pointer.
+func (s *Snapshot) Inject(a *Adapter) {
+	if s == nil || a == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.adapters == nil {
+		s.adapters = map[string]*Adapter{}
+	}
+	s.adapters[a.Name] = a
+}
+
 // NewRegistry creates a Registry from a snapshot.
 func NewRegistry(snap *Snapshot) *Registry {
 	return &Registry{snap: snap}
@@ -58,6 +79,8 @@ func (r *Registry) Get(name string) *Adapter {
 	if r.snap == nil {
 		return nil
 	}
+	r.snap.mu.RLock()
+	defer r.snap.mu.RUnlock()
 	return r.snap.adapters[name]
 }
 
@@ -66,10 +89,12 @@ func (r *Registry) All() []*Adapter {
 	if r.snap == nil {
 		return nil
 	}
+	r.snap.mu.RLock()
 	out := make([]*Adapter, 0, len(r.snap.adapters))
 	for _, a := range r.snap.adapters {
 		out = append(out, a)
 	}
+	r.snap.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
@@ -79,12 +104,14 @@ func (r *Registry) Healthy() []*Adapter {
 	if r.snap == nil {
 		return nil
 	}
+	r.snap.mu.RLock()
 	out := make([]*Adapter, 0, len(r.snap.adapters))
 	for _, a := range r.snap.adapters {
 		if a.IsHealthy() {
 			out = append(out, a)
 		}
 	}
+	r.snap.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
@@ -94,12 +121,14 @@ func (r *Registry) HealthySubAgents() []*Adapter {
 	if r.snap == nil {
 		return nil
 	}
+	r.snap.mu.RLock()
 	out := make([]*Adapter, 0)
 	for _, a := range r.snap.adapters {
 		if a.Class == ClassSubAgent && a.IsHealthy() {
 			out = append(out, a)
 		}
 	}
+	r.snap.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
@@ -109,10 +138,12 @@ func (r *Registry) Names() []string {
 	if r.snap == nil {
 		return nil
 	}
+	r.snap.mu.RLock()
 	out := make([]string, 0, len(r.snap.adapters))
 	for name := range r.snap.adapters {
 		out = append(out, name)
 	}
+	r.snap.mu.RUnlock()
 	sort.Strings(out)
 	return out
 }

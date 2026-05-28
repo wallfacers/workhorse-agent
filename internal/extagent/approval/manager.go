@@ -47,27 +47,35 @@ type SmokeOutcome struct {
 
 // Provenance carries the metadata that distinguishes an llm_generated adapter
 // from a hand-written one. Stored alongside the draft and surfaced in the
-// approval payload.
+// approval payload. The audit-trail fields (Binary, Prompt, HelpOutput,
+// VersionOutput, ManOutput) flow into the .genmeta sibling so an operator can
+// reproduce the generation context after the fact.
 type Provenance struct {
-	GeneratedBy string // model id, e.g. "anthropic:claude-opus-4-7"
-	GeneratedAt time.Time
-	ToolVersion string // raw "<bin> --version" output (may be empty per G3)
+	GeneratedBy   string // model id, e.g. "anthropic:claude-opus-4-7"
+	GeneratedAt   time.Time
+	ToolVersion   string // raw "<bin> --version" output (may be empty per G3)
+	Binary        string // resolved absolute path of the analyzed binary
+	Prompt        string // rendered AdapterGeneration prompt
+	HelpOutput    string // captured `<bin> --help`
+	VersionOutput string // captured `<bin> --version`
+	ManOutput     string // captured `man <bin>` (may be empty)
 }
 
 // PendingApproval is the in-memory record. All fields are read-only after
 // Register — Decide may mutate Smoke/DraftYAML via the edit path, but only
 // holds the lock briefly.
 type PendingApproval struct {
-	ID         string
-	SessionID  string
-	AgentName  string
-	DraftPath  string
-	DraftYAML  string
-	PriorYAML  string // populated when regenerate=true and an existing adapter exists
-	Diff       string // unified diff vs PriorYAML; empty if no prior
-	Smoke      SmokeOutcome
-	Provenance Provenance
-	ExpiresAt  time.Time
+	ID               string
+	SessionID        string
+	AgentName        string
+	DraftPath        string
+	DraftYAML        string
+	PriorYAML        string // populated when regenerate=true and an existing adapter exists
+	Diff             string // unified diff vs PriorYAML; empty if no prior
+	Smoke            SmokeOutcome
+	AdapterSmokePass bool // pre-publish smoke result; propagated onto the injected Adapter so IsHealthy() is true post-approval
+	Provenance       Provenance
+	ExpiresAt        time.Time
 }
 
 // EventEmitter abstracts the SSE/event layer so the manager doesn't import
@@ -77,16 +85,30 @@ type EventEmitter interface {
 }
 
 // Publisher writes the approved draft to the live dir + .genmeta. Returns the
-// final published path on success.
+// final published path on success. When the rename succeeded but the sibling
+// .genmeta write failed, the implementation MUST return a nil error and log
+// internally — Decide treats publish errors as fatal and would otherwise
+// leak the pending approval into the timer-driven expire path despite the
+// adapter being live (see add-llm-adapter-generator G9).
 type Publisher interface {
 	Publish(draftPath string, prov Provenance) (string, error)
 }
 
 // RegistryInjector adds a newly published adapter to a live session's snapshot
 // so the originating session can immediately retry without waiting for a new
-// session to pick up the change.
+// session to pick up the change. The publishedPath argument carries the live
+// dir + adapter filename so the injector can re-read the just-published YAML
+// (with the SmokePassed flag set from the pre-approval smoke result).
 type RegistryInjector interface {
-	Inject(sessionID, adapterName string)
+	Inject(sessionID, adapterName, publishedPath string, smokePassed bool)
+}
+
+// EditValidator gates a DecisionEdit before the manager writes the edited
+// YAML to disk. The hook is invoked under the manager mutex; implementations
+// must avoid any callback that re-enters the manager. Returning a non-nil
+// error rejects the edit and leaves the prior draft untouched.
+type EditValidator interface {
+	ValidateEdit(agentName string, editedYAML []byte) error
 }
 
 // DedupClearer signals the implicit-trigger dedup map about state changes.
@@ -108,15 +130,16 @@ type MarkApprover interface {
 // Manager owns the pending approvals map and the expiry timers. Construct
 // one per server; safe for concurrent use.
 type Manager struct {
-	mu       sync.Mutex
-	pending  map[string]*PendingApproval
-	timers   map[string]*time.Timer
-	timeout  time.Duration
-	emitter  EventEmitter
-	pub      Publisher
-	injector RegistryInjector
-	dedup    DedupClearer
-	marker   MarkApprover
+	mu        sync.Mutex
+	pending   map[string]*PendingApproval
+	timers    map[string]*time.Timer
+	timeout   time.Duration
+	emitter   EventEmitter
+	pub       Publisher
+	injector  RegistryInjector
+	dedup     DedupClearer
+	marker    MarkApprover
+	validator EditValidator
 }
 
 // Options bundles the optional collaborators so callers can supply only what
@@ -128,6 +151,7 @@ type Options struct {
 	RegistryInjector RegistryInjector
 	DedupClearer     DedupClearer
 	MarkApprover     MarkApprover
+	EditValidator    EditValidator
 }
 
 // SetEmitter wires (or replaces) the event emitter at any time after
@@ -168,6 +192,13 @@ func (m *Manager) SetMarkApprover(a MarkApprover) {
 	m.marker = a
 }
 
+// SetEditValidator wires the DecisionEdit re-validation hook.
+func (m *Manager) SetEditValidator(v EditValidator) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.validator = v
+}
+
 // New constructs a Manager. A zero or negative Timeout falls back to five
 // minutes — the spec default.
 func New(opts Options) *Manager {
@@ -176,14 +207,15 @@ func New(opts Options) *Manager {
 		timeout = 5 * time.Minute
 	}
 	return &Manager{
-		pending:  map[string]*PendingApproval{},
-		timers:   map[string]*time.Timer{},
-		timeout:  timeout,
-		emitter:  opts.Emitter,
-		pub:      opts.Publisher,
-		injector: opts.RegistryInjector,
-		dedup:    opts.DedupClearer,
-		marker:   opts.MarkApprover,
+		pending:   map[string]*PendingApproval{},
+		timers:    map[string]*time.Timer{},
+		timeout:   timeout,
+		emitter:   opts.Emitter,
+		pub:       opts.Publisher,
+		injector:  opts.RegistryInjector,
+		dedup:     opts.DedupClearer,
+		marker:    opts.MarkApprover,
+		validator: opts.EditValidator,
 	}
 }
 
@@ -257,10 +289,18 @@ func (m *Manager) Decide(id string, decision Decision, editedYAML string) error 
 		// Decide call on the same id would block until this completes.
 		published, err := m.publishLocked(p)
 		if err != nil {
+			// Publish failed before the atomic rename — draft is still in
+			// .drafts/, no live-side artifact exists. Remove the entry and
+			// return the error; the timer would have done the same thing
+			// after the timeout otherwise, but doing it here avoids the
+			// spurious "expired" event.
+			m.markUnavailableDedupLocked(p, "publish_failed")
+			m.emitResolvedLocked(p, "rejected", "")
+			m.removeLocked(id)
 			m.mu.Unlock()
 			return err
 		}
-		m.injectLocked(p)
+		m.injectLocked(p, published)
 		m.markApprovedLocked(p)
 		m.clearDedupLocked(p)
 		m.emitResolvedLocked(p, "approved", published)
@@ -278,6 +318,16 @@ func (m *Manager) Decide(id string, decision Decision, editedYAML string) error 
 		if editedYAML == "" {
 			m.mu.Unlock()
 			return errors.New("approval: edit decision requires non-empty edited_yaml")
+		}
+		// Re-validate before persisting: schema, dangerous-arg scan, and
+		// (per task 7.3) smoke. Validation is delegated so the manager
+		// stays free of extagent / smoke imports — the agentsetup runner
+		// factory wires the validator.
+		if m.validator != nil {
+			if err := m.validator.ValidateEdit(p.AgentName, []byte(editedYAML)); err != nil {
+				m.mu.Unlock()
+				return fmt.Errorf("approval: edit rejected: %w", err)
+			}
 		}
 		p.DraftYAML = editedYAML
 		if err := os.WriteFile(p.DraftPath, []byte(editedYAML), 0o600); err != nil {
@@ -315,11 +365,11 @@ func (m *Manager) publishLocked(p *PendingApproval) (string, error) {
 	return m.pub.Publish(p.DraftPath, p.Provenance)
 }
 
-func (m *Manager) injectLocked(p *PendingApproval) {
+func (m *Manager) injectLocked(p *PendingApproval, publishedPath string) {
 	if m.injector == nil {
 		return
 	}
-	m.injector.Inject(p.SessionID, p.AgentName)
+	m.injector.Inject(p.SessionID, p.AgentName, publishedPath, p.AdapterSmokePass)
 }
 
 func (m *Manager) markApprovedLocked(p *PendingApproval) {

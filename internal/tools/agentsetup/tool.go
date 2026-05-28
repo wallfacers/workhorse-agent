@@ -11,13 +11,14 @@ package agentsetup
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wallfacers/workhorse-agent/internal/extagent"
 	"github.com/wallfacers/workhorse-agent/internal/extagent/approval"
@@ -81,10 +82,16 @@ type Input struct {
 }
 
 // Dispatcher is the callable the runner factory wires up. It runs the
-// generator subagent and returns the subagent's final assistant text.
+// generator subagent and returns the subagent's final assistant text. The
+// env map is propagated onto the child session's Env so per-call hints like
+// genbash.EnvInstallPrefix reach the generator's restricted Bash tool.
 type Dispatcher interface {
 	Dispatch(ctx context.Context, parentSessionID, prompt, model string, env map[string]string) (string, error)
 }
+
+// safeAdapterName matches a valid adapter / draft filename stem. Kept in sync
+// with the regex used by extagent's loader and drafttool's path validator.
+var safeAdapterName = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 // Host bundles the runtime dependencies. None of the fields are optional —
 // New panics in the runner factory if any are nil.
@@ -229,26 +236,34 @@ func (t Tool) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*to
 	}
 
 	// 9. Prior YAML + diff for the regenerate path.
-	priorYAML, diff := ""+"", ""
+	var priorYAML, diff string
 	if in.Regenerate && t.Host.Registry != nil {
 		if prior := t.Host.Registry.Get(pre.Name); prior != nil {
 			priorYAML, diff = priorAndDiff(t.Host.ExternalAgentsDir, pre.Name, draftRaw)
 		}
 	}
 
-	// 10. Register pending approval.
+	// 10. Register pending approval. The audit-trail fields (Binary, Prompt,
+	// HelpOutput, etc.) flow through PendingApproval so the Publisher can
+	// write a complete .genmeta sibling at publish time.
 	pending := &approval.PendingApproval{
-		SessionID: env.SessionID,
-		AgentName: pre.Name,
-		DraftPath: draftPath,
-		DraftYAML: string(draftRaw),
-		PriorYAML: priorYAML,
-		Diff:      diff,
-		Smoke:     smokeOutcome,
+		SessionID:        env.SessionID,
+		AgentName:        pre.Name,
+		DraftPath:        draftPath,
+		DraftYAML:        string(draftRaw),
+		PriorYAML:        priorYAML,
+		Diff:             diff,
+		Smoke:            smokeOutcome,
+		AdapterSmokePass: smokeOutcome.Passed,
 		Provenance: approval.Provenance{
-			GeneratedBy: model,
-			GeneratedAt: time.Now().UTC(),
-			ToolVersion: trim(meta.Version, 256),
+			GeneratedBy:   model,
+			GeneratedAt:   time.Now().UTC(),
+			ToolVersion:   trim(meta.Version, 256),
+			Binary:        pre.Path,
+			Prompt:        templated,
+			HelpOutput:    meta.Help,
+			VersionOutput: meta.Version,
+			ManOutput:     meta.Man,
 		},
 	}
 	id := t.Host.Approval.Register(pending)
@@ -268,14 +283,17 @@ func (t Tool) preflight(in Input) (preflightResult, string) {
 	if bin == "" {
 		return preflightResult{}, "binary is required"
 	}
-	// Resolve to absolute path.
+	// Resolve to absolute path, following symlinks so a wrapper symlink to
+	// /bin/bash can't bypass the shell-name check below.
 	abs, err := resolveBinary(bin)
 	if err != nil {
 		return preflightResult{}, fmt.Sprintf("Cannot set up %s: binary not found on PATH. Install it first.", bin)
 	}
-	// System shell rejection.
+	// System shell rejection against the resolved target. Lowercased so a
+	// case-insensitive filesystem (macOS HFS+, WSL caseinsensitive mounts)
+	// can't slip /usr/local/bin/BASH through.
 	base := filepath.Base(abs)
-	if _, banned := systemShells[base]; banned {
+	if _, banned := systemShells[strings.ToLower(base)]; banned {
 		return preflightResult{}, fmt.Sprintf("Refusing to generate an adapter for shell %q. Shells are not appropriate as sub_agents.", base)
 	}
 	// Sensitive path rejection.
@@ -284,10 +302,16 @@ func (t Tool) preflight(in Input) (preflightResult, string) {
 			return preflightResult{}, fmt.Sprintf("Refusing to generate adapter for sensitive path %s.", abs)
 		}
 	}
-	// Already-registered without regenerate.
-	name := strings.TrimSuffix(filepath.Base(in.Binary), filepath.Ext(filepath.Base(in.Binary)))
+	// Sanitize the adapter name from the user-supplied binary string. Strip
+	// any path component, then collapse to lowercase alphanumeric + dash +
+	// underscore so the safeAdapterName regex (and downstream loader / draft
+	// validator) accepts it without a 600-second roundtrip-to-failure.
+	name := sanitizeAdapterName(filepath.Base(in.Binary))
 	if name == "" {
-		name = base
+		name = sanitizeAdapterName(base)
+	}
+	if !safeAdapterName.MatchString(name) {
+		return preflightResult{}, fmt.Sprintf("derived adapter name %q is not a valid filename stem (must match %s)", name, safeAdapterName.String())
 	}
 	if !in.Regenerate && t.Host.Registry != nil {
 		if existing := t.Host.Registry.Get(name); existing != nil {
@@ -297,7 +321,46 @@ func (t Tool) preflight(in Input) (preflightResult, string) {
 	return preflightResult{Name: name, Path: abs}, ""
 }
 
+// sanitizeAdapterName converts an arbitrary basename (e.g. "my.tool-v1.2") into
+// a stem matching safeAdapterName. Dots become dashes, then any character
+// outside [a-z0-9_-] is dropped; consecutive separators are collapsed.
+func sanitizeAdapterName(base string) string {
+	s := strings.ToLower(base)
+	// Drop the trailing extension only when it's a common windows/script
+	// suffix; "tool.v1.2" should NOT become "tool" — that's information loss.
+	for _, ext := range []string{".exe", ".bat", ".cmd"} {
+		s = strings.TrimSuffix(s, ext)
+	}
+	var b strings.Builder
+	prevSep := false
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevSep = false
+		case r == '_' || r == '-' || r == '.':
+			if b.Len() == 0 || prevSep {
+				continue
+			}
+			if r == '.' {
+				b.WriteRune('-')
+			} else {
+				b.WriteRune(r)
+			}
+			prevSep = true
+		default:
+			continue
+		}
+	}
+	out := strings.Trim(b.String(), "-_")
+	if len(out) > 64 {
+		out = out[:64]
+	}
+	return out
+}
+
 func resolveBinary(bin string) (string, error) {
+	var abs string
 	if filepath.IsAbs(bin) {
 		fi, err := os.Stat(bin)
 		if err != nil {
@@ -306,9 +369,22 @@ func resolveBinary(bin string) (string, error) {
 		if fi.Mode()&0o111 == 0 {
 			return "", fmt.Errorf("not executable: %s", bin)
 		}
-		return bin, nil
+		abs = bin
+	} else {
+		var err error
+		abs, err = exec.LookPath(bin)
+		if err != nil {
+			return "", err
+		}
 	}
-	return exec.LookPath(bin)
+	// Resolve symlinks so a wrapper like ~/bin/notbash → /bin/bash is rejected
+	// by the basename check in preflight. EvalSymlinks failures fall back to
+	// the unresolved path; the caller's subsequent stat/exec will surface any
+	// real I/O issue.
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved, nil
+	}
+	return abs, nil
 }
 
 func deriveInstallPrefix(absBin string) string {
@@ -362,7 +438,16 @@ func capBytes(b []byte, max int) string {
 	if len(b) <= max {
 		return string(b)
 	}
-	return string(b[:max]) + "\n[... truncated]"
+	// Walk backward from max to find a valid UTF-8 rune boundary so we never
+	// hand the LLM a string ending in a half-encoded multi-byte sequence.
+	cut := max
+	for cut > 0 && !utf8.RuneStart(b[cut]) {
+		cut--
+	}
+	if cut == 0 {
+		cut = max
+	}
+	return string(b[:cut]) + "\n[... truncated]"
 }
 
 func trim(s string, n int) string {
@@ -470,7 +555,3 @@ func (h *Host) modelAllowed(model string) bool {
 func errResult(format string, args ...any) *tools.Result {
 	return &tools.Result{Output: fmt.Sprintf(format, args...), IsError: true}
 }
-
-// ensure the dispatcher interface is referenced from a doc-friendly spot
-// even if linkers ever try to be too clever.
-var _ = errors.New

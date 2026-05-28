@@ -34,15 +34,16 @@ type Host struct {
 
 // DispatchInput mirrors the multi-agent spec's Dispatch signature.
 type DispatchInput struct {
-	Prompt       string         `json:"prompt"`
-	AgentType    string         `json:"agent_type,omitempty"`
-	Inputs       map[string]any `json:"inputs,omitempty"`
-	Mode         string         `json:"mode,omitempty"`
-	Workdir      string         `json:"workdir,omitempty"`
-	AllowedTools []string       `json:"allowed_tools,omitempty"`
-	DeniedTools  []string       `json:"denied_tools,omitempty"`
-	Provider     string         `json:"provider,omitempty"`
-	Model        string         `json:"model,omitempty"`
+	Prompt       string            `json:"prompt"`
+	AgentType    string            `json:"agent_type,omitempty"`
+	Inputs       map[string]any    `json:"inputs,omitempty"`
+	Mode         string            `json:"mode,omitempty"`
+	Workdir      string            `json:"workdir,omitempty"`
+	AllowedTools []string          `json:"allowed_tools,omitempty"`
+	DeniedTools  []string          `json:"denied_tools,omitempty"`
+	Provider     string            `json:"provider,omitempty"`
+	Model        string            `json:"model,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
 }
 
 const (
@@ -214,8 +215,11 @@ func buildChildOptions(parent *session.Session, at coord.AgentType, in DispatchI
 	if in.Workdir != "" {
 		workdir = in.Workdir
 	}
-	envCopy := make(map[string]string, len(parent.Env))
+	envCopy := make(map[string]string, len(parent.Env)+len(in.Env))
 	for k, v := range parent.Env {
+		envCopy[k] = v
+	}
+	for k, v := range in.Env {
 		envCopy[k] = v
 	}
 	model := parent.Model

@@ -204,6 +204,23 @@ func (m *Manager) addSession(sessionID string, r rule) {
 	m.sessionRules[sessionID] = append(m.sessionRules[sessionID], r)
 }
 
+// GrantSession pre-populates a session-scoped AllowSession rule so the next
+// Check for (tool, resource) bypasses the prompt. Used by the adapter-
+// generation approval flow: when the user approves a freshly generated
+// adapter through agent_setup, the originating session should not see the
+// first-invocation permission prompt for that same adapter.
+func (m *Manager) GrantSession(sessionID, tool, resource string) {
+	if sessionID == "" || tool == "" {
+		return
+	}
+	m.addSession(sessionID, rule{
+		tool:     tool,
+		pattern:  resource,
+		decision: AllowSession,
+		scope:    store.ScopeSession,
+	})
+}
+
 func (m *Manager) savePermanent(ctx context.Context, tool, pattern string, decision Decision) error {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {

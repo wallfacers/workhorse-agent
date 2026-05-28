@@ -32,14 +32,17 @@ const GenmetaExt = ".genmeta"
 var adapterStemRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 // GenmetaPayload is the audit-trail content written alongside the published
-// adapter as <name>.genmeta. The file is human-readable JSON, mode 0600.
+// adapter as <name>.genmeta. The file is human-readable JSON, mode 0600. Every
+// field is populated from the in-flight provenance — operators inspecting
+// .genmeta need the full record (binary + prompt + raw probes) to reason
+// about a generated adapter or hand-edit a regeneration.
 type GenmetaPayload struct {
 	GeneratedBy   string    `json:"generated_by"`
 	GeneratedAt   time.Time `json:"generated_at"`
 	ToolVersion   string    `json:"tool_version"`
-	Binary        string    `json:"binary"`
-	Prompt        string    `json:"prompt"`
-	HelpOutput    string    `json:"help_output"`
+	Binary        string    `json:"binary,omitempty"`
+	Prompt        string    `json:"prompt,omitempty"`
+	HelpOutput    string    `json:"help_output,omitempty"`
 	VersionOutput string    `json:"version_output,omitempty"`
 	ManOutput     string    `json:"man_output,omitempty"`
 }
@@ -84,8 +87,13 @@ func (p *Publisher) Publish(draftPath string, genmeta GenmetaPayload) (string, e
 	}
 	_ = os.Chmod(livePath, 0o600)
 
+	// Genmeta is the audit-trail sibling. Per design G9 a write failure here
+	// does NOT roll back the rename — the adapter is live. Returning an error
+	// would cause the approval manager to leak the pending entry into the
+	// expire-timer path, then emit a "expired" event for an adapter that is
+	// already in the live registry. Surface the failure via stderr only.
 	if err := writeGenmeta(p.LiveDir, adapter.Name, genmeta); err != nil {
-		return livePath, fmt.Errorf("draft.Publish: genmeta write failed (adapter still published): %w", err)
+		fmt.Fprintf(os.Stderr, "draft.Publish: genmeta write failed (adapter %q still published): %v\n", adapter.Name, err)
 	}
 	return livePath, nil
 }

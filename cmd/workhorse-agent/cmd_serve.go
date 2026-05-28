@@ -227,6 +227,11 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	approvalMgr.SetEmitter(api.NewSessionEventEmitter(sessMgr))
 	approvalMgr.SetPublisher(&draftPublisher{liveDir: cfg.ExternalAgents.Dir})
 	approvalMgr.SetDedupClearer(&sessionDedupClearer{manager: sessMgr})
+	if extReg != nil {
+		approvalMgr.SetRegistryInjector(&registryInjector{registry: extReg, logger: logger})
+	}
+	approvalMgr.SetMarkApprover(&permissionMarkApprover{mgr: permMgr})
+	approvalMgr.SetEditValidator(&editValidator{liveDir: cfg.ExternalAgents.Dir})
 
 	// 7. API server.
 	apiCfg := apiConfigFrom(cfg)
@@ -261,6 +266,9 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Warn("serve: shutdown returned", "err", err)
 	}
+	// Cancel any in-flight adapter approvals so their AfterFunc goroutines
+	// don't outlive the listener and fire against a stale emitter.
+	approvalMgr.Cancel()
 	logger.Info("serve: bye")
 	return nil
 }
@@ -629,17 +637,16 @@ func newAdapterGeneratorDispatcher(t dispatch.Tool) *adapterGeneratorDispatcher 
 	return &adapterGeneratorDispatcher{tool: t}
 }
 
-// Dispatch invokes the underlying Dispatch tool. The env map is passed
-// through via the inputs payload — Dispatch doesn't carry per-call env yet,
-// so for now we rely on the runner factory to seed the session's Env from
-// parent + dispatch overlay. The genbash install-prefix env var is the
-// cross-cutting hint the generator subagent needs.
-func (d *adapterGeneratorDispatcher) Dispatch(ctx context.Context, parentSessionID, p, model string, _ map[string]string) (string, error) {
+// Dispatch invokes the underlying Dispatch tool. The env map is forwarded
+// onto the child session's Env so the genbash install-prefix hint (set per
+// call by agent_setup) reaches the generator subagent's restricted Bash.
+func (d *adapterGeneratorDispatcher) Dispatch(ctx context.Context, parentSessionID, p, model string, env map[string]string) (string, error) {
 	in := dispatch.DispatchInput{
 		Prompt:    p,
 		AgentType: coord.AdapterGeneratorTypeName,
 		Mode:      "blocking",
 		Model:     model,
+		Env:       env,
 	}
 	raw, err := json.Marshal(in)
 	if err != nil {
@@ -655,25 +662,21 @@ func (d *adapterGeneratorDispatcher) Dispatch(ctx context.Context, parentSession
 	return res.Output, nil
 }
 
-// loadBuiltinAdapterExamples reads each embedded adapter YAML and returns it
-// as a few-shot example for the AdapterGeneration template.
+// loadBuiltinAdapterExamples returns the embedded adapter YAMLs as few-shot
+// examples for the AdapterGeneration template. Reads directly from the
+// embedded FS via extagent.BuiltinAdapterNames + BuiltinAdapterYAML — the
+// previous implementation called loader.Load(os.TempDir()) which exposed
+// the generator's prompt to any attacker-placed YAML under /tmp.
 func loadBuiltinAdapterExamples(logger *slog.Logger) []prompt.AdapterGenerationExample {
-	loader := &extagent.Loader{Logger: logger}
-	snap, err := loader.Load(os.TempDir()) // dir unused; only builtins are needed
-	if err != nil {
-		logger.Warn("agent_setup: load builtin examples failed", "error", err)
-		return nil
-	}
-	out := make([]prompt.AdapterGenerationExample, 0)
-	for _, a := range extagent.NewRegistry(snap).All() {
-		if a.Provenance.Source != "builtin" {
-			continue
-		}
-		body, ok := extagent.BuiltinAdapterYAML(a.Name)
+	names := extagent.BuiltinAdapterNames()
+	out := make([]prompt.AdapterGenerationExample, 0, len(names))
+	for _, name := range names {
+		body, ok := extagent.BuiltinAdapterYAML(name)
 		if !ok {
+			logger.Warn("agent_setup: missing embedded adapter YAML", "name", name)
 			continue
 		}
-		out = append(out, prompt.AdapterGenerationExample{Name: a.Name, Body: string(body)})
+		out = append(out, prompt.AdapterGenerationExample{Name: name, Body: string(body)})
 	}
 	return out
 }
@@ -718,10 +721,107 @@ type draftPublisher struct {
 func (p *draftPublisher) Publish(draftPath string, prov approval.Provenance) (string, error) {
 	pub := &draft.Publisher{LiveDir: p.liveDir}
 	return pub.Publish(draftPath, draft.GenmetaPayload{
-		GeneratedBy: prov.GeneratedBy,
-		GeneratedAt: prov.GeneratedAt,
-		ToolVersion: prov.ToolVersion,
+		GeneratedBy:   prov.GeneratedBy,
+		GeneratedAt:   prov.GeneratedAt,
+		ToolVersion:   prov.ToolVersion,
+		Binary:        prov.Binary,
+		Prompt:        prov.Prompt,
+		HelpOutput:    prov.HelpOutput,
+		VersionOutput: prov.VersionOutput,
+		ManOutput:     prov.ManOutput,
 	})
+}
+
+// registryInjector implements approval.RegistryInjector by re-parsing the
+// just-published adapter and injecting it into the live extagent.Registry
+// snapshot. The session ID is currently ignored: snapshots are shared
+// process-wide for the registry, so injecting once makes the adapter visible
+// to every live session that asks. SmokePassed flows from the approval flow's
+// pre-publish smoke result so the adapter immediately satisfies IsHealthy()
+// and ExternalAgent.Run accepts it.
+type registryInjector struct {
+	registry *extagent.Registry
+	logger   *slog.Logger
+}
+
+func (r *registryInjector) Inject(_ /* sessionID */, _ /* adapterName */, publishedPath string, smokePassed bool) {
+	if r == nil || r.registry == nil || publishedPath == "" {
+		return
+	}
+	raw, err := os.ReadFile(publishedPath)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("registryInjector: read published adapter", "path", publishedPath, "err", err)
+		}
+		return
+	}
+	adapter, err := extagent.Parse(raw)
+	if err != nil {
+		if r.logger != nil {
+			r.logger.Warn("registryInjector: parse published adapter", "path", publishedPath, "err", err)
+		}
+		return
+	}
+	adapter.SmokePassed = smokePassed
+	if !smokePassed {
+		adapter.SmokeError = "smoke failed pre-approval (still injected per design G5)"
+	}
+	r.registry.Snapshot().Inject(adapter)
+}
+
+// permissionMarkApprover implements approval.MarkApprover by pre-populating a
+// session-scoped allow rule on the permission manager so the next
+// ExternalAgent invocation against this adapter in the originating session
+// skips the first-invocation prompt (per the modified external-agents spec).
+type permissionMarkApprover struct {
+	mgr *permission.Manager
+}
+
+func (p *permissionMarkApprover) MarkApproved(sessionID, agentName string) {
+	if p == nil || p.mgr == nil {
+		return
+	}
+	p.mgr.GrantSession(sessionID, "ExternalAgent", agentName)
+}
+
+// editValidator implements approval.EditValidator by re-validating an edited
+// adapter YAML against the schema + the dangerous-argument scan. Smoke is
+// NOT re-run inline (it can take up to a minute and the approval flow holds
+// the manager mutex); the eventual approve path re-publishes through
+// draft.Publish which itself re-parses the YAML.
+type editValidator struct {
+	liveDir string
+}
+
+func (v *editValidator) ValidateEdit(_ string, editedYAML []byte) error {
+	adapter, err := extagent.Parse(editedYAML)
+	if err != nil {
+		return fmt.Errorf("schema validation: %w", err)
+	}
+	for _, arg := range adapter.Invocation.ExtraArgs {
+		for _, pat := range dangerousAdapterArgPatterns {
+			if strings.Contains(arg, pat) {
+				return fmt.Errorf("dangerous pattern %q in invocation.extra_args[%q]", pat, arg)
+			}
+		}
+	}
+	for k, val := range adapter.Invocation.EnvOverride {
+		for _, pat := range dangerousAdapterArgPatterns {
+			if strings.Contains(k, pat) || strings.Contains(val, pat) {
+				return fmt.Errorf("dangerous pattern %q in env_override", pat)
+			}
+		}
+	}
+	return nil
+}
+
+// dangerousAdapterArgPatterns mirrors agentsetup.dangerousArgPatterns. Kept
+// here so the editValidator doesn't import the agentsetup package (which
+// would create a cycle: agentsetup → approval → editValidator → agentsetup).
+var dangerousAdapterArgPatterns = []string{
+	"rm -rf /", "rm -rf ~", "dd of=/dev/", "mkfs.", "chmod -R 777 /",
+	"shutdown", "reboot", "halt", "poweroff",
+	"base64 -d | sh", "curl | bash",
 }
 
 // loadAdapterSchemaJSON returns the embedded adapter JSON schema as a string,

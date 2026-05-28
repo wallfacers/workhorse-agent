@@ -52,6 +52,22 @@ func (s *Server) handleAdapterApproval(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// Verify the approval id actually belongs to the session id in the URL —
+	// otherwise an authenticated caller could approve/reject another
+	// session's pending approval by guessing the id.
+	if pending := s.approvals.Get(approvalID); pending == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"code":    "approval_not_found",
+			"message": "approval expired or already resolved",
+		})
+		return
+	} else if pending.SessionID != sessionID {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"code":    "approval_not_found",
+			"message": "approval does not belong to this session",
+		})
+		return
+	}
 	var body approvalDecisionBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
@@ -135,8 +151,3 @@ func normalizeApprovalPayload(payload any) (map[string]any, bool) {
 		return out, true
 	}
 }
-
-// approvals is the Server-side handle on the adapter-generation approval
-// manager. Stored as an unexported field on Server; tests can use
-// SetApprovalManager to inject a stub.
-var _ = (*session.Manager)(nil) // silence unused-import warning when session is otherwise unused

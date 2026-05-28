@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 
 	"github.com/wallfacers/workhorse-agent/internal/extagent"
 	"github.com/wallfacers/workhorse-agent/internal/session"
@@ -52,6 +53,13 @@ func MakeImplicitTriggerHook(cfg ImplicitTriggerConfig) ImplicitTriggerHook {
 				passThrough = append(passThrough, c)
 				continue
 			}
+			// Reject path-bearing agent names — exec.LookPath treats them as
+			// direct file references and would skip PATH search entirely,
+			// letting an LLM-emitted "/tmp/foo" or "../bar" through.
+			if strings.ContainsAny(agentName, "/\\") {
+				passThrough = append(passThrough, c)
+				continue
+			}
 			// Unknown agent. Inspect dedup state first.
 			switch sess.AdapterSetupState(agentName) {
 			case "pending":
@@ -70,9 +78,15 @@ func MakeImplicitTriggerHook(cfg ImplicitTriggerConfig) ImplicitTriggerHook {
 				passThrough = append(passThrough, c)
 				continue
 			}
-			// Run agent_setup synchronously.
-			text := runImplicitSetup(ctx, cfg, agentName, c.Input)
-			sess.SetAdapterSetupState(agentName, "pending")
+			// Run agent_setup synchronously. Only mark dedup as "pending"
+			// when the setup actually registered an approval — a transient
+			// failure (provider down, schema error, etc.) should NOT lock
+			// the session out of retrying this name for the rest of the
+			// turn.
+			text, registered := runImplicitSetup(ctx, cfg, agentName, c.Input)
+			if registered {
+				sess.SetAdapterSetupState(agentName, "pending")
+			}
 			intercepted = append(intercepted, syntheticResult(c.ID, c.Name, text))
 		}
 		return passThrough, intercepted
@@ -110,19 +124,24 @@ func known(env *tools.Env, name string) bool {
 // hint when setup itself failed). The original ExternalAgent call's
 // parameters are echoed back so the model can re-emit them on retry —
 // see add-llm-adapter-generator design G8 / spec §"Plan A".
-func runImplicitSetup(ctx context.Context, cfg ImplicitTriggerConfig, agentName string, origInput json.RawMessage) string {
+//
+// The second return is true when agent_setup actually registered an approval
+// (i.e. emitted a non-error result). Callers use this to decide whether to
+// burn the per-session dedup slot.
+func runImplicitSetup(ctx context.Context, cfg ImplicitTriggerConfig, agentName string, origInput json.RawMessage) (string, bool) {
 	if cfg.SetupTool == nil {
-		return fmt.Sprintf("Adapter for %q was not registered and adapter-generator is unavailable. Use a different approach.", agentName)
+		return fmt.Sprintf("Adapter for %q was not registered and adapter-generator is unavailable. Use a different approach.", agentName), false
 	}
 	in := map[string]any{"binary": agentName}
 	raw, _ := json.Marshal(in)
 	res, err := cfg.SetupTool.Run(ctx, cfg.Env, raw)
 	if err != nil {
-		return fmt.Sprintf("Adapter for %q was not registered and setup failed: %v", agentName, err)
+		return fmt.Sprintf("Adapter for %q was not registered and setup failed: %v", agentName, err), false
 	}
+	registered := res != nil && !res.IsError
 	body := fmt.Sprintf("Adapter for '%s' was not registered. agent_setup result: %s\n\nYour original ExternalAgent call's parameters were:\n%s\n\nOnce the user approves, retry the same ExternalAgent call verbatim.",
 		agentName, res.Output, string(origInput))
-	return body
+	return body, registered
 }
 
 func syntheticResult(id, name, text string) ToolCallResult {

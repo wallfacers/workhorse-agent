@@ -75,3 +75,22 @@ func BuiltinAgentNames() ([]string, error) {
 	}
 	return out, nil
 }
+
+// BuiltinAdapterNames returns the names of every embedded adapter yaml
+// (claude-code, codex, aider, ...). Used by agent_setup to feed the
+// AdapterGeneration few-shot examples without scanning a filesystem
+// directory that could be polluted by an attacker.
+func BuiltinAdapterNames() []string {
+	entries, err := builtinFS.ReadDir("builtins")
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(entries))
+	for _, ent := range entries {
+		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".yaml") {
+			continue
+		}
+		out = append(out, strings.TrimSuffix(ent.Name(), ".yaml"))
+	}
+	return out
+}
