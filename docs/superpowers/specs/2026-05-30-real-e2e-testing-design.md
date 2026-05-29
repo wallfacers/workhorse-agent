@@ -181,12 +181,16 @@ type ToolResultRecord struct {
 }
 ```
 
-The trace collector hooks into the agent loop's existing event channel. It records:
-- All `EventTextDelta` → accumulated into `ModelOutput`
-- All `EventToolUse` → captured as `ToolCallRecord`
-- Tool results from the orchestrator → captured as `ToolResultRecord`
+The trace collector operates **non-invasively** by consuming the SSE event stream from the
+test HTTP server (same SSE endpoint a real client uses). This avoids modifying agent loop or
+orchestrator internals:
 
-This trace is what gets sent to the Judge — not the raw SSE events.
+1. The test runner opens an SSE connection to the test server.
+2. It collects all events (assistant text, tool calls, tool results) into the Trace struct.
+3. The HTTP response body is the sole data source — no internal hooks or instrumentation.
+
+This approach means zero changes to production code. The trace collector is test-only code
+living in `test/real_e2e/`.
 
 ### Component 4: Test Runner Helpers (`helpers.go`)
 
@@ -321,16 +325,25 @@ WORKHORSE_TEST_MODE=live WORKHORSE_JUDGE_MODE=off \
 
 ### Build Tag Strategy
 
-Tests use Go's conventional build tags for level selection:
+All files use `//go:build real_e2e` — this single tag prevents accidental runs via
+`go test ./...`. Running `go test ./...` without `-tags=real_e2e` skips the entire
+`test/real_e2e/` tree.
 
-- `//go:build real_e2e` — all real E2E tests require this tag to avoid accidental runs
-- Inside real E2E tests, level filtering uses `-run` with naming conventions:
-  - `Test*_Smoke*` — smoke level
-  - `Test*_Integration*` — integration level
-  - `Test*_Full*` — full scenario
+Test level filtering uses `-run` with naming conventions (no separate build tags,
+because Go's build tag system does not support OR combinations well):
 
-This keeps real E2E tests completely separated from unit and mock E2E tests. Running
-`go test ./...` without `-tags=real_e2e` skips the entire `test/real_e2e/` tree.
+```
+TestFileRead_Basic_Smoke          ← smoke level
+TestFileWrite_Create_Integration  ← integration level
+TestMultiTool_Workflow_Full       ← full scenario
+```
+
+Run by level:
+```bash
+go test ./test/real_e2e/... -tags=real_e2e -run "Test.*_Smoke"
+go test ./test/real_e2e/... -tags=real_e2e -run "Test.*_Integration"
+go test ./test/real_e2e/... -tags=real_e2e                  # all levels
+```
 
 ### Timeout and Retry Strategy
 
