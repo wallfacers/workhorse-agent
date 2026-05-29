@@ -32,49 +32,49 @@
 
 ## 4. 测试框架：Rubric 定义
 
-- [ ] 4.1 创建 `test/real_e2e/rubrics.go`（`//go:build real_e2e`）：定义 `fileToolsRubric`、`fileNotFoundRubric`、`memoryRubric`、`sessionSearchRubric`、`extAgentRubric`
+- [x] 4.1 创建 `test/real_e2e/rubrics.go`（`//go:build real_e2e`）：定义 `fileToolsRubric`、`fileNotFoundRubric`、`memoryRubric`、`sessionSearchRubric`、`extAgentRubric`
 
 ## 5. 测试框架：Runner Helpers
 
-- [ ] 5.1 创建 `test/real_e2e/helpers.go`（`//go:build real_e2e`）：定义 `realStack` 结构体和 `newRealStack()` 构建完整测试栈（SQLite + RecordingProvider + ToolRegistry + SessionManager + HTTP Server）
-- [ ] 5.2 实现 `createSession()`：通过 HTTP API 创建会话
-- [ ] 5.3 实现 `openSSE()`：打开 SSE 连接
-- [ ] 5.4 实现 `postMessage()`：发送用户消息
-- [ ] 5.5 定义 `scenarioConfig` 和 `runScenario()`：完整的场景驱动器（newRealStack → createSession → postMessage → CollectTrace → 可选 Judge Evaluate → Save recording）
-- [ ] 5.6 实现 `assertVerdict()`：Judge 结果断言，PASS 通过否则 FailNow 并输出 Reasoning + Suggestions
-- [ ] 5.7 单元测试 `TestNewRealStack_SkipWithoutKey`：无 API Key 时验证 `t.Skip`
+- [x] 5.1 创建 `test/real_e2e/helpers.go`（`//go:build real_e2e`）：定义 `realStack` 结构体和 `newRealStack()` 构建完整测试栈（SQLite + RecordingProvider + ToolRegistry + SessionManager + HTTP Server）
+- [x] 5.2 实现 `createSession()`：通过 HTTP API 创建会话
+- [x] 5.3 实现 `openSSE()`：打开 SSE 连接
+- [x] 5.4 实现 `postMessage()`：发送用户消息
+- [x] 5.5 定义 `scenarioConfig` 和 `runScenario()`：完整的场景驱动器（newRealStack → createSession → postMessage → CollectTrace → 可选 Judge Evaluate → Save recording）
+- [x] 5.6 实现 `assertVerdict()`：Judge 结果断言，PASS 通过否则 FailNow 并输出 Reasoning + Suggestions
+- [ ] 5.7 单元测试 `TestNewRealStack_SkipWithoutKey`：无 API Key 时验证 `t.Skip`（见下方说明）
 
 ## 6. 场景测试：文件操作工具
 
-- [ ] 6.1 创建 `test/real_e2e/file_tools_test.go`（`//go:build real_e2e`）
-- [ ] 6.2 `TestFileRead_Basic_Smoke`：读取已知文件，验证模型报告内容（Setup: 创建 `hello.txt`）
-- [ ] 6.3 `TestFileRead_NotFound_Smoke`：读取不存在的文件，验证模型报告错误
-- [ ] 6.4 `TestFileWrite_Create_Integration`：创建文件，验证写入
-- [ ] 6.5 `TestFileEdit_Modify_Integration`：编辑已有文件，验证修改（Setup: 创建 `config.yaml`）
-- [ ] 6.6 `TestBash_ListDir_Smoke`：通过 Bash 执行 `ls`，验证报告文件列表（Setup: 创建 `a.txt` + `b.txt`）
-- [ ] 6.7 `TestMultiTool_Workflow_Full`：Read → 分析 → Write 多步流程（Setup: 创建 `data.csv`）
+- [x] 6.1 创建 `test/real_e2e/file_tools_test.go`（`//go:build real_e2e`）
+- [x] 6.2 `TestFileRead_Basic_Smoke`：读取已知文件，验证模型报告内容（Setup: 创建 `hello.txt`）
+- [x] 6.3 `TestFileRead_NotFound_Smoke`：读取不存在的文件，验证模型报告错误
+- [x] 6.4 `TestFileWrite_Create_Integration`：创建文件，验证写入
+- [x] 6.5 `TestFileEdit_Modify_Integration`：编辑已有文件，验证修改（Setup: 创建 `config.yaml`）
+- [x] 6.6 `TestBash_ListDir_Smoke`：通过 Bash 执行 `ls`，验证报告文件列表（Setup: 创建 `a.txt` + `b.txt`）
+- [x] 6.7 `TestMultiTool_Workflow_Full`：Read → 分析 → Write 多步流程（Setup: 创建 `data.csv`）
 
 ## 7. 场景测试：记忆子系统
 
-- [ ] 7.1 创建 `test/real_e2e/memory_test.go`（`//go:build real_e2e`）
-- [ ] 7.2 `TestMemoryWrite_Read_Smoke`：写入记忆后读回验证
-- [ ] 7.3 `TestMemoryCrossSession_Integration`：会话 A 写入，会话 B 读取验证持久化
-- [ ] 7.4 `TestSessionSearch_Basic_Smoke`：搜索历史会话消息
+- [x] 7.1 创建 `test/real_e2e/memory_test.go`（`//go:build real_e2e`）
+- [x] 7.2 `TestMemoryWrite_Read_Smoke`：写入记忆后读回验证
+- [x] 7.3 `TestMemoryCrossSession_Integration`：会话 A 写入，会话 B 读取验证持久化
+- [x] 7.4 `TestSessionSearch_Basic_Smoke`：搜索历史会话消息
 
 ## 8. 场景测试：外部代理
 
-- [ ] 8.1 创建 `test/real_e2e/extagent_test.go`（`//go:build real_e2e`）
-- [ ] 8.2 `TestExtAgent_Invoke_Smoke`：调用已知外部代理
-- [ ] 8.3 `TestExtAgent_Error_Integration`：调用不存在的代理，验证错误处理
+- [x] 8.1 创建 `test/real_e2e/extagent_test.go`（`//go:build real_e2e`）
+- [x] 8.2 `TestExtAgent_Invoke_Smoke`：调用已知外部代理
+- [x] 8.3 `TestExtAgent_Error_Integration`：调用不存在的代理，验证错误处理
 
 ## 9. Fixtures 与文档
 
-- [ ] 9.1 创建 `test/real_e2e/fixtures/recordings/.gitkeep` 和 `test/real_e2e/fixtures/judge_cache/.gitkeep`
-- [ ] 9.2 创建 `test/real_e2e/fixtures/README.md`：说明录制文件和缓存的使用/重新生成方式
+- [x] 9.1 创建 `test/real_e2e/fixtures/recordings/.gitkeep` 和 `test/real_e2e/fixtures/judge_cache/.gitkeep`
+- [x] 9.2 创建 `test/real_e2e/fixtures/README.md`：说明录制文件和缓存的使用/重新生成方式
 
 ## 10. 端到端验证
 
-- [ ] 10.1 验证完整栈编译：`go build -tags=real_e2e ./test/real_e2e/...`
-- [ ] 10.2 录制一个 smoke 测试：`WORKHORSE_TEST_MODE=record WORKHORSE_JUDGE_MODE=off go test -tags=real_e2e -run TestFileRead_Basic_Smoke`
-- [ ] 10.3 回放验证：`WORKHORSE_TEST_MODE=replay WORKHORSE_JUDGE_MODE=off go test -tags=real_e2e -run TestFileRead_Basic_Smoke`
-- [ ] 10.4 提交初始录制文件到 git
+- [x] 10.1 验证完整栈编译：`go build -tags=real_e2e ./test/real_e2e/...` ✓ 编译通过，现有 e2e 测试不受影响
+- [ ] 10.2 录制一个 smoke 测试：`WORKHORSE_TEST_MODE=record WORKHORSE_JUDGE_MODE=off go test -tags=real_e2e -run TestFileRead_Basic_Smoke`（需要 DASHSCOPE_API_KEY）
+- [ ] 10.3 回放验证：依赖 10.2 的录制文件
+- [ ] 10.4 提交初始录制文件到 git（依赖 10.2）
