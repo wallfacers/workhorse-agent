@@ -801,3 +801,149 @@ func TestLoop_RunCancellation_ExitsCleanly(t *testing.T) {
 	}
 	_ = atomic.LoadInt64(new(int64)) // silence unused import if refactored away
 }
+
+// ---- frontend tool tests ----
+
+func sendPublishFrontendTools(t *testing.T, sess *session.Session, catalog []session.FrontendToolEntry) {
+	t.Helper()
+	payload, _ := json.Marshal(session.PublishFrontendToolsPayload{Catalog: catalog})
+	select {
+	case sess.Inbox <- session.ClientMessage{Type: session.ClientPublishFrontendTools, Payload: payload}:
+	case <-time.After(time.Second):
+		t.Fatal("inbox push timed out")
+	}
+}
+
+func TestLoop_PublishFrontendTools_RegistersTools(t *testing.T) {
+	reg := tools.NewRegistry()
+	h := newLoopHarness(t, func(h *loopHarness) {
+		h.Registry = reg
+		h.Loop.Registry = reg
+		h.Loop.Orchestrator.Registry = reg
+	})
+	h.start()
+	defer h.stop()
+
+	sendPublishFrontendTools(t, h.Session, []session.FrontendToolEntry{
+		{Name: "ui_click", Description: "Click", InputSchema: json.RawMessage(`{}`), ParallelSafety: "unsafe"},
+	})
+	events := h.collectUntil(t, 2*time.Second, func(es []session.Event) bool {
+		return hasType(es, "frontend_tools_published")
+	})
+
+	var published map[string]any
+	for _, e := range events {
+		if e.Type == "frontend_tools_published" {
+			published = e.Payload
+			break
+		}
+	}
+	if published == nil {
+		t.Fatal("frontend_tools_published event not found")
+	}
+	regNames := published["registered"]
+	if regNames == nil {
+		t.Fatal("registered field missing")
+	}
+
+	if _, ok := h.Loop.Registry.Get("ui_click"); !ok {
+		t.Fatal("ui_click not in registry after publish")
+	}
+
+	names := h.Session.SwapFrontendToolNames(nil)
+	if len(names) != 1 || names[0] != "ui_click" {
+		t.Fatalf("FrontendToolNames: %v", names)
+	}
+	// Restore names so cleanup works
+	_ = h.Session.SwapFrontendToolNames(names)
+}
+
+func TestLoop_PublishFrontendTools_CollisionRejected(t *testing.T) {
+	reg := tools.NewRegistry()
+	// Pre-register a server-side tool named "Bash".
+	_ = reg.Register(&stubTool{name: "Bash"})
+	h := newLoopHarness(t, func(h *loopHarness) {
+		h.Registry = reg
+		h.Loop.Registry = reg
+		h.Loop.Orchestrator.Registry = reg
+	})
+	h.start()
+	defer h.stop()
+
+	sendPublishFrontendTools(t, h.Session, []session.FrontendToolEntry{
+		{Name: "Bash", Description: "Frontend Bash", InputSchema: json.RawMessage(`{}`)},
+		{Name: "ui_click", Description: "Click", InputSchema: json.RawMessage(`{}`)},
+	})
+	events := h.collectUntil(t, 2*time.Second, func(es []session.Event) bool {
+		return hasType(es, "frontend_tools_published")
+	})
+
+	var published map[string]any
+	for _, e := range events {
+		if e.Type == "frontend_tools_published" {
+			published = e.Payload
+			break
+		}
+	}
+	regList, _ := published["registered"].([]string)
+	rejList, _ := published["rejected"].([]map[string]string)
+	if len(regList) != 1 || regList[0] != "ui_click" {
+		t.Fatalf("registered: %v", regList)
+	}
+	if len(rejList) != 1 || rejList[0]["name"] != "Bash" {
+		t.Fatalf("rejected: %v", rejList)
+	}
+
+	// Server-side Bash must still be the original.
+	tool, ok := h.Loop.Registry.Get("Bash")
+	if !ok {
+		t.Fatal("Bash removed from registry")
+	}
+	if _, ok := tool.(*stubTool); !ok {
+		t.Fatal("Bash replaced by frontend proxy — server-side tool must be retained")
+	}
+}
+
+func TestLoop_PublishFrontendTools_RepublishReplacesOldSet(t *testing.T) {
+	reg := tools.NewRegistry()
+	h := newLoopHarness(t, func(h *loopHarness) {
+		h.Registry = reg
+		h.Loop.Registry = reg
+		h.Loop.Orchestrator.Registry = reg
+	})
+	h.start()
+	defer h.stop()
+
+	// First publish.
+	sendPublishFrontendTools(t, h.Session, []session.FrontendToolEntry{
+		{Name: "old_tool", Description: "Old", InputSchema: json.RawMessage(`{}`)},
+	})
+	h.collectUntil(t, 2*time.Second, func(es []session.Event) bool {
+		return hasType(es, "frontend_tools_published")
+	})
+	if _, ok := h.Loop.Registry.Get("old_tool"); !ok {
+		t.Fatal("old_tool not registered after first publish")
+	}
+
+	// Second publish replaces.
+	sendPublishFrontendTools(t, h.Session, []session.FrontendToolEntry{
+		{Name: "new_tool", Description: "New", InputSchema: json.RawMessage(`{}`)},
+	})
+	h.collectUntil(t, 2*time.Second, func(es []session.Event) bool {
+		for _, e := range es {
+			if e.Type == "frontend_tools_published" {
+				if r, ok := e.Payload["registered"].([]string); ok && len(r) > 0 {
+					return true
+				}
+			}
+		}
+		return false
+	})
+
+	if _, ok := h.Loop.Registry.Get("old_tool"); ok {
+		t.Fatal("old_tool still in registry after re-publish")
+	}
+	if _, ok := h.Loop.Registry.Get("new_tool"); !ok {
+		t.Fatal("new_tool not in registry after re-publish")
+	}
+}

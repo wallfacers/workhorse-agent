@@ -141,8 +141,20 @@ func (s *Server) handleStreamPost(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+	case session.ClientFrontendToolResult:
+		var p protocol.FrontendToolResultPayload
+		if err := decodePayload(msg, &p); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"code":    "bad_request",
+				"message": "invalid frontend_tool_result payload: " + err.Error(),
+			})
+			return
+		}
+		if fb := sess.Frontend(); fb != nil {
+			fb.Resolve(p.ToolUseID, p.Result)
+		}
 	default:
-		// user_message, ping, context_update — forward to Inbox.
+		// user_message, ping, context_update, publish_frontend_tools — forward to Inbox.
 		select {
 		case sess.Inbox <- session.ClientMessage{
 			Type:    session.ClientMessageType(msg.Type),
@@ -165,9 +177,16 @@ func stateAccepts(state session.State, t protocol.ClientMessageType) bool {
 	mt := session.ClientMessageType(t)
 	switch state {
 	case session.StateIdle:
+		if mt == session.ClientFrontendToolResult {
+			return false
+		}
 		return true
 	case session.StateThinking, session.StateExecuting, session.StateCompacting:
-		return mt == session.ClientInterrupt || mt == session.ClientPing
+		allowed := mt == session.ClientInterrupt || mt == session.ClientPing
+		if state == session.StateExecuting {
+			allowed = allowed || mt == session.ClientFrontendToolResult
+		}
+		return allowed
 	case session.StateAwaitPerm:
 		return mt == session.ClientInterrupt || mt == session.ClientPing ||
 			mt == session.ClientPermissionDecision

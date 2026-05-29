@@ -88,17 +88,19 @@ var allowedTransitions = map[State]map[State]struct{}{
 	},
 }
 
-// ClientMessageType enumerates the five Client → Server message types defined
+// ClientMessageType enumerates the seven Client → Server message types defined
 // by the api-protocol spec. The HTTP layer parses incoming JSON, validates the
 // type, and pushes a ClientMessage into Session.Inbox.
 type ClientMessageType string
 
 const (
-	ClientUserMessage        ClientMessageType = "user_message"
-	ClientPermissionDecision ClientMessageType = "permission_decision"
-	ClientInterrupt          ClientMessageType = "interrupt"
-	ClientPing               ClientMessageType = "ping"
-	ClientContextUpdate      ClientMessageType = "context_update"
+	ClientUserMessage          ClientMessageType = "user_message"
+	ClientPermissionDecision   ClientMessageType = "permission_decision"
+	ClientInterrupt            ClientMessageType = "interrupt"
+	ClientPing                 ClientMessageType = "ping"
+	ClientContextUpdate        ClientMessageType = "context_update"
+	ClientPublishFrontendTools ClientMessageType = "publish_frontend_tools"
+	ClientFrontendToolResult   ClientMessageType = "frontend_tool_result"
 )
 
 // ClientMessage is the parsed form of one Client → Server message. Payload
@@ -119,8 +121,34 @@ type PermissionDecisionPayload struct {
 	Decision  store.PermissionDecision `json:"decision"`
 }
 
+// FrontendToolEntry is one entry in a publish_frontend_tools catalog.
+type FrontendToolEntry struct {
+	Name           string          `json:"name"`
+	Description    string          `json:"description"`
+	InputSchema    json.RawMessage `json:"inputSchema"`
+	OutputSchema   json.RawMessage `json:"outputSchema,omitempty"`
+	ParallelSafety string          `json:"parallelSafety"`
+}
+
+// PublishFrontendToolsPayload is the schema for ClientPublishFrontendTools.Payload.
+type PublishFrontendToolsPayload struct {
+	Catalog []FrontendToolEntry `json:"catalog"`
+}
+
+// FrontendToolResultPayload is the schema for ClientFrontendToolResult.Payload.
+type FrontendToolResultPayload struct {
+	ToolUseID string          `json:"tool_use_id"`
+	Result    json.RawMessage `json:"result"`
+}
+
+// FrontendResolver is implemented by the frontend tool bridge. The HTTP layer
+// calls Resolve to deliver a frontend_tool_result from the client.
+type FrontendResolver interface {
+	Resolve(id string, result json.RawMessage)
+}
+
 // Event is one Server → Client event the agent loop pushes to Outbox. Type is
-// one of the 11 event names from api-protocol; Payload is the JSON-marshaled
+// one of the 16 event names from api-protocol; Payload is the JSON-marshaled
 // type-specific fields without the wrapper (type / idx / session_id).
 //
 // The HTTP layer wraps the event into the final SSE frame; Idx is filled in
@@ -212,6 +240,14 @@ type Session struct {
 	// register the new one. The handover protocol lives in internal/api; the
 	// mutex lives here so it can be reached from the session handle.
 	StreamMu sync.Mutex
+
+	// FrontendToolNames tracks the names of the currently registered frontend
+	// tools so a re-publish can unregister the prior set. Guarded by mu.
+	FrontendToolNames []string
+
+	// frontend holds the per-session frontend tool bridge, nil until the first
+	// publish_frontend_tools. Guarded by mu; access via SetFrontend/Frontend().
+	frontend FrontendResolver
 
 	// store, when non-nil and !Ephemeral, is the authoritative source for
 	// event idx (SQLite AUTOINCREMENT). Set via Options.Store at construction.
@@ -450,6 +486,33 @@ func (s *Session) SetAllowedTools(tools []string) {
 	defer s.mu.Unlock()
 	s.allowed = append([]string(nil), tools...)
 	s.updatedAt = time.Now().UTC()
+}
+
+// SetFrontendToolNames records the names of the currently registered frontend
+// tools so a subsequent publish can unregister them first.
+// SetFrontend stores the frontend tool bridge. Guarded by mu.
+func (s *Session) SetFrontend(b FrontendResolver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.frontend = b
+}
+
+// Frontend returns the current frontend tool bridge. Guarded by mu.
+func (s *Session) Frontend() FrontendResolver {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.frontend
+}
+
+// SwapFrontendToolNames atomically returns the current frontend tool names and
+// replaces them with the new set. The caller (the agent loop) uses the returned
+// names to unregister stale entries.
+func (s *Session) SwapFrontendToolNames(newNames []string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old := s.FrontendToolNames
+	s.FrontendToolNames = append([]string(nil), newNames...)
+	return old
 }
 
 // MarkToolUsePending records a tool_use the assistant just emitted so a later

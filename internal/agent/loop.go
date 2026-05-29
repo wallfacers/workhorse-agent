@@ -16,6 +16,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/provider"
 	"github.com/wallfacers/workhorse-agent/internal/session"
 	"github.com/wallfacers/workhorse-agent/internal/tools"
+	"github.com/wallfacers/workhorse-agent/internal/tools/frontend"
 )
 
 // LoopConfig groups the dial-able knobs of the agent loop. Every field has a
@@ -87,6 +88,15 @@ type Loop struct {
 	// inbox watcher running in a sibling goroutine can interrupt it. nil when
 	// no turn is in flight.
 	activeTurnCancel atomic.Pointer[turnHandle]
+
+	// frontendBridge holds the per-session frontend tool bridge. Lazily
+	// constructed on the first publish_frontend_tools. The Session's
+	// Frontend field is set to this bridge so the HTTP layer can call Resolve.
+	frontendBridge *frontend.Bridge
+
+	// registryCloned is true after the per-session registry has been cloned
+	// for frontend tool isolation. Subsequent publishes skip the clone.
+	registryCloned bool
 }
 
 // turnHandle is the small bundle the watcher needs to interrupt and observe a
@@ -165,6 +175,8 @@ func (l *Loop) dispatchIdle(ctx context.Context, msg session.ClientMessage) {
 		l.runTurnSafe(ctx, msg)
 	case session.ClientPing:
 		_ = l.Session.Emit(ctx, "pong", nil)
+	case session.ClientPublishFrontendTools:
+		l.handlePublishFrontendTools(ctx, msg)
 	case session.ClientInterrupt, session.ClientPermissionDecision, session.ClientContextUpdate:
 		// no-op outside a turn
 	default:
@@ -848,4 +860,83 @@ func (l *Loop) logger() *slog.Logger {
 		return l.Logger
 	}
 	return slog.Default()
+}
+
+// handlePublishFrontendTools processes a publish_frontend_tools message
+// received while Idle. It lazily constructs the per-session Bridge, clones
+// the registry (so frontend tools don't leak to other sessions), unregisters
+// the prior frontend set, registers the new one, and emits
+// frontend_tools_published.
+func (l *Loop) handlePublishFrontendTools(ctx context.Context, msg session.ClientMessage) {
+	var payload session.PublishFrontendToolsPayload
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		l.logger().Warn("agent: bad publish_frontend_tools payload", "err", err)
+		return
+	}
+
+	if l.frontendBridge == nil {
+		l.frontendBridge = frontend.NewBridge(l.Session.Emit)
+		l.Session.SetFrontend(l.frontendBridge)
+	}
+
+	if err := l.ensureClonedRegistry(); err != nil {
+		l.logger().Warn("agent: failed to clone registry for frontend tools", "err", err)
+		return
+	}
+
+	// Unregister the prior frontend set before registering new ones so that
+	// a new entry with the same name as an old frontend tool does not collide.
+	old := l.Session.SwapFrontendToolNames(nil)
+	for _, name := range old {
+		l.Registry.Unregister(name)
+	}
+
+	registered := make([]string, 0)
+	rejected := make([]map[string]string, 0)
+	for _, entry := range payload.Catalog {
+		proxy := frontend.NewTool(frontend.ToolSpec{
+			Name:           entry.Name,
+			Description:    entry.Description,
+			InputSchema:    entry.InputSchema,
+			OutputSchema:   entry.OutputSchema,
+			ParallelSafety: entry.ParallelSafety,
+		}, l.frontendBridge)
+		if err := l.Registry.Register(proxy); err != nil {
+			rejected = append(rejected, map[string]string{
+				"name":   entry.Name,
+				"reason": err.Error(),
+			})
+			continue
+		}
+		registered = append(registered, entry.Name)
+	}
+
+	l.Session.SwapFrontendToolNames(registered)
+
+	_ = l.Session.Emit(ctx, "frontend_tools_published", map[string]any{
+		"registered": registered,
+		"rejected":   rejected,
+	})
+}
+
+// ensureClonedRegistry clones the registry into a per-session copy so
+// frontend tool registrations don't leak across sessions (the runner factory
+// only clones for adapter-generator sessions; regular sessions share the
+// global registry). The Orchestrator is also replaced with a new instance
+// pointing at the clone. No-op after the first call (tracked by registryCloned).
+func (l *Loop) ensureClonedRegistry() error {
+	if l.registryCloned {
+		return nil
+	}
+	l.registryCloned = true
+	cloned := l.Registry.Clone()
+	l.Registry = cloned
+	l.Orchestrator = &Orchestrator{
+		Registry:        cloned,
+		MaxParallel:     l.Orchestrator.MaxParallel,
+		DefaultTimeout:  l.Orchestrator.DefaultTimeout,
+		PerToolTimeouts: l.Orchestrator.PerToolTimeouts,
+		MaxResultBytes:  l.Orchestrator.MaxResultBytes,
+	}
+	return nil
 }

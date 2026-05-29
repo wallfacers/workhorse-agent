@@ -279,3 +279,99 @@ func TestStream_405_MethodNotAllowed(t *testing.T) {
 		t.Fatalf("Allow header: %q", got)
 	}
 }
+
+func TestStreamPost_FrontendToolResult_202_Executing(t *testing.T) {
+	s, ts := newTestServer(t)
+	sess := newSessionWithState(t, s, session.StateExecuting)
+	bridge := newTestBridge()
+	sess.SetFrontend(bridge)
+	resp := postStream(t, ts.URL+"/v1/sessions/"+sess.ID+"/stream",
+		`{"type":"frontend_tool_result","tool_use_id":"call1","result":{"ok":true,"value":"clicked"}}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("want 202, got %d", resp.StatusCode)
+	}
+	select {
+	case r := <-bridge.resolved:
+		if r.id != "call1" {
+			t.Fatalf("id: %s", r.id)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("frontend_tool_result not routed to bridge")
+	}
+}
+
+func TestStreamPost_FrontendToolResult_202_UnknownID(t *testing.T) {
+	s, ts := newTestServer(t)
+	sess := newSessionWithState(t, s, session.StateExecuting)
+	resp := postStream(t, ts.URL+"/v1/sessions/"+sess.ID+"/stream",
+		`{"type":"frontend_tool_result","tool_use_id":"nonexistent","result":{"ok":true,"value":null}}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("want 202 (unknown id is inert), got %d", resp.StatusCode)
+	}
+}
+
+func TestStreamPost_FrontendToolResult_409_WhenIdle(t *testing.T) {
+	s, ts := newTestServer(t)
+	sess := newSessionWithState(t, s, session.StateIdle)
+	resp := postStream(t, ts.URL+"/v1/sessions/"+sess.ID+"/stream",
+		`{"type":"frontend_tool_result","tool_use_id":"c1","result":{"ok":true,"value":1}}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("want 409 (Idle rejects frontend_tool_result), got %d", resp.StatusCode)
+	}
+}
+
+func TestStreamPost_PublishFrontendTools_202_Idle(t *testing.T) {
+	s, ts := newTestServer(t)
+	sess := newSessionWithState(t, s, session.StateIdle)
+	resp := postStream(t, ts.URL+"/v1/sessions/"+sess.ID+"/stream",
+		`{"type":"publish_frontend_tools","catalog":[{"name":"ui_click","description":"Click","inputSchema":{},"parallelSafety":"unsafe"}]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("want 202, got %d", resp.StatusCode)
+	}
+	select {
+	case msg := <-sess.Inbox:
+		if msg.Type != session.ClientPublishFrontendTools {
+			t.Fatalf("type: %s", msg.Type)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("publish_frontend_tools not routed to inbox")
+	}
+}
+
+func TestStreamPost_PublishFrontendTools_409_WhenExecuting(t *testing.T) {
+	s, ts := newTestServer(t)
+	sess := newSessionWithState(t, s, session.StateExecuting)
+	resp := postStream(t, ts.URL+"/v1/sessions/"+sess.ID+"/stream",
+		`{"type":"publish_frontend_tools","catalog":[]}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("want 409 (Executing rejects publish), got %d", resp.StatusCode)
+	}
+}
+
+type testBridge struct {
+	resolved chan struct {
+		id string
+		r  json.RawMessage
+	}
+}
+
+func newTestBridge() *testBridge {
+	return &testBridge{
+		resolved: make(chan struct {
+			id string
+			r  json.RawMessage
+		}, 8),
+	}
+}
+
+func (b *testBridge) Resolve(id string, result json.RawMessage) {
+	b.resolved <- struct {
+		id string
+		r  json.RawMessage
+	}{id: id, r: result}
+}

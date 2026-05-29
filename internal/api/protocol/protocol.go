@@ -1,6 +1,6 @@
 // Package protocol defines the wire types for the workhorse-agent
-// application-level Streamable HTTP protocol: the five Client → Server message
-// types, the eleven Server → Client event types, and the structured `error`
+// application-level Streamable HTTP protocol: the seven Client → Server message
+// types, the sixteen Server → Client event types, and the structured `error`
 // event with its full code enum.
 //
 // The package is intentionally pure data — no HTTP, no SSE framing, no
@@ -18,18 +18,21 @@ import (
 type ClientMessageType string
 
 const (
-	ClientUserMessage        ClientMessageType = "user_message"
-	ClientPermissionDecision ClientMessageType = "permission_decision"
-	ClientInterrupt          ClientMessageType = "interrupt"
-	ClientPing               ClientMessageType = "ping"
-	ClientContextUpdate      ClientMessageType = "context_update"
+	ClientUserMessage          ClientMessageType = "user_message"
+	ClientPermissionDecision   ClientMessageType = "permission_decision"
+	ClientInterrupt            ClientMessageType = "interrupt"
+	ClientPing                 ClientMessageType = "ping"
+	ClientContextUpdate        ClientMessageType = "context_update"
+	ClientPublishFrontendTools ClientMessageType = "publish_frontend_tools"
+	ClientFrontendToolResult   ClientMessageType = "frontend_tool_result"
 )
 
-// IsKnown reports whether t matches one of the five spec-defined types.
+// IsKnown reports whether t matches one of the seven spec-defined types.
 func (t ClientMessageType) IsKnown() bool {
 	switch t {
 	case ClientUserMessage, ClientPermissionDecision, ClientInterrupt,
-		ClientPing, ClientContextUpdate:
+		ClientPing, ClientContextUpdate,
+		ClientPublishFrontendTools, ClientFrontendToolResult:
 		return true
 	}
 	return false
@@ -53,6 +56,8 @@ const (
 	EventAdapterApprovalReq    ServerEventType = "adapter_approval_request"
 	EventAdapterApprovalResolv ServerEventType = "adapter_approval_resolved"
 	EventAdapterApprovalExp    ServerEventType = "adapter_approval_expired"
+	EventFrontendToolUse       ServerEventType = "frontend_tool_use"
+	EventFrontendToolsPub      ServerEventType = "frontend_tools_published"
 )
 
 // AllServerEventTypes is the canonical list used by tests and the debug
@@ -64,9 +69,10 @@ var AllServerEventTypes = []ServerEventType{
 	EventCompaction, EventProviderRetry,
 	EventError, EventInterrupted, EventPong,
 	EventAdapterApprovalReq, EventAdapterApprovalResolv, EventAdapterApprovalExp,
+	EventFrontendToolUse, EventFrontendToolsPub,
 }
 
-// IsKnown reports whether t matches one of the eleven spec-defined event types.
+// IsKnown reports whether t matches one of the sixteen spec-defined event types.
 func (t ServerEventType) IsKnown() bool {
 	for _, k := range AllServerEventTypes {
 		if k == t {
@@ -193,7 +199,27 @@ type ContextUpdatePayload struct {
 	Files   []json.RawMessage `json:"files,omitempty"`
 }
 
-// ClientMessage is the discriminated union over the five message types. The
+// PublishFrontendToolsPayload is the JSON shape of {type:"publish_frontend_tools", ...}.
+type PublishFrontendToolsPayload struct {
+	Catalog []FrontendToolEntry `json:"catalog"`
+}
+
+// FrontendToolEntry is one entry in the catalog.
+type FrontendToolEntry struct {
+	Name           string          `json:"name"`
+	Description    string          `json:"description"`
+	InputSchema    json.RawMessage `json:"inputSchema"`
+	OutputSchema   json.RawMessage `json:"outputSchema,omitempty"`
+	ParallelSafety string          `json:"parallelSafety"`
+}
+
+// FrontendToolResultPayload is the JSON shape of {type:"frontend_tool_result", ...}.
+type FrontendToolResultPayload struct {
+	ToolUseID string          `json:"tool_use_id"`
+	Result    json.RawMessage `json:"result"`
+}
+
+// ClientMessage is the discriminated union over the seven message types. The
 // raw payload bytes are kept on Payload so handlers can do typed unmarshal
 // only when needed.
 type ClientMessage struct {
@@ -202,7 +228,7 @@ type ClientMessage struct {
 }
 
 // ErrUnknownClientType is returned by Decode when the JSON body's "type"
-// field is not one of the five spec types. Handlers translate this to the
+// field is not one of the seven spec types. Handlers translate this to the
 // `unknown_message_type` error code.
 var ErrUnknownClientType = errors.New("protocol: unknown client message type")
 

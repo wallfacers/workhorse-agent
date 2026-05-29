@@ -10,6 +10,7 @@ func TestClientMessageType_IsKnown(t *testing.T) {
 	for _, ok := range []ClientMessageType{
 		ClientUserMessage, ClientPermissionDecision,
 		ClientInterrupt, ClientPing, ClientContextUpdate,
+		ClientPublishFrontendTools, ClientFrontendToolResult,
 	} {
 		if !ok.IsKnown() {
 			t.Fatalf("%q must be known", ok)
@@ -25,8 +26,10 @@ func TestClientMessageType_IsKnown(t *testing.T) {
 func TestServerEventTypes_FullSet(t *testing.T) {
 	// 11 spec-defined event types from the api-protocol MVP plus 3 added
 	// by add-llm-adapter-generator (adapter_approval_request,
-	// adapter_approval_resolved, adapter_approval_expired) → 14.
-	const want = 14
+	// adapter_approval_resolved, adapter_approval_expired) plus 2 added
+	// by add-frontend-tool-bridge (frontend_tool_use,
+	// frontend_tools_published) → 16.
+	const want = 16
 	if got := len(AllServerEventTypes); got != want {
 		t.Fatalf("event-type catalog drifted: got %d, want %d", got, want)
 	}
@@ -143,5 +146,44 @@ func TestDecodeClientMessage_MissingType(t *testing.T) {
 func TestDecodeClientMessage_BadJSON(t *testing.T) {
 	if _, err := DecodeClientMessage([]byte(`{not-json`)); err == nil {
 		t.Fatalf("expected decode error for bad JSON")
+	}
+}
+
+func TestDecodeClientMessage_PublishFrontendTools(t *testing.T) {
+	body := []byte(`{"type":"publish_frontend_tools","catalog":[{"name":"click","description":"Click","inputSchema":{},"parallelSafety":"safe"}]}`)
+	msg, err := DecodeClientMessage(body)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if msg.Type != ClientPublishFrontendTools {
+		t.Fatalf("type: %s", msg.Type)
+	}
+	var p PublishFrontendToolsPayload
+	if err := json.Unmarshal(msg.Payload, &p); err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	if len(p.Catalog) != 1 || p.Catalog[0].Name != "click" {
+		t.Fatalf("catalog: %+v", p.Catalog)
+	}
+	if p.Catalog[0].ParallelSafety != "safe" {
+		t.Fatalf("parallelSafety: %s", p.Catalog[0].ParallelSafety)
+	}
+}
+
+func TestDecodeClientMessage_FrontendToolResult(t *testing.T) {
+	body := []byte(`{"type":"frontend_tool_result","tool_use_id":"abc123","result":{"ok":true,"value":42}}`)
+	msg, err := DecodeClientMessage(body)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if msg.Type != ClientFrontendToolResult {
+		t.Fatalf("type: %s", msg.Type)
+	}
+	var p FrontendToolResultPayload
+	if err := json.Unmarshal(msg.Payload, &p); err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	if p.ToolUseID != "abc123" {
+		t.Fatalf("tool_use_id: %s", p.ToolUseID)
 	}
 }
