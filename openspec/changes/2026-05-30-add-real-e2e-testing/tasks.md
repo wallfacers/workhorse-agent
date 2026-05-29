@@ -1,34 +1,34 @@
 ## 1. 基础设施：RecordingProvider
 
-- [ ] 1.1 创建 `test/real_e2e/judge/recorder.go`：`RecordingProvider` 类型，实现 `provider.Provider` 接口，支持 `ModeReplay`/`ModeRecord`/`ModeLive` 三种模式，`Name()` 委托内部 Provider
-- [ ] 1.2 实现 `Load()` 方法：读取 `test/real_e2e/fixtures/recordings/<testID>.jsonl`，解析 header + turn 行到内存
-- [ ] 1.3 实现 `streamReplay()`：按 offset 顺序弹出 turn，通过 channel 回放事件；turn 耗尽时返回 `{EventStop, stop_reason: "end_turn"}`
-- [ ] 1.4 实现 `streamRecord()`：调用内部 Provider 的 `Stream()`，收集事件同时转发，结束时追加到 turns 列表
-- [ ] 1.5 实现 `Save()`/`Flush()`：序列化 turns 为 JSONL 写入文件（header + turn 行）
-- [ ] 1.6 实现 `modeFromEnv()`：读取 `WORKHORSE_TEST_MODE` 环境变量
-- [ ] 1.7 单元测试 `TestRecordingProvider_ReplayMode`：写入测试 JSONL，验证 Load + Stream 回放
-- [ ] 1.8 单元测试 `TestRecordingProvider_RecordMode`：用 mockprovider 作为内部 Provider，验证 Stream + Save 生成 JSONL
+- [x] 1.1 创建 `test/real_e2e/judge/recorder.go`：`RecordingProvider` 类型，实现 `provider.Provider` 接口，支持 `ModeReplay`/`ModeRecord`/`ModeLive` 三种模式，`Name()` 委托内部 Provider
+- [x] 1.2 实现 `Load()` 方法：读取 `test/real_e2e/fixtures/recordings/<testID>.jsonl`，解析 header + turn 行到内存
+- [x] 1.3 实现 `streamReplay()`：按 offset 顺序弹出 turn，通过 channel 回放事件；turn 耗尽时返回 `{EventStop, stop_reason: "end_turn"}`
+- [x] 1.4 实现 `streamRecord()`：调用内部 Provider 的 `Stream()`，收集事件同时转发，结束时追加到 turns 列表
+- [x] 1.5 实现 `Save()`/`Flush()`：序列化 turns 为 JSONL 写入文件（header + turn 行）
+- [x] 1.6 实现 `modeFromEnv()`：读取 `WORKHORSE_TEST_MODE` 环境变量
+- [x] 1.7 单元测试 `TestRecordingProvider_ReplayMode`：写入测试 JSONL，验证 Load + Stream 回放
+- [x] 1.8 单元测试 `TestRecordingProvider_RecordMode`：用 mockprovider 作为内部 Provider，验证 Stream + Save 生成 JSONL
 
 ## 2. 基础设施：TraceCollector
 
-- [ ] 2.1 创建 `test/real_e2e/judge/trace.go`：定义 `Trace`、`Turn`、`ToolCallRecord`、`ToolResultRecord` 类型
-- [ ] 2.2 实现 `CollectTrace()`：从 `bufio.Reader` 逐行解析 SSE 帧，按事件类型（`assistant_text_delta`/`assistant_text_done`/`tool_call_start`/`tool_call_done`/`error`）组装 Trace
-- [ ] 2.3 实现 `stop_reason == "end_turn"` 终止收集逻辑
-- [ ] 2.4 实现超时机制：`CollectTrace()` 接受 `timeout` 参数，超时返回已收集的 Trace
-- [ ] 2.5 单元测试 `TestCollectTrace_TextOnly`：模拟纯文本 SSE 流，验证 ModelOutput 拼接
-- [ ] 2.6 单元测试 `TestCollectTrace_WithToolCall`：模拟含工具调用的 SSE 流，验证 ToolCalls + ToolResults 收集
+- [x] 2.1 创建 `test/real_e2e/judge/trace.go`：定义 `Trace`、`Turn`、`ToolCallRecord`、`ToolResultRecord` 类型
+- [x] 2.2 实现 `CollectTrace()`：从 `bufio.Reader` 逐行解析 SSE 帧，按事件类型（`assistant_text_delta`/`assistant_text_done`/`tool_call_start`/`tool_call_done`/`error`）组装 Trace
+- [x] 2.3 实现 `stop_reason == "end_turn"` 终止收集逻辑
+- [x] 2.4 实现超时机制：`CollectTrace()` 接受 `timeout` 参数，超时返回已收集的 Trace
+- [x] 2.5 单元测试 `TestCollectTrace_TextOnly`：模拟纯文本 SSE 流，验证 ModelOutput 拼接
+- [x] 2.6 单元测试 `TestCollectTrace_WithToolCall`：模拟含工具调用的 SSE 流，验证 ToolCalls + ToolResults 收集
 
 ## 3. 基础设施：Judge 接口与 GLM-5 实现
 
-- [ ] 3.1 创建 `test/real_e2e/judge/judge.go`：定义 `Verdict`/`JudgeResult`/`Rubric`/`Criterion` 类型和 `Judge` 接口
-- [ ] 3.2 实现 `judgeCacheKey()`：`SHA-256(Trace JSON || Rubric JSON)` 前 16 字符
-- [ ] 3.3 实现 `loadCachedJudge()`/`saveCachedJudge()`：缓存 JSON 文件读写
-- [ ] 3.4 创建 `test/real_e2e/judge/glm5.go`：`GLM5Judge` 类型，通过 DashScope Anthropic 兼容 API 调用 `glm-5`
-- [ ] 3.5 实现 `buildPrompt()`：构造 Judge prompt（用户消息 + 交互轨迹 + Rubric 标准 + JSON 输出指令）
-- [ ] 3.6 实现 `callLLM()`：发送 HTTP 请求，解析响应，从 markdown code block 中提取 JSON
-- [ ] 3.7 实现 `Evaluate()`：带缓存逻辑（cached 模式读缓存，llm 模式调 API 并写缓存）
-- [ ] 3.8 单元测试 `TestGLM5Judge_EvaluateWithMock`：用 httptest 模拟 API，验证 Evaluate 返回正确 JudgeResult
-- [ ] 3.9 单元测试 `TestGLM5Judge_Caching`：验证首次调 API、第二次命中缓存
+- [x] 3.1 创建 `test/real_e2e/judge/judge.go`：定义 `Verdict`/`JudgeResult`/`Rubric`/`Criterion` 类型和 `Judge` 接口
+- [x] 3.2 实现 `judgeCacheKey()`：`SHA-256(Trace JSON || Rubric JSON)` 前 16 字符
+- [x] 3.3 实现 `loadCachedJudge()`/`saveCachedJudge()`：缓存 JSON 文件读写
+- [x] 3.4 创建 `test/real_e2e/judge/glm5.go`：`GLM5Judge` 类型，通过 DashScope Anthropic 兼容 API 调用 `glm-5`
+- [x] 3.5 实现 `buildPrompt()`：构造 Judge prompt（用户消息 + 交互轨迹 + Rubric 标准 + JSON 输出指令）
+- [x] 3.6 实现 `callLLM()`：发送 HTTP 请求，解析响应，从 markdown code block 中提取 JSON
+- [x] 3.7 实现 `Evaluate()`：带缓存逻辑（cached 模式读缓存，llm 模式调 API 并写缓存）
+- [x] 3.8 单元测试 `TestGLM5Judge_EvaluateWithMock`：用 httptest 模拟 API，验证 Evaluate 返回正确 JudgeResult
+- [x] 3.9 单元测试 `TestGLM5Judge_Caching`：验证首次调 API、第二次命中缓存
 
 ## 4. 测试框架：Rubric 定义
 
