@@ -218,7 +218,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	sessMgr = session.NewManager(session.ManagerOptions{
 		Store:         st,
 		MaxConcurrent: cfg.Sessions.MaxConcurrent,
-		RunnerFactory: newRunnerFactory(cfg, providers, fastProviders, registry, permMgr, skillCatalog, extReg, logger),
+		RunnerFactory: newRunnerFactory(cfg, providers, fastProviders, registry, permMgr, skillCatalog, extReg, loader, logger),
 	})
 	dispatchHost.Manager = sessMgr
 
@@ -456,6 +456,7 @@ func newRunnerFactory(
 	permMgr *permission.Manager,
 	skillCatalog *skills.Catalog,
 	extReg *extagent.Registry,
+	agentLoader *coord.Loader,
 	logger *slog.Logger,
 ) session.RunnerFactory {
 	orch := &agent.Orchestrator{
@@ -512,6 +513,12 @@ func newRunnerFactory(
 		loop.Permissions = permMgr
 		loop.Logger = logger
 		loop.SystemPromptBase = sess.SystemPromptBase
+		// Top-level sessions that didn't supply their own system_prompt fall
+		// back to the built-in orchestrator base prompt. Child agents keep the
+		// system_prompt from their agent_type definition untouched.
+		if sess.ParentID == "" && strings.TrimSpace(loop.SystemPromptBase) == "" {
+			loop.SystemPromptBase = prompt.DefaultBasePrompt
+		}
 		// Skill manifest is injected only for top-level sessions; child agents
 		// (Dispatch) get their tool surface from their agent_type definition.
 		if sess.ParentID == "" {
@@ -531,19 +538,26 @@ func newRunnerFactory(
 			ExtAgentRegistry: extReg,
 		}
 
-		// Build environment block for the system prompt.
+		// Build environment block for the system prompt. Always include the
+		// static fields; external sub-agents and dispatch agent_type roles are
+		// added when present.
+		envInput := prompt.EnvironmentInput{
+			OS:    prompt.DetectOS(),
+			Shell: "bash",
+			CWD:   sess.Workdir,
+		}
 		if extReg != nil {
-			healthy := extReg.HealthySubAgents()
-			if len(healthy) > 0 {
-				envInput := prompt.EnvironmentInput{
-					OS:        prompt.DetectOS(),
-					Shell:     "bash",
-					CWD:       sess.Workdir,
-					SubAgents: buildSubAgentHints(healthy),
-				}
-				sess.EnvSnapshot = prompt.EnvironmentBlock(envInput)
+			if healthy := extReg.HealthySubAgents(); len(healthy) > 0 {
+				envInput.SubAgents = buildSubAgentHints(healthy)
 			}
 		}
+		// dispatch_agents are only meaningful for sessions that can Dispatch.
+		// Child sessions inherit a restricted tool surface, so list roles only
+		// for top-level sessions to avoid implying capabilities they lack.
+		if sess.ParentID == "" && agentLoader != nil {
+			envInput.DispatchAgents = buildDispatchAgentHints(agentLoader)
+		}
+		sess.EnvSnapshot = prompt.EnvironmentBlock(envInput)
 		// adapter-generator sessions get a per-session registry overlay: the
 		// real Bash is shadowed by genbash (read-only probes only) and
 		// WriteAdapterDraft is added. The global registry is left untouched
@@ -597,6 +611,30 @@ func newRunnerFactory(
 		loop.Tools = buildProviderToolSchemas(sessReg, sess.AllowedTools())
 		return loop
 	}
+}
+
+// buildDispatchAgentHints lists the agent_type roles the orchestrator can pass
+// to the Dispatch tool. adapter-generator is excluded: it is an internal,
+// locked-down role driven by the agent_setup flow, not a general delegation
+// target. Multi-line descriptions are flattened to a single line so the
+// <environment> block stays one entry per row.
+func buildDispatchAgentHints(loader *coord.Loader) []prompt.SubAgentHint {
+	types, err := loader.List()
+	if err != nil {
+		slog.Warn("dispatch agent hints: list agent types failed", "error", err)
+		return nil
+	}
+	out := make([]prompt.SubAgentHint, 0, len(types))
+	for _, at := range types {
+		if at.Name == coord.AdapterGeneratorTypeName {
+			continue
+		}
+		out = append(out, prompt.SubAgentHint{
+			Name:        at.Name,
+			Description: strings.Join(strings.Fields(at.Description), " "),
+		})
+	}
+	return out
 }
 
 func buildSubAgentHints(adapters []*extagent.Adapter) []prompt.SubAgentHint {

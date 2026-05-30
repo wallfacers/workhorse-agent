@@ -62,8 +62,17 @@ func (Tool) Name() string { return "Dispatch" }
 
 // Description is what the LLM sees in the tools array.
 func (Tool) Description() string {
-	return "Spawn a sub-agent session to handle a delegated task. " +
-		"Returns the sub-agent's final assistant text."
+	return `Spawn a sub-agent session to handle a delegated, multi-step task autonomously. Returns the sub-agent's final assistant text.
+
+When to use: research you don't want cluttering your own context, or independent work that can run in parallel. When NOT to use: a single file read (use Read) or a quick command (use Bash) — those are faster done directly.
+
+Usage:
+- The sub-agent does NOT see this conversation. Give a self-contained prompt with all the context it needs: goal, constraints, scope, and concrete file paths.
+- To run sub-agents in parallel, emit multiple Dispatch calls in a single message. Independent research especially should fan out.
+- agent_type selects a role; the available roles are listed under dispatch_agents in the <environment> block. Omit it for a general sub-agent.
+- mode=streaming (default) surfaces the child's events to the user; mode=blocking only returns the final text.
+- Tell the sub-agent explicitly whether to write code or only research.
+- The returned text is the sub-agent's final message and is NOT shown to the user — summarize it back yourself.`
 }
 
 // InputSchema is the JSON Schema the LLM uses to construct calls. Kept
