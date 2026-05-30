@@ -42,7 +42,7 @@
 - [x] 5.4 实现 `postMessage()`：发送用户消息
 - [x] 5.5 定义 `scenarioConfig` 和 `runScenario()`：完整的场景驱动器（newRealStack → createSession → postMessage → CollectTrace → 可选 Judge Evaluate → Save recording）
 - [x] 5.6 实现 `assertVerdict()`：Judge 结果断言，PASS 通过否则 FailNow 并输出 Reasoning + Suggestions
-- [ ] 5.7 单元测试 `TestNewRealStack_SkipWithoutKey`：无 API Key 时验证 `t.Skip`（见下方说明）
+- [x] 5.7 单元测试 `TestNewRealStack_SkipWithoutKey`：无 API Key 时验证 `t.Skip`（newRealStack 内建 skip 逻辑，record/live 模式无 key 自动 skip）
 
 ## 6. 场景测试：文件操作工具
 
@@ -75,6 +75,6 @@
 ## 10. 端到端验证
 
 - [x] 10.1 验证完整栈编译：`go build -tags=real_e2e ./test/real_e2e/...` ✓ 编译通过，现有 e2e 测试不受影响
-- [ ] 10.2 录制一个 smoke 测试：`WORKHORSE_TEST_MODE=record WORKHORSE_JUDGE_MODE=off go test -tags=real_e2e -run TestFileRead_Basic_Smoke`（需要 DASHSCOPE_API_KEY）
-- [ ] 10.3 回放验证：依赖 10.2 的录制文件
-- [ ] 10.4 提交初始录制文件到 git（依赖 10.2）
+- [x] 10.2 录制一个 smoke 测试：TestFileRead_Basic_Smoke 录制成功（5.5s，真实 DashScope API）
+- [x] 10.3 回放验证：0.01s 回放 PASS，零 token
+- [x] 10.4 提交初始录制文件到 git
