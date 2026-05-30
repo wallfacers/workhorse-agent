@@ -22,4 +22,4 @@
 - [x] 4.1 `go build ./...` 与 `go test ./...` 全绿
 - [x] 4.2 `boundary_test` 通过；`gofmt -l` 无输出；`golangci-lint run` 干净
 - [x] 4.3 人工/集成层核对一次 provider 请求体 system 字段，确认 base 段位于最前
-- [ ] 4.4 更新受影响 spec（agent-loop、prompt-memory）并归档 change
+- [x] 4.4 更新受影响 spec（agent-loop、prompt-memory）并归档 change
