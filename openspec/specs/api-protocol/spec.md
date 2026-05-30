@@ -32,6 +32,11 @@ TBD - created by archiving change init-workhorse-agent-mvp. Update Purpose after
 - `GET /health` — 健康检查
 - `GET /ui` — 内嵌参考 Web UI
 
+`GET /health` 响应除既有的 `ok`、`version`、`uptime_sec`、`sessions_active`
+字段外，SHALL 额外包含 `protocol_version`（标识服务所讲 wire 协议版本的字符串）
+与 `capabilities`（列出受支持具名特性的字符串数组）。这两个字段向后兼容：仅读取
+既有字段的消费者不受影响。
+
 #### Scenario: 创建会话
 
 - **WHEN** 客户端 POST `/v1/sessions` 携带 `{ "workdir": "/tmp/proj", "provider": "anthropic", "model": "claude-sonnet-4-6" }`
@@ -45,7 +50,8 @@ TBD - created by archiving change init-workhorse-agent-mvp. Update Purpose after
 #### Scenario: 健康检查
 
 - **WHEN** 客户端 GET `/health`
-- **THEN** 服务返回 `200 OK` 和 `{ "ok": true, "version": "<semver>", "uptime_sec": <int>, "sessions_active": <int> }`
+- **THEN** 服务返回 `200 OK` 和 `{ "ok": true, "version": "<semver>", "uptime_sec": <int>, "sessions_active": <int>, "protocol_version": "<string>", "capabilities": [<string>, ...] }`
+- **AND** `protocol_version` 标识服务所讲的 wire 协议版本（如 `"1"`），`capabilities` 列出受支持的具名特性且包含 `frontend_tools`
 
 #### Scenario: Debug events 回放
 
