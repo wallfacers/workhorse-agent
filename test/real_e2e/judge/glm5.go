@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const defaultJudgeModel = "glm-5"
+const defaultJudgeModel = "qwen3.6-plus"
 
 type GLM5Judge struct {
 	apiKey  string
@@ -27,7 +27,7 @@ func NewGLM5Judge(opts ...func(*GLM5Judge)) *GLM5Judge {
 		apiKey:  os.Getenv("DASHSCOPE_API_KEY"),
 		baseURL: os.Getenv("DASHSCOPE_BASE_URL"),
 		model:   defaultJudgeModel,
-		client:  &http.Client{Timeout: 60 * time.Second},
+		client:  &http.Client{Timeout: 90 * time.Second},
 	}
 	if j.baseURL == "" {
 		j.baseURL = "https://coding.dashscope.aliyuncs.com/apps/anthropic"
@@ -120,6 +120,7 @@ func (j *GLM5Judge) callLLM(ctx context.Context, prompt string) (*JudgeResult, e
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", j.apiKey)
 	req.Header.Set("Anthropic-Version", "2023-06-01")
+	req.Header.Set("User-Agent", "workhorse-agent/test-judge")
 
 	resp, err := j.client.Do(req)
 	if err != nil {
@@ -144,7 +145,16 @@ func (j *GLM5Judge) callLLM(ctx context.Context, prompt string) (*JudgeResult, e
 		return nil, fmt.Errorf("judge: empty response")
 	}
 
-	text := result.Content[0].Text
+	var text string
+	for _, block := range result.Content {
+		if block.Type == "text" && block.Text != "" {
+			text = block.Text
+			break
+		}
+	}
+	if text == "" {
+		return nil, fmt.Errorf("judge: no text block in response (blocks: %d)", len(result.Content))
+	}
 	jsonStart := strings.Index(text, "{")
 	jsonEnd := strings.LastIndex(text, "}")
 	if jsonStart == -1 || jsonEnd == -1 {

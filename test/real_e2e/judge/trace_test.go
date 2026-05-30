@@ -38,10 +38,10 @@ func TestCollectTrace_TextOnly(t *testing.T) {
 func TestCollectTrace_WithToolCall(t *testing.T) {
 	sse := strings.Join([]string{
 		"event: tool_call_start",
-		"data: {\"tool_name\":\"Read\"}",
+		"data: {\"tool\":\"Read\"}",
 		"",
 		"event: tool_call_done",
-		"data: {\"tool_name\":\"Read\",\"output\":\"file contents here\",\"is_error\":false}",
+		"data: {\"tool\":\"Read\",\"output\":\"file contents here\",\"ok\":true}",
 		"",
 		"event: assistant_text_delta",
 		"data: {\"delta\":\"The file says hello\"}",

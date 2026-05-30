@@ -83,7 +83,7 @@ func CollectTrace(testName, userMsg string, rd *bufio.Reader, timeout time.Durat
 		case "tool_call_start":
 			var d map[string]any
 			if json.Unmarshal([]byte(data), &d) == nil {
-				name, _ := d["tool_name"].(string)
+				name, _ := d["tool"].(string)
 				turn.ToolCalls = append(turn.ToolCalls, ToolCallRecord{
 					ToolName: name,
 				})
@@ -91,11 +91,11 @@ func CollectTrace(testName, userMsg string, rd *bufio.Reader, timeout time.Durat
 		case "tool_call_done":
 			var d map[string]any
 			if json.Unmarshal([]byte(data), &d) == nil {
-				name, _ := d["tool_name"].(string)
+				name, _ := d["tool"].(string)
 				output, _ := d["output"].(string)
 				isErr := false
-				if v, ok := d["is_error"].(bool); ok {
-					isErr = v
+				if v, ok := d["ok"].(bool); ok {
+					isErr = !v
 				}
 				turn.ToolResults = append(turn.ToolResults, ToolResultRecord{
 					ToolName: name,

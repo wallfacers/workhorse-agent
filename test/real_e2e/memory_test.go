@@ -19,7 +19,7 @@ func TestMemoryWrite_Read_Smoke(t *testing.T) {
 
 func TestMemoryCrossSession_Integration(t *testing.T) {
 	traceA, resultA := runScenario(t, scenarioConfig{
-		UserMessage: "Write 'cross-session test data' to memory (kind: memory).",
+		UserMessage: "Use the memory_write tool to save 'cross-session test data' to memory (kind: memory). Do not read first, just write directly.",
 		Rubric:      memoryRubric,
 		Timeout:     90 * time.Second,
 	})
@@ -27,7 +27,7 @@ func TestMemoryCrossSession_Integration(t *testing.T) {
 	assertVerdict(t, resultA)
 
 	traceB, resultB := runScenario(t, scenarioConfig{
-		UserMessage: "Read memory (kind: memory) and tell me what it contains.",
+		UserMessage: "Use the memory_read tool to read memory (kind: memory) and tell me what it contains.",
 		Rubric:      memoryRubric,
 		Timeout:     60 * time.Second,
 	})

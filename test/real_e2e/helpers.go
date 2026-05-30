@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,13 +22,17 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/agent"
 	"github.com/wallfacers/workhorse-agent/internal/api"
 	"github.com/wallfacers/workhorse-agent/internal/memory"
-	"github.com/wallfacers/workhorse-agent/internal/permission"
+	"github.com/wallfacers/workhorse-agent/internal/tools/memorytool"
 	"github.com/wallfacers/workhorse-agent/internal/provider"
 	"github.com/wallfacers/workhorse-agent/internal/provider/anthropic"
 	"github.com/wallfacers/workhorse-agent/internal/session"
 	"github.com/wallfacers/workhorse-agent/internal/store"
 	"github.com/wallfacers/workhorse-agent/internal/store/sqlite"
 	"github.com/wallfacers/workhorse-agent/internal/tools"
+	"github.com/wallfacers/workhorse-agent/internal/tools/bash"
+	"github.com/wallfacers/workhorse-agent/internal/tools/builtin"
+	"github.com/wallfacers/workhorse-agent/internal/tools/sessionsearch"
+	"github.com/wallfacers/workhorse-agent/internal/tools/tasklist"
 	"github.com/wallfacers/workhorse-agent/test/real_e2e/judge"
 )
 
@@ -99,8 +104,8 @@ func newRealStack(t *testing.T) *realStack {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := tools.NewRegistry()
+	registerTestTools(t, reg, st.DB(), workdir)
 	orch := &agent.Orchestrator{Registry: reg, MaxParallel: 4, DefaultTimeout: 30 * time.Second}
-	permMgr := permission.New(st, nil, nil, 0)
 	memLoader := &memory.Loader{ProfileDir: workdir}
 
 	var mgr *session.Manager
@@ -118,10 +123,15 @@ func newRealStack(t *testing.T) *realStack {
 			})
 			loop.Session = sess
 			loop.Provider = prov
+			loop.Registry = reg
 			loop.Orchestrator = orch
-			loop.Permissions = permMgr
+			loop.Permissions = nil // skip permission gate in E2E
 			loop.Logger = logger
-			loop.ToolEnv = &tools.Env{SessionID: sess.ID, Workdir: workdir}
+				loop.ToolEnv = &tools.Env{
+					SessionID: sess.ID,
+					Workdir:   workdir,
+					TaskList:  tasklist.NewStore(nil),
+				}
 			return loop
 		},
 	})
@@ -268,4 +278,36 @@ func assertVerdict(t *testing.T, result *judge.JudgeResult) {
 		t.FailNow()
 	}
 	t.Logf("Judge: PASS (score %.2f) — %s", result.Score, result.Reasoning)
+}
+
+func registerTestTools(t *testing.T, reg *tools.Registry, db *sql.DB, workdir string) {
+	t.Helper()
+	testTools := []tools.Tool{
+		builtin.Read{Timeout: 10 * time.Second},
+		builtin.Write{},
+		builtin.Edit{},
+		builtin.Grep{Timeout: 30 * time.Second},
+		bash.Bash{
+			DefaultTimeoutSeconds: 30,
+			MaxOutputBytes:        1 << 20,
+			BaseEnv:               os.Environ(),
+		},
+		&memorytool.Read{
+			ProfileDir:  workdir,
+			MemoryLimit: 2200,
+			UserLimit:   1375,
+		},
+		&memorytool.Write{
+			ProfileDir:  workdir,
+			MemoryLimit: 2200,
+			UserLimit:   1375,
+		},
+		&sessionsearch.Tool{DB: db},
+		tasklist.TodoWrite{},
+	}
+	for _, tool := range testTools {
+		if err := reg.Register(tool); err != nil {
+			t.Fatalf("register tool %s: %v", tool.Name(), err)
+		}
+	}
 }
