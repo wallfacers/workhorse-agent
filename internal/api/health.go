@@ -7,14 +7,31 @@ import (
 	"time"
 )
 
+// ProtocolVersion identifies the wire protocol spoken between the frontend
+// and the sidecar (session creation, SSE events, client message types,
+// tool_use/tool_result correlation). A bump indicates breaking changes.
+const ProtocolVersion = "1"
+
+// DefaultCapabilities lists the named features the sidecar advertises via
+// GET /health. The frontend checks for specific entries before enabling
+// features (e.g. "frontend_tools" before publishing the UI tool catalog).
+var DefaultCapabilities = []string{
+	"frontend_tools",
+	"external_agents",
+}
+
 // handleHealth answers GET /health. The endpoint is intentionally exempt from
 // bearer auth (monitoring probes) and Origin checks (server-side probes).
+// Returns protocol_version and capabilities so the frontend can verify
+// identity and feature compatibility before attaching.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":              true,
-		"version":         s.cfg.Version,
-		"uptime_sec":      int(time.Since(s.startedAt).Seconds()),
-		"sessions_active": s.manager.CountActive(),
+		"ok":               true,
+		"version":          s.cfg.Version,
+		"protocol_version": ProtocolVersion,
+		"capabilities":     DefaultCapabilities,
+		"uptime_sec":       int(time.Since(s.startedAt).Seconds()),
+		"sessions_active":  s.manager.CountActive(),
 	})
 }
 
