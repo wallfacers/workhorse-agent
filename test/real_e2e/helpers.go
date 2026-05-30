@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -31,6 +32,13 @@ import (
 )
 
 const defaultTestModel = "qwen3.6-plus"
+
+var projectRoot string
+
+func init() {
+	_, thisFile, _, _ := runtime.Caller(0)
+	projectRoot = filepath.Join(filepath.Dir(thisFile), "..", "..")
+}
 
 type realStack struct {
 	t       *testing.T
@@ -61,7 +69,7 @@ func newRealStack(t *testing.T) *realStack {
 		t.Skip("DASHSCOPE_API_KEY not set; set WORKHORSE_TEST_MODE=replay or provide key")
 	}
 
-	fixDir := filepath.Join("test", "real_e2e", "fixtures", "recordings")
+	fixDir := filepath.Join(projectRoot, "test", "real_e2e", "fixtures", "recordings")
 	workdir := t.TempDir()
 
 	var rec *judge.RecordingProvider
@@ -231,7 +239,7 @@ func runScenario(t *testing.T, cfg scenarioConfig) (*judge.Trace, *judge.JudgeRe
 		return trace, nil
 	}
 
-	cacheDir := filepath.Join("test", "real_e2e", "fixtures", "judge_cache")
+	cacheDir := filepath.Join(projectRoot, "test", "real_e2e", "fixtures", "judge_cache")
 	j := judge.NewGLM5Judge(func(gj *judge.GLM5Judge) {}, judge.WithCacheDir(cacheDir))
 
 	result, err := j.Evaluate(context.Background(), trace, cfg.Rubric)
