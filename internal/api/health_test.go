@@ -37,6 +37,24 @@ func TestHealth_OKShape(t *testing.T) {
 	if _, ok := body["sessions_active"]; !ok {
 		t.Fatalf("sessions_active missing")
 	}
+	// The frontend's auto-connect probe verifies protocol_version before
+	// attaching and gates on the frontend_tools capability.
+	if body["protocol_version"] != ProtocolVersion {
+		t.Fatalf("protocol_version: %v", body["protocol_version"])
+	}
+	caps, ok := body["capabilities"].([]any)
+	if !ok {
+		t.Fatalf("capabilities missing or not an array: %v", body["capabilities"])
+	}
+	hasFrontendTools := false
+	for _, c := range caps {
+		if c == "frontend_tools" {
+			hasFrontendTools = true
+		}
+	}
+	if !hasFrontendTools {
+		t.Fatalf("capabilities lacks frontend_tools: %v", caps)
+	}
 }
 
 func TestHealth_NoAuthRequired(t *testing.T) {
