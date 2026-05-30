@@ -90,6 +90,9 @@ func (p *Provider) Stream(ctx context.Context, req provider.Request) (<-chan pro
 	httpReq.Header.Set("Anthropic-Version", APIVersion)
 	httpReq.Header.Set("User-Agent", version.UserAgent())
 	httpReq.Header.Set("x-api-key", p.opts.APIKey)
+	if req.ThinkingEnabled {
+		httpReq.Header.Set("anthropic-beta", BetaHeaderInterleavedThinking)
+	}
 
 	resp, err := p.opts.HTTPClient.Do(httpReq)
 	if err != nil {
@@ -232,24 +235,72 @@ func parseRetryAfter(v string) time.Duration {
 	return 0
 }
 
+// BetaHeaderInterleavedThinking is the Anthropic beta header for extended
+// thinking. TODO: remove when promoted from beta.
+const BetaHeaderInterleavedThinking = "interleaved-thinking-2025-05-14"
+
+// knownThinkingModels is the set of Anthropic model IDs that support extended
+// thinking. This set must be updated when Anthropic adds support to new models.
+var knownThinkingModels = map[string]bool{
+	"claude-sonnet-4-6":          true,
+	"claude-opus-4-8":            true,
+	"claude-sonnet-4-5-20250514": true,
+	"claude-sonnet-4-20250514":   true,
+	"claude-opus-4-20250115":     true,
+}
+
+// ErrThinkingNotSupported is returned when thinking is requested for a model
+// that does not support extended thinking.
+var ErrThinkingNotSupported = fmt.Errorf("extended thinking not supported by model")
+
 // encodeRequest turns our internal Request into Anthropic's JSON shape.
 func encodeRequest(r provider.Request, defaultMax int) ([]byte, error) {
+	if r.ThinkingEnabled && !knownThinkingModels[r.Model] {
+		return nil, ErrThinkingNotSupported
+	}
+
 	max := r.MaxTokens
 	if max <= 0 {
 		max = defaultMax
 	}
 	body := anthropicReq{
 		Model:     r.Model,
-		System:    r.System,
 		MaxTokens: max,
 		Stream:    true,
 	}
-	if r.Temperature > 0 {
+
+	if r.System != "" {
+		blocks := []systemBlock{{
+			Type:         "text",
+			Text:         r.System,
+			CacheControl: &cacheControl{Type: "ephemeral"},
+		}}
+		sysJSON, err := json.Marshal(blocks)
+		if err != nil {
+			return nil, fmt.Errorf("marshal system blocks: %w", err)
+		}
+		body.System = sysJSON
+	}
+
+	if r.ThinkingEnabled {
+		body.Thinking = &thinkingReq{
+			Type:         "enabled",
+			BudgetTokens: r.ThinkingBudgetTokens,
+		}
+	} else if r.Temperature > 0 {
 		body.Temperature = r.Temperature
 	}
-	for _, m := range r.Messages {
+
+	var stripBefore int
+	if r.ThinkingEnabled {
+		stripBefore = findLastEndTurn(r.Messages)
+	}
+	for i, m := range r.Messages {
 		if m.Role == provider.RoleSystem {
 			continue // already in body.System
+		}
+		if r.ThinkingEnabled && i < stripBefore {
+			m = stripThinkingBlocks(m)
 		}
 		body.Messages = append(body.Messages, toAnthropicMessage(m))
 	}
@@ -298,7 +349,62 @@ func toAnthropicBlock(b provider.ContentBlock) anthropicBlock {
 			blk.IsError = true
 		}
 		return blk
+	case provider.BlockThinking:
+		return anthropicBlock{
+			Type:      "thinking",
+			Thinking:  b.Thinking,
+			Signature: b.Signature,
+		}
+	case provider.BlockRedactedThinking:
+		return anthropicBlock{
+			Type: "redacted_thinking",
+			Data: b.RedactedData,
+		}
 	default:
 		return anthropicBlock{Type: "text", Text: fmt.Sprintf("[unknown block: %s]", b.Type)}
 	}
+}
+
+// findLastEndTurn scans messages from back to front looking for the assistant
+// message whose stop_reason was "end_turn". It returns the index *after* that
+// message (i.e. the first message of the active tool-use chain). All thinking
+// blocks in messages before that index will be stripped. Returns 0 if no
+// prior end_turn is found (keep everything — first turn).
+func findLastEndTurn(msgs []provider.Message) int {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Role != provider.RoleAssistant {
+			continue
+		}
+		// An assistant message with no tool_use blocks indicates end_turn.
+		hasToolUse := false
+		for _, b := range m.Content {
+			if b.Type == provider.BlockToolUse {
+				hasToolUse = true
+				break
+			}
+		}
+		if !hasToolUse {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// stripThinkingBlocks returns a copy of m with all thinking/redacted_thinking
+// blocks removed. Non-thinking blocks are preserved in order.
+func stripThinkingBlocks(m provider.Message) provider.Message {
+	filtered := make([]provider.ContentBlock, 0, len(m.Content))
+	for _, b := range m.Content {
+		if b.Type != provider.BlockThinking && b.Type != provider.BlockRedactedThinking {
+			filtered = append(filtered, b)
+		}
+	}
+	m.Content = filtered
+	return m
+}
+
+// EncodeRequestForTest exposes encodeRequest for unit tests.
+func EncodeRequestForTest(r provider.Request) ([]byte, error) {
+	return encodeRequest(r, 4096)
 }

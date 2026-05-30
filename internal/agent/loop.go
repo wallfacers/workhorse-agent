@@ -32,6 +32,9 @@ type LoopConfig struct {
 	CancelDrainTimeout time.Duration
 
 	Retry RetryConfig
+
+	ThinkingEnabled      bool
+	ThinkingBudgetTokens int
 }
 
 // ApplyDefaults fills zero-valued fields with the configuration spec defaults.
@@ -400,9 +403,11 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 				Environment: l.Session.EnvSnapshot,
 				Memory:      memory.Block(l.Session.MemorySnapshot),
 			}),
-			Messages:  l.Session.History(),
-			Tools:     l.buildToolSchemas(),
-			MaxTokens: l.Config.MaxTokens,
+			Messages:             l.Session.History(),
+			Tools:                l.buildToolSchemas(),
+			MaxTokens:            l.Config.MaxTokens,
+			ThinkingEnabled:      l.Config.ThinkingEnabled,
+			ThinkingBudgetTokens: l.Config.ThinkingBudgetTokens,
 		}
 
 		events, err := streamWithRetry(ctx, l.Provider, req, l.Config.Retry, func(attempt int, wait time.Duration, code string) {
@@ -447,22 +452,41 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 }
 
 // consumeProviderStream drains the provider's event channel. It emits
-// assistant_text_delta as text arrives, accumulates tool_use blocks, and
-// appends the assistant turn (text + tool_use blocks) to history. Returns the
+// assistant_text_delta and reasoning events as they arrive, accumulates
+// tool_use and thinking blocks, and appends the assistant turn
+// (thinking + text + tool_use blocks, in output order) to history. Returns the
 // list of tool calls and a `terminate` flag that's true when the stream ended
 // the turn (no tools and end_turn) or hit an error already surfaced.
 func (l *Loop) consumeProviderStream(ctx context.Context, events <-chan provider.ProviderEvent) ([]ToolCall, bool) {
 	var (
-		textAccum  string
-		toolCalls  []ToolCall
-		stopReason string
-		fatal      bool
+		textAccum      string
+		toolCalls      []ToolCall
+		thinkingBlocks []provider.ContentBlock
+		stopReason     string
+		fatal          bool
 	)
 	for ev := range events {
 		switch ev.Type {
 		case provider.EventTextDelta:
 			textAccum += ev.TextDelta
 			_ = l.Session.Emit(ctx, "assistant_text_delta", map[string]any{"delta": ev.TextDelta})
+		case provider.EventReasoningStart:
+			_ = l.Session.Emit(ctx, "reasoning_start", map[string]any{
+				"block_index": ev.BlockIndex,
+				"type":        ev.ReasoningType,
+			})
+		case provider.EventReasoningDelta:
+			_ = l.Session.Emit(ctx, "reasoning_delta", map[string]any{
+				"block_index": ev.BlockIndex,
+				"delta":       ev.ReasoningDelta,
+			})
+		case provider.EventReasoningEnd:
+			if ev.ReasoningBlock != nil {
+				thinkingBlocks = append(thinkingBlocks, *ev.ReasoningBlock)
+			}
+			_ = l.Session.Emit(ctx, "reasoning_end", map[string]any{
+				"block_index": ev.BlockIndex,
+			})
 		case provider.EventToolUse:
 			if ev.ToolUse == nil {
 				continue
@@ -492,9 +516,13 @@ func (l *Loop) consumeProviderStream(ctx context.Context, events <-chan provider
 		return toolCalls, true
 	}
 
-	// Build and append the assistant message. Text and tool_use blocks share
-	// one assistant message so the model sees them as one turn.
-	assistantContent := make([]provider.ContentBlock, 0, 1+len(toolCalls))
+	// Build and append the assistant message. Thinking, text, and tool_use
+	// blocks share one assistant message in output order so the model sees
+	// them as one turn. Signature is persisted but never sent to the client
+	// (SSE events above carry only reasoning text, not signature).
+	assistantContent := make([]provider.ContentBlock, 0,
+		len(thinkingBlocks)+1+len(toolCalls))
+	assistantContent = append(assistantContent, thinkingBlocks...)
 	if textAccum != "" {
 		assistantContent = append(assistantContent, provider.ContentBlock{
 			Type: provider.BlockText,

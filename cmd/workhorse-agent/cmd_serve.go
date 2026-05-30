@@ -477,6 +477,8 @@ func newRunnerFactory(
 			Attempts: cfg.Agent.ProviderRetryAttempts,
 			Backoff:  msToDurations(cfg.Agent.ProviderRetryBackoffMs),
 		},
+		ThinkingEnabled:      cfg.Agent.Thinking.Enabled,
+		ThinkingBudgetTokens: cfg.Agent.Thinking.BudgetTokens,
 	}
 	loopCfg.ApplyDefaults()
 	defaultProvName := cfg.Providers.Default

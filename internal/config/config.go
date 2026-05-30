@@ -61,15 +61,21 @@ type ModelsConfig struct {
 }
 
 type AgentConfig struct {
-	MaxParallelTools                int     `yaml:"max_parallel_tools"`
-	MaxDepth                        int     `yaml:"max_depth"`
-	AutoCompactRatio                float64 `yaml:"auto_compact_ratio"`
-	CompactRecentKeep               int     `yaml:"compact_recent_keep"`
-	MaxHistoryTokens                int     `yaml:"max_history_tokens"`
-	PermissionRequestTimeoutSeconds int     `yaml:"permission_request_timeout_seconds"`
-	CancelDrainTimeoutSeconds       int     `yaml:"cancel_drain_timeout_seconds"`
-	ProviderRetryAttempts           int     `yaml:"provider_retry_attempts"`
-	ProviderRetryBackoffMs          []int   `yaml:"provider_retry_backoff_ms"`
+	MaxParallelTools                int            `yaml:"max_parallel_tools"`
+	MaxDepth                        int            `yaml:"max_depth"`
+	AutoCompactRatio                float64        `yaml:"auto_compact_ratio"`
+	CompactRecentKeep               int            `yaml:"compact_recent_keep"`
+	MaxHistoryTokens                int            `yaml:"max_history_tokens"`
+	PermissionRequestTimeoutSeconds int            `yaml:"permission_request_timeout_seconds"`
+	CancelDrainTimeoutSeconds       int            `yaml:"cancel_drain_timeout_seconds"`
+	ProviderRetryAttempts           int            `yaml:"provider_retry_attempts"`
+	ProviderRetryBackoffMs          []int          `yaml:"provider_retry_backoff_ms"`
+	Thinking                        ThinkingConfig `yaml:"thinking"`
+}
+
+type ThinkingConfig struct {
+	Enabled      bool `yaml:"enabled"`
+	BudgetTokens int  `yaml:"budget_tokens"`
 }
 
 type ToolsConfig struct {

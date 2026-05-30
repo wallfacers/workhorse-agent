@@ -200,14 +200,21 @@ On a 409 the server also emits an `error` event with the same `code` and a
 
 ## ServerEvent types
 
-Eleven event types are defined (see `protocol.AllServerEventTypes`). All
-events carry `idx` (int64) and `session_id` (ULID) in addition to the
-type-specific payload listed below.
+Twenty event types are defined (see `protocol.AllServerEventTypes`). The
+eleven core event types are listed below; capability-specific events
+(adapter approval, frontend tools, task update) are documented in their
+respective specs. All events carry `idx` (int64) and `session_id` (ULID) in
+addition to the type-specific payload listed below.
+
+### Core events
 
 | `event`                | Payload fields                                                                            | Meaning                                                    |
 |------------------------|-------------------------------------------------------------------------------------------|------------------------------------------------------------|
 | `assistant_text_delta` | `delta: string`                                                                            | One token chunk of assistant text.                         |
 | `assistant_text_done`  | `message_id: string`                                                                       | End of a text segment.                                     |
+| `reasoning_start`      | `block_index: int`, `type: "thinking" \| "redacted"`                                        | A thinking block begins. `type` distinguishes regular and redacted thinking. |
+| `reasoning_delta`      | `block_index: int`, `delta: string`                                                         | Thinking text increment (regular thinking only).           |
+| `reasoning_end`        | `block_index: int`                                                                         | Thinking block ends.                                       |
 | `tool_call_start`      | `id: string`, `tool: string`, `input: object`                                              | Tool invocation begins.                                    |
 | `tool_call_done`       | `id: string`, `output: any`, `ok: bool`, `took_ms: int`                                    | Tool invocation finishes.                                  |
 | `permission_request`   | `request_id: string`, `tool: string`, `input: object`, `pattern?: string`                  | Block waiting for a `permission_decision` reply.           |
@@ -217,6 +224,20 @@ type-specific payload listed below.
 | `error`                | `code: string`, `message: string`, `recoverable: bool`, `details: object`                  | See error table below.                                     |
 | `interrupted`          | (none beyond envelope)                                                                     | Terminal event after an `interrupt` or graceful shutdown.  |
 | `pong`                 | (none beyond envelope)                                                                     | Reply to a `ping`.                                         |
+
+### Reasoning events and signature handling
+
+The `reasoning_start` / `reasoning_delta` / `reasoning_end` events expose the
+model's extended thinking to the client for real-time display (e.g. collapsible
+sections). Key invariants:
+
+- **`reasoning_start.type`** distinguishes `"thinking"` (regular, carries text
+  deltas) from `"redacted"` (opaque, no deltas emitted).
+- **Signature is never exposed**: the thinking block's cryptographic signature
+  is persisted server-side and included in Anthropic API round-trips, but it
+  **never** appears in any SSE payload.
+- **Redacted data is never exposed**: `redacted_thinking` blocks carry opaque
+  Anthropic-encrypted data that is also never sent to the client.
 
 ### Event ordering
 

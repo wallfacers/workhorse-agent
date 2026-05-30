@@ -1,6 +1,6 @@
 // Package protocol defines the wire types for the workhorse-agent
 // application-level Streamable HTTP protocol: the seven Client → Server message
-// types, the sixteen Server → Client event types, and the structured `error`
+// types, the twenty Server → Client event types, and the structured `error`
 // event with its full code enum.
 //
 // The package is intentionally pure data — no HTTP, no SSE framing, no
@@ -44,6 +44,9 @@ type ServerEventType string
 const (
 	EventAssistantTextDelta    ServerEventType = "assistant_text_delta"
 	EventAssistantTextDone     ServerEventType = "assistant_text_done"
+	EventReasoningStart        ServerEventType = "reasoning_start"
+	EventReasoningDelta        ServerEventType = "reasoning_delta"
+	EventReasoningEnd          ServerEventType = "reasoning_end"
 	EventToolCallStart         ServerEventType = "tool_call_start"
 	EventToolCallDone          ServerEventType = "tool_call_done"
 	EventPermissionRequest     ServerEventType = "permission_request"
@@ -65,6 +68,7 @@ const (
 // snapshot endpoint to validate event sets.
 var AllServerEventTypes = []ServerEventType{
 	EventAssistantTextDelta, EventAssistantTextDone,
+	EventReasoningStart, EventReasoningDelta, EventReasoningEnd,
 	EventToolCallStart, EventToolCallDone,
 	EventPermissionRequest, EventSubagentEvent,
 	EventCompaction, EventProviderRetry,
@@ -74,7 +78,7 @@ var AllServerEventTypes = []ServerEventType{
 	EventTaskUpdate,
 }
 
-// IsKnown reports whether t matches one of the seventeen spec-defined event types.
+// IsKnown reports whether t matches one of the twenty spec-defined event types.
 func (t ServerEventType) IsKnown() bool {
 	for _, k := range AllServerEventTypes {
 		if k == t {

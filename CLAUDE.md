@@ -112,6 +112,36 @@ Two memory layers ship with the current version:
 Three new built-in tools: `memory_read`, `memory_write`, `session_search`. They
 are registered through the existing tool registry and gated by `allowed_tools`.
 
+## Extended thinking & prompt cache
+
+**Anthropic extended thinking** is supported (Anthropic provider only). Config:
+
+```yaml
+agent:
+  thinking:
+    enabled: true
+    budget_tokens: 16000
+```
+
+When enabled, the Anthropic adapter sends the `thinking` request parameter with
+`anthropic-beta: interleaved-thinking-2025-05-14` header. The stream parser
+emits `reasoning_start`/`reasoning_delta`/`reasoning_end` internal events; the
+agent loop forwards them as SSE events to the client. The thinking block's
+`signature` is persisted in `ContentJSON` for API round-trips but **never**
+exposed to the client via SSE.
+
+Thinking config is frozen at session creation (no runtime changes). The strip
+rule for thinking round-trips is: thinking blocks inside an active tool-use
+chain are preserved; blocks from closed turns (end_turn) are stripped. This
+logic lives in `internal/provider/anthropic/anthropic.go` (`findLastEndTurn`,
+`stripThinkingBlocks`).
+
+**Prompt cache** is explicitly activated: the Anthropic adapter serializes the
+`system` field as a content block array with `cache_control: {type: "ephemeral"}`
+on the last block. This activates the Anthropic prompt cache prefix. The
+base-first prompt assembly order (from `optimize-prompt-cache-order`) ensures
+the static base prompt forms the stable cache prefix.
+
 ## External agents
 
 External sub-agent CLIs (claude, codex, aider, etc.) are exposed to the LLM via

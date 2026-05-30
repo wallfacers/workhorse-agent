@@ -131,6 +131,11 @@ func validateAgent(a AgentConfig) error {
 			return fmt.Errorf("invalid config: agent.provider_retry_backoff_ms[%d] must be 0-300000, got %d", i, v)
 		}
 	}
+	if a.Thinking.Enabled {
+		if a.Thinking.BudgetTokens <= 0 {
+			return fmt.Errorf("invalid config: agent.thinking.budget_tokens must be > 0 when thinking is enabled, got %d", a.Thinking.BudgetTokens)
+		}
+	}
 	return nil
 }
 

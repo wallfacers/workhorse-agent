@@ -8,22 +8,22 @@ import (
 )
 
 // anthropicStreamState accumulates SSE state across events and produces the
-// internal ProviderEvent slice for each incoming event. The 8→5 mapping is:
+// internal ProviderEvent slice for each incoming event. The Anthropic event →
+// internal event mapping is:
 //
 //	message_start            → swallow (capture input_tokens)
 //	content_block_start      → swallow + init buffer slot per index
+//	                         → reasoning_start (thinking/redacted_thinking)
 //	content_block_delta text → text_delta (forwarded as-is)
 //	content_block_delta json → swallow (accumulate into tool_use input)
-//	content_block_delta think→ swallow (MVP discards thinking)
-//	content_block_stop       → tool_use (only for tool_use blocks; text closes silently)
+//	content_block_delta think→ reasoning_delta (accumulate + forward text)
+//	content_block_delta sig  → swallow (accumulate signature, no event)
+//	content_block_stop       → tool_use (for tool_use blocks)
+//	                         → reasoning_end (for thinking blocks with signature)
 //	message_delta            → usage (and cache stop_reason)
 //	message_stop             → stop (using cached stop_reason), terminal
 //	ping                     → swallow (heartbeat)
 //	error                    → error, terminal
-//
-// We keep the buffer slice indexed by block index because Anthropic emits a
-// single content_block_delta event per block, and blocks can interleave when a
-// model produces text and a tool call in one assistant message.
 type anthropicStreamState struct {
 	blocks       map[int]*blockBuf
 	stopReason   string
@@ -32,10 +32,14 @@ type anthropicStreamState struct {
 }
 
 type blockBuf struct {
-	typ       string // "text" | "tool_use" | "thinking"
-	id        string
-	name      string
-	inputJSON []byte // for tool_use: accumulated partial_json fragments
+	typ          string // "text" | "tool_use" | "thinking" | "redacted_thinking"
+	id           string
+	name         string
+	inputJSON    []byte // for tool_use: accumulated partial_json fragments
+	thinkingText []byte // for thinking: accumulated thinking text
+	signature    []byte // for thinking: accumulated signature
+	redactedData string // for redacted_thinking: opaque data from content_block_start
+	hasSignature bool   // true once at least one signature_delta arrived
 }
 
 func (s *anthropicStreamState) ensure() {
@@ -64,17 +68,38 @@ func (s *anthropicStreamState) handle(ev provider.SSEEvent) ([]provider.Provider
 		if err := json.Unmarshal(ev.Data, &p); err != nil {
 			return nil, false, fmt.Errorf("content_block_start: %w", err)
 		}
-		s.blocks[p.Index] = &blockBuf{
+		buf := &blockBuf{
 			typ:  p.ContentBlock.Type,
 			id:   p.ContentBlock.ID,
 			name: p.ContentBlock.Name,
 		}
-		if p.ContentBlock.Type == "text" && p.ContentBlock.Text != "" {
-			return []provider.ProviderEvent{
-				{Type: provider.EventTextDelta, TextDelta: p.ContentBlock.Text},
-			}, false, nil
+		s.blocks[p.Index] = buf
+
+		switch p.ContentBlock.Type {
+		case "text":
+			if p.ContentBlock.Text != "" {
+				return []provider.ProviderEvent{
+					{Type: provider.EventTextDelta, TextDelta: p.ContentBlock.Text},
+				}, false, nil
+			}
+			return nil, false, nil
+		case "thinking":
+			rType := "thinking"
+			return []provider.ProviderEvent{{
+				Type:          provider.EventReasoningStart,
+				BlockIndex:    p.Index,
+				ReasoningType: rType,
+			}}, false, nil
+		case "redacted_thinking":
+			buf.redactedData = p.ContentBlock.Data
+			return []provider.ProviderEvent{{
+				Type:          provider.EventReasoningStart,
+				BlockIndex:    p.Index,
+				ReasoningType: "redacted",
+			}}, false, nil
+		default:
+			return nil, false, nil
 		}
-		return nil, false, nil
 	case "content_block_delta":
 		var p sseContentBlockDelta
 		if err := json.Unmarshal(ev.Data, &p); err != nil {
@@ -88,19 +113,26 @@ func (s *anthropicStreamState) handle(ev provider.SSEEvent) ([]provider.Provider
 			}, false, nil
 		case "input_json_delta":
 			if buf == nil {
-				// Shouldn't happen — Anthropic always emits content_block_start
-				// first — but degrade gracefully.
 				return nil, false, nil
 			}
 			buf.inputJSON = append(buf.inputJSON, p.Delta.PartialJSON...)
 			return nil, false, nil
 		case "thinking_delta":
-			// MVP intentionally drops thinking; spec scenario "thinking 块被丢弃".
+			if buf != nil {
+				buf.thinkingText = append(buf.thinkingText, p.Delta.Thinking...)
+			}
+			return []provider.ProviderEvent{{
+				Type:           provider.EventReasoningDelta,
+				ReasoningDelta: p.Delta.Thinking,
+				BlockIndex:     p.Index,
+			}}, false, nil
+		case "signature_delta":
+			if buf != nil {
+				buf.signature = append(buf.signature, p.Delta.Signature...)
+				buf.hasSignature = true
+			}
 			return nil, false, nil
 		default:
-			// Unknown delta types are swallowed so a future Anthropic addition
-			// doesn't break us; if it carries text we'll just miss it until
-			// the spec catches up.
 			return nil, false, nil
 		}
 	case "content_block_stop":
@@ -110,26 +142,64 @@ func (s *anthropicStreamState) handle(ev provider.SSEEvent) ([]provider.Provider
 		}
 		buf := s.blocks[p.Index]
 		delete(s.blocks, p.Index)
-		if buf == nil || buf.typ != "tool_use" {
+
+		if buf == nil {
 			return nil, false, nil
 		}
-		// Parse accumulated JSON. Empty buffer means the model produced a
-		// tool_use with no arguments; emit empty object.
-		input := buf.inputJSON
-		if len(input) == 0 {
-			input = []byte("{}")
+		switch buf.typ {
+		case "tool_use":
+			input := buf.inputJSON
+			if len(input) == 0 {
+				input = []byte("{}")
+			}
+			var probe any
+			if err := json.Unmarshal(input, &probe); err != nil {
+				return nil, false, fmt.Errorf("tool_use input json: %w", err)
+			}
+			block := &provider.ContentBlock{
+				Type:      provider.BlockToolUse,
+				ToolUseID: buf.id,
+				ToolName:  buf.name,
+				Input:     append([]byte(nil), input...),
+			}
+			return []provider.ProviderEvent{{Type: provider.EventToolUse, ToolUse: block}}, false, nil
+
+		case "thinking":
+			// Incomplete thinking block (no signature received before
+			// content_block_stop) is treated as a stream error.
+			if !buf.hasSignature {
+				return []provider.ProviderEvent{{
+					Type: provider.EventError,
+					Error: provider.NewProviderError("anthropic", 0,
+						provider.CodeStreamBroken,
+						"thinking block ended without signature", nil),
+				}}, true, nil
+			}
+			block := &provider.ContentBlock{
+				Type:      provider.BlockThinking,
+				Thinking:  string(buf.thinkingText),
+				Signature: string(buf.signature),
+			}
+			return []provider.ProviderEvent{{
+				Type:           provider.EventReasoningEnd,
+				BlockIndex:     p.Index,
+				ReasoningBlock: block,
+			}}, false, nil
+
+		case "redacted_thinking":
+			block := &provider.ContentBlock{
+				Type:         provider.BlockRedactedThinking,
+				RedactedData: buf.redactedData,
+			}
+			return []provider.ProviderEvent{{
+				Type:           provider.EventReasoningEnd,
+				BlockIndex:     p.Index,
+				ReasoningBlock: block,
+			}}, false, nil
+
+		default:
+			return nil, false, nil
 		}
-		var probe any
-		if err := json.Unmarshal(input, &probe); err != nil {
-			return nil, false, fmt.Errorf("tool_use input json: %w", err)
-		}
-		block := &provider.ContentBlock{
-			Type:      provider.BlockToolUse,
-			ToolUseID: buf.id,
-			ToolName:  buf.name,
-			Input:     append([]byte(nil), input...),
-		}
-		return []provider.ProviderEvent{{Type: provider.EventToolUse, ToolUse: block}}, false, nil
 	case "message_delta":
 		var p sseMessageDelta
 		if err := json.Unmarshal(ev.Data, &p); err != nil {
@@ -160,8 +230,6 @@ func (s *anthropicStreamState) handle(ev provider.SSEEvent) ([]provider.Provider
 			Error: provider.NewProviderError("anthropic", 0, code, msg, nil),
 		}}, true, nil
 	default:
-		// Unknown event type → swallow. Future Anthropic additions won't
-		// surface to the agent loop until we map them explicitly.
 		return nil, false, nil
 	}
 }

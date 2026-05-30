@@ -33,6 +33,9 @@ type Request struct {
 	Tools       []ToolSchema
 	MaxTokens   int
 	Temperature float64
+
+	ThinkingEnabled      bool
+	ThinkingBudgetTokens int
 }
 
 // ToolSchema is one JSON-schema tool advertised to the model. The InputSchema
@@ -66,9 +69,11 @@ type Message struct {
 type BlockType string
 
 const (
-	BlockText       BlockType = "text"
-	BlockToolUse    BlockType = "tool_use"
-	BlockToolResult BlockType = "tool_result"
+	BlockText             BlockType = "text"
+	BlockToolUse          BlockType = "tool_use"
+	BlockToolResult       BlockType = "tool_result"
+	BlockThinking         BlockType = "thinking"
+	BlockRedactedThinking BlockType = "redacted_thinking"
 )
 
 // ContentBlock is a discriminated union. Only the fields appropriate for Type
@@ -88,6 +93,13 @@ type ContentBlock struct {
 	// ToolUseID is reused to pair the result with the prior tool_use.
 	Output  string
 	IsError bool
+
+	// for Type == BlockThinking
+	Thinking  string
+	Signature string
+
+	// for Type == BlockRedactedThinking
+	RedactedData string
 }
 
 // EventType labels the five internal ProviderEvent kinds. Adapters fold each
@@ -96,11 +108,14 @@ type ContentBlock struct {
 type EventType string
 
 const (
-	EventTextDelta EventType = "text_delta"
-	EventToolUse   EventType = "tool_use"
-	EventUsage     EventType = "usage"
-	EventStop      EventType = "stop"
-	EventError     EventType = "error"
+	EventTextDelta      EventType = "text_delta"
+	EventToolUse        EventType = "tool_use"
+	EventUsage          EventType = "usage"
+	EventStop           EventType = "stop"
+	EventError          EventType = "error"
+	EventReasoningStart EventType = "reasoning_start"
+	EventReasoningDelta EventType = "reasoning_delta"
+	EventReasoningEnd   EventType = "reasoning_end"
 )
 
 // Usage carries token-accounting from the provider for the just-finished call.
@@ -118,6 +133,11 @@ type ProviderEvent struct {
 	Usage      *Usage         // EventUsage
 	StopReason string         // EventStop ("end_turn" | "tool_use" | "stop_sequence" | ...)
 	Error      *ProviderError // EventError
+
+	ReasoningDelta string        // EventReasoningDelta
+	ReasoningBlock *ContentBlock // EventReasoningStart/End: full thinking block (text+signature/redacted_data)
+	BlockIndex     int           // reasoning event block index
+	ReasoningType  string        // "thinking" | "redacted" (for reasoning_start)
 }
 
 // Error codes used by ProviderError. The set is closed; any new code requires

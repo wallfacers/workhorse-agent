@@ -9,11 +9,27 @@ import "encoding/json"
 type anthropicReq struct {
 	Model       string          `json:"model"`
 	Messages    []anthropicMsg  `json:"messages"`
-	System      string          `json:"system,omitempty"`
+	System      json.RawMessage `json:"system,omitempty"`
 	Tools       []anthropicTool `json:"tools,omitempty"`
 	MaxTokens   int             `json:"max_tokens"`
 	Temperature float64         `json:"temperature,omitempty"`
+	Thinking    *thinkingReq    `json:"thinking,omitempty"`
 	Stream      bool            `json:"stream"`
+}
+
+type thinkingReq struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens"`
+}
+
+type systemBlock struct {
+	Type         string        `json:"type"`
+	Text         string        `json:"text"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
+}
+
+type cacheControl struct {
+	Type string `json:"type"`
 }
 
 type anthropicMsg struct {
@@ -30,6 +46,9 @@ type anthropicBlock struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   string          `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	Data      string          `json:"data,omitempty"`
 }
 
 type anthropicTool struct {
@@ -58,6 +77,7 @@ type sseContentBlockStart struct {
 		Name  string          `json:"name"`
 		Input json.RawMessage `json:"input"`
 		Text  string          `json:"text"`
+		Data  string          `json:"data"`
 	} `json:"content_block"`
 }
 
@@ -68,6 +88,7 @@ type sseContentBlockDelta struct {
 		Text        string `json:"text,omitempty"`
 		PartialJSON string `json:"partial_json,omitempty"`
 		Thinking    string `json:"thinking,omitempty"`
+		Signature   string `json:"signature,omitempty"`
 	} `json:"delta"`
 }
 
