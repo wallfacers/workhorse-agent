@@ -18,6 +18,7 @@ import (
 
 	"github.com/wallfacers/workhorse-agent/internal/agent"
 	"github.com/wallfacers/workhorse-agent/internal/api"
+	"github.com/wallfacers/workhorse-agent/internal/api/protocol"
 	"github.com/wallfacers/workhorse-agent/internal/config"
 	"github.com/wallfacers/workhorse-agent/internal/coord"
 	"github.com/wallfacers/workhorse-agent/internal/extagent"
@@ -112,6 +113,12 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		_ = st.Close()
 		return err
+	}
+	// Extended thinking is Anthropic-only; the OpenAI adapter silently ignores
+	// the flag. Warn so a thinking.enabled config against an OpenAI default
+	// isn't a silent no-op the operator can't diagnose.
+	if cfg.Agent.Thinking.Enabled && cfg.Providers.Default == "openai" {
+		logger.Warn("agent: thinking.enabled has no effect — the default provider is openai, which does not support extended thinking")
 	}
 
 	// 3. Tool registry (built-ins).
@@ -468,7 +475,7 @@ func newRunnerFactory(
 		MaxResultBytes: cfg.Tools.ToolResultMaxBytes,
 	}
 	loopCfg := agent.LoopConfig{
-		MaxTokens:          4096,
+		MaxTokens:          cfg.Agent.MaxTokens,
 		AutoCompactRatio:   cfg.Agent.AutoCompactRatio,
 		CompactRecentKeep:  cfg.Agent.CompactRecentKeep,
 		MaxHistoryTokens:   cfg.Agent.MaxHistoryTokens,
@@ -540,7 +547,7 @@ func newRunnerFactory(
 		// own store (add-todo-tool D2a). sess is captured per factory call.
 		taskSess := sess
 		taskStore := tasklist.NewStore(func(ctx context.Context, tasks []tasklist.Task) {
-			_ = taskSess.Emit(ctx, "task_update", map[string]any{"tasks": tasks})
+			_ = taskSess.Emit(ctx, string(protocol.EventTaskUpdate), map[string]any{"tasks": tasks})
 		})
 		loop.ToolEnv = &tools.Env{
 			SessionID:        sess.ID,

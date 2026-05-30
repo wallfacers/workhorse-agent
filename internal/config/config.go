@@ -61,6 +61,7 @@ type ModelsConfig struct {
 }
 
 type AgentConfig struct {
+	MaxTokens                       int            `yaml:"max_tokens"`
 	MaxParallelTools                int            `yaml:"max_parallel_tools"`
 	MaxDepth                        int            `yaml:"max_depth"`
 	AutoCompactRatio                float64        `yaml:"auto_compact_ratio"`
@@ -197,6 +198,7 @@ func Default() Config {
 			Fast:    "anthropic:claude-haiku-4-5-20251001",
 		},
 		Agent: AgentConfig{
+			MaxTokens:                       4096,
 			MaxParallelTools:                10,
 			MaxDepth:                        5,
 			AutoCompactRatio:                0.85,

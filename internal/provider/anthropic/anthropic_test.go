@@ -233,6 +233,7 @@ func TestAnthropic_ThinkingRequestEncoding(t *testing.T) {
 	// With thinking enabled.
 	ch, err := p.Stream(context.Background(), provider.Request{
 		Model:                "claude-sonnet-4-6",
+		MaxTokens:            24000,
 		ThinkingEnabled:      true,
 		ThinkingBudgetTokens: 16000,
 	})
@@ -285,6 +286,7 @@ func TestAnthropic_ThinkingBetaHeader(t *testing.T) {
 	// With thinking — beta header must be present.
 	ch, err := p.Stream(context.Background(), provider.Request{
 		Model:                "claude-sonnet-4-6",
+		MaxTokens:            24000,
 		ThinkingEnabled:      true,
 		ThinkingBudgetTokens: 16000,
 	})
@@ -317,6 +319,7 @@ func TestAnthropic_ThinkingNotSupportedModel(t *testing.T) {
 	p := anthropic.New(anthropic.Options{APIKey: "k", BaseURL: "http://unused"})
 	_, err := p.Stream(context.Background(), provider.Request{
 		Model:                "some-unknown-model",
+		MaxTokens:            24000,
 		ThinkingEnabled:      true,
 		ThinkingBudgetTokens: 16000,
 	})
@@ -429,6 +432,7 @@ func TestAnthropic_ThinkingStripAfterEndTurn(t *testing.T) {
 	body, err := anthropic.EncodeRequestForTest(provider.Request{
 		Model:                "claude-sonnet-4-6",
 		Messages:             msgs,
+		MaxTokens:            24000,
 		ThinkingEnabled:      true,
 		ThinkingBudgetTokens: 16000,
 	})
@@ -473,6 +477,7 @@ func TestAnthropic_ThinkingKeptInActiveToolLoop(t *testing.T) {
 	body, err := anthropic.EncodeRequestForTest(provider.Request{
 		Model:                "claude-sonnet-4-6",
 		Messages:             msgs,
+		MaxTokens:            24000,
 		ThinkingEnabled:      true,
 		ThinkingBudgetTokens: 16000,
 	})
@@ -623,6 +628,7 @@ func TestAnthropic_ContentBlockRoundTrip(t *testing.T) {
 	body, err := anthropic.EncodeRequestForTest(provider.Request{
 		Model:                "claude-sonnet-4-6",
 		Messages:             msgs,
+		MaxTokens:            24000,
 		ThinkingEnabled:      true,
 		ThinkingBudgetTokens: 16000,
 	})
@@ -686,6 +692,7 @@ func TestAnthropic_ByteStableSameHistory(t *testing.T) {
 		Model:                "claude-sonnet-4-6",
 		System:               "You are helpful.",
 		Messages:             msgs,
+		MaxTokens:            24000,
 		ThinkingEnabled:      true,
 		ThinkingBudgetTokens: 16000,
 	}
@@ -706,11 +713,13 @@ func TestAnthropic_ByteStableSameHistory(t *testing.T) {
 func TestAnthropic_ByteStableThinkingParams(t *testing.T) {
 	req1 := provider.Request{
 		Model:                "claude-sonnet-4-6",
+		MaxTokens:            24000,
 		ThinkingEnabled:      true,
 		ThinkingBudgetTokens: 16000,
 	}
 	req2 := provider.Request{
 		Model:                "claude-sonnet-4-6",
+		MaxTokens:            24000,
 		ThinkingEnabled:      true,
 		ThinkingBudgetTokens: 16000,
 	}

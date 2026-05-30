@@ -63,6 +63,13 @@ const (
 type Message struct {
 	Role    Role
 	Content []ContentBlock
+
+	// StopReason is the provider-reported reason the assistant turn ended
+	// ("end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | ...). Set
+	// only on assistant messages; empty for user/system turns and for history
+	// restored from the store. The thinking strip rule prefers it over the
+	// structural "no tool_use ⇒ closed" heuristic (see findLastEndTurn).
+	StopReason string
 }
 
 // BlockType discriminates ContentBlock contents.
@@ -102,8 +109,8 @@ type ContentBlock struct {
 	RedactedData string
 }
 
-// EventType labels the five internal ProviderEvent kinds. Adapters fold each
-// vendor's wider event taxonomy into this set (see Anthropic 8→5 mapping in
+// EventType labels the eight internal ProviderEvent kinds. Adapters fold each
+// vendor's wider event taxonomy into this set (see the Anthropic mapping in
 // the adapter spec).
 type EventType string
 

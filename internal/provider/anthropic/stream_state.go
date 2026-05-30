@@ -187,6 +187,18 @@ func (s *anthropicStreamState) handle(ev provider.SSEEvent) ([]provider.Provider
 			}}, false, nil
 
 		case "redacted_thinking":
+			// Empty opaque data would serialize (via omitempty) to a bare
+			// {"type":"redacted_thinking"} that Anthropic rejects on the next
+			// round-trip. Treat it as a broken stream, mirroring the
+			// missing-signature guard for plain thinking blocks above.
+			if buf.redactedData == "" {
+				return []provider.ProviderEvent{{
+					Type: provider.EventError,
+					Error: provider.NewProviderError("anthropic", 0,
+						provider.CodeStreamBroken,
+						"redacted_thinking block ended without data", nil),
+				}}, true, nil
+			}
 			block := &provider.ContentBlock{
 				Type:         provider.BlockRedactedThinking,
 				RedactedData: buf.redactedData,

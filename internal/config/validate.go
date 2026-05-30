@@ -103,6 +103,7 @@ func validateProviders(p ProvidersConfig) error {
 
 func validateAgent(a AgentConfig) error {
 	intRules := []rangeIntRule{
+		{"agent.max_tokens", a.MaxTokens, 1, 200_000},
 		{"agent.max_parallel_tools", a.MaxParallelTools, 1, 100},
 		{"agent.max_depth", a.MaxDepth, 1, 20},
 		{"agent.compact_recent_keep", a.CompactRecentKeep, 1, 100},
@@ -134,6 +135,12 @@ func validateAgent(a AgentConfig) error {
 	if a.Thinking.Enabled {
 		if a.Thinking.BudgetTokens <= 0 {
 			return fmt.Errorf("invalid config: agent.thinking.budget_tokens must be > 0 when thinking is enabled, got %d", a.Thinking.BudgetTokens)
+		}
+		// Anthropic requires max_tokens > thinking.budget_tokens (max_tokens is
+		// the total output budget, of which thinking is a part). Catch it at
+		// startup instead of letting every request 400 at runtime.
+		if a.MaxTokens <= a.Thinking.BudgetTokens {
+			return fmt.Errorf("invalid config: agent.max_tokens (%d) must be greater than agent.thinking.budget_tokens (%d) when thinking is enabled", a.MaxTokens, a.Thinking.BudgetTokens)
 		}
 	}
 	return nil

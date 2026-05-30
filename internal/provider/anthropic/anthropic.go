@@ -1,8 +1,8 @@
 // Package anthropic implements provider.Provider against the Anthropic
 // Messages API (https://api.anthropic.com/v1/messages). The HTTP request is
-// hand-rolled — no SDK — and the SSE stream is mapped from Anthropic's 8
-// event types down to the 5 internal ProviderEvent kinds per the
-// provider-abstraction spec.
+// hand-rolled — no SDK — and the SSE stream is mapped from Anthropic's event
+// types onto the internal ProviderEvent kinds per the provider-abstraction
+// spec.
 package anthropic
 
 import (
@@ -253,15 +253,48 @@ var knownThinkingModels = map[string]bool{
 // that does not support extended thinking.
 var ErrThinkingNotSupported = fmt.Errorf("extended thinking not supported by model")
 
+// supportsThinking reports whether model can run extended thinking. It matches
+// knownThinkingModels exactly, then retries after stripping a trailing
+// "-YYYYMMDD" snapshot suffix so a dated pin of a listed base model (e.g.
+// "claude-sonnet-4-6-20250514") is accepted without the allowlist having to
+// enumerate every dated build.
+func supportsThinking(model string) bool {
+	if knownThinkingModels[model] {
+		return true
+	}
+	if i := strings.LastIndex(model, "-"); i >= 0 {
+		if suffix := model[i+1:]; len(suffix) == 8 && isAllDigits(suffix) {
+			return knownThinkingModels[model[:i]]
+		}
+	}
+	return false
+}
+
+func isAllDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
 // encodeRequest turns our internal Request into Anthropic's JSON shape.
 func encodeRequest(r provider.Request, defaultMax int) ([]byte, error) {
-	if r.ThinkingEnabled && !knownThinkingModels[r.Model] {
+	if r.ThinkingEnabled && !supportsThinking(r.Model) {
 		return nil, ErrThinkingNotSupported
 	}
 
 	max := r.MaxTokens
 	if max <= 0 {
 		max = defaultMax
+	}
+	// Anthropic requires max_tokens > thinking.budget_tokens (max_tokens is the
+	// total output budget that thinking draws from). Config validation catches
+	// this at startup; guard here too so a per-session override can never ship
+	// a request that 400s.
+	if r.ThinkingEnabled && max <= r.ThinkingBudgetTokens {
+		return nil, fmt.Errorf("max_tokens (%d) must be greater than thinking budget_tokens (%d)", max, r.ThinkingBudgetTokens)
 	}
 	body := anthropicReq{
 		Model:     r.Model,
@@ -302,7 +335,17 @@ func encodeRequest(r provider.Request, defaultMax int) ([]byte, error) {
 		if r.ThinkingEnabled && i < stripBefore {
 			m = stripThinkingBlocks(m)
 		}
-		body.Messages = append(body.Messages, toAnthropicMessage(m))
+		am, err := toAnthropicMessage(m)
+		if err != nil {
+			return nil, err
+		}
+		// Stripping thinking can empty an all-thinking assistant turn; never
+		// emit a message with no content blocks — Anthropic rejects
+		// content:null / [].
+		if len(am.Content) == 0 {
+			continue
+		}
+		body.Messages = append(body.Messages, am)
 	}
 	for _, t := range r.Tools {
 		body.Tools = append(body.Tools, anthropicTool{
@@ -314,31 +357,35 @@ func encodeRequest(r provider.Request, defaultMax int) ([]byte, error) {
 	return json.Marshal(&body)
 }
 
-func toAnthropicMessage(m provider.Message) anthropicMsg {
+func toAnthropicMessage(m provider.Message) (anthropicMsg, error) {
 	// System messages aren't a role in Anthropic; the caller already moved
 	// system text to Request.System. Anything labelled "system" here we drop
 	// — it should not have made it this far.
 	if m.Role == provider.RoleSystem {
-		return anthropicMsg{Role: "user"} // defensive; treat as user
+		return anthropicMsg{Role: "user"}, nil // defensive; treat as user
 	}
 	out := anthropicMsg{Role: string(m.Role)}
 	for _, b := range m.Content {
-		out.Content = append(out.Content, toAnthropicBlock(b))
+		ab, err := toAnthropicBlock(b)
+		if err != nil {
+			return anthropicMsg{}, err
+		}
+		out.Content = append(out.Content, ab)
 	}
-	return out
+	return out, nil
 }
 
-func toAnthropicBlock(b provider.ContentBlock) anthropicBlock {
+func toAnthropicBlock(b provider.ContentBlock) (anthropicBlock, error) {
 	switch b.Type {
 	case provider.BlockText:
-		return anthropicBlock{Type: "text", Text: b.Text}
+		return anthropicBlock{Type: "text", Text: b.Text}, nil
 	case provider.BlockToolUse:
 		return anthropicBlock{
 			Type:  "tool_use",
 			ID:    b.ToolUseID,
 			Name:  b.ToolName,
 			Input: b.Input,
-		}
+		}, nil
 	case provider.BlockToolResult:
 		blk := anthropicBlock{
 			Type:      "tool_result",
@@ -348,20 +395,23 @@ func toAnthropicBlock(b provider.ContentBlock) anthropicBlock {
 		if b.IsError {
 			blk.IsError = true
 		}
-		return blk
+		return blk, nil
 	case provider.BlockThinking:
 		return anthropicBlock{
 			Type:      "thinking",
 			Thinking:  b.Thinking,
 			Signature: b.Signature,
-		}
+		}, nil
 	case provider.BlockRedactedThinking:
 		return anthropicBlock{
 			Type: "redacted_thinking",
 			Data: b.RedactedData,
-		}
+		}, nil
 	default:
-		return anthropicBlock{Type: "text", Text: fmt.Sprintf("[unknown block: %s]", b.Type)}
+		// Unknown block types are a programming error (a new BlockType wired
+		// into history but not here). Fail loudly rather than coercing a
+		// signature-bearing block into text and silently corrupting the turn.
+		return anthropicBlock{}, fmt.Errorf("anthropic: cannot serialize unknown content block type %q", b.Type)
 	}
 }
 
@@ -376,19 +426,27 @@ func findLastEndTurn(msgs []provider.Message) int {
 		if m.Role != provider.RoleAssistant {
 			continue
 		}
-		// An assistant message with no tool_use blocks indicates end_turn.
-		hasToolUse := false
-		for _, b := range m.Content {
-			if b.Type == provider.BlockToolUse {
-				hasToolUse = true
-				break
-			}
-		}
-		if !hasToolUse {
+		if turnClosed(m) {
 			return i + 1
 		}
 	}
 	return 0
+}
+
+// turnClosed reports whether an assistant turn ended the chain (anything other
+// than a tool_use continuation). It prefers the real provider stop_reason and
+// falls back to the structural "no tool_use block ⇒ closed" heuristic for
+// messages that carry no stop_reason (history restored from the store).
+func turnClosed(m provider.Message) bool {
+	if m.StopReason != "" {
+		return m.StopReason != "tool_use"
+	}
+	for _, b := range m.Content {
+		if b.Type == provider.BlockToolUse {
+			return false
+		}
+	}
+	return true
 }
 
 // stripThinkingBlocks returns a copy of m with all thinking/redacted_thinking

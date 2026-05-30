@@ -44,17 +44,17 @@ type readInput struct {
 func (r *Read) Run(_ context.Context, _ *tools.Env, raw json.RawMessage) (*tools.Result, error) {
 	var in readInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return errorResult("invalid JSON: " + err.Error()), nil
+		return tools.ErrorResultJSON("invalid JSON: " + err.Error()), nil
 	}
 
 	kind, err := memory.ValidateKind(in.Kind)
 	if err != nil {
-		return errorResult("invalid_kind: " + err.Error()), nil
+		return tools.ErrorResultJSON("invalid_kind: " + err.Error()), nil
 	}
 
 	content, err := memory.ReadFile(r.ProfileDir, in.Kind)
 	if err != nil {
-		return errorResult(err.Error()), nil
+		return tools.ErrorResultJSON(err.Error()), nil
 	}
 
 	limit := r.limitFor(kind)
@@ -124,12 +124,12 @@ type writeInput struct {
 func (w *Write) Run(_ context.Context, _ *tools.Env, raw json.RawMessage) (*tools.Result, error) {
 	var in writeInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return errorResult("invalid JSON: " + err.Error()), nil
+		return tools.ErrorResultJSON("invalid JSON: " + err.Error()), nil
 	}
 
 	kind, err := memory.ValidateKind(in.Kind)
 	if err != nil {
-		return errorResult("invalid_kind: " + err.Error()), nil
+		return tools.ErrorResultJSON("invalid_kind: " + err.Error()), nil
 	}
 
 	writer := &memory.Writer{
@@ -141,9 +141,9 @@ func (w *Write) Run(_ context.Context, _ *tools.Env, raw json.RawMessage) (*tool
 	mode := memory.EnsureValidMode(in.Mode)
 	if err := writer.Write(kind, in.Content, mode); err != nil {
 		if _, ok := err.(memory.ErrMemoryTooLarge); ok {
-			return errorResult(fmt.Sprintf("memory_too_large: %v", err)), nil
+			return tools.ErrorResultJSON(fmt.Sprintf("memory_too_large: %v", err)), nil
 		}
-		return errorResult(err.Error()), nil
+		return tools.ErrorResultJSON(err.Error()), nil
 	}
 
 	// Re-read to get accurate char count
@@ -160,8 +160,4 @@ func (w *Write) Run(_ context.Context, _ *tools.Env, raw json.RawMessage) (*tool
 		"next_session_effective": true,
 	})
 	return &tools.Result{Output: string(out)}, nil
-}
-
-func errorResult(msg string) *tools.Result {
-	return &tools.Result{Output: fmt.Sprintf(`{"error":%q}`, msg), IsError: true}
 }

@@ -134,12 +134,12 @@ type writeInput struct {
 func (TodoWrite) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*tools.Result, error) {
 	store, ok := env.TaskList.(*Store)
 	if !ok || store == nil {
-		return errorResult("task_list_unavailable: no task list store bound to this session"), nil
+		return tools.ErrorResultJSON("task_list_unavailable: no task list store bound to this session"), nil
 	}
 
 	var in writeInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return errorResult("invalid JSON: " + err.Error()), nil
+		return tools.ErrorResultJSON("invalid JSON: " + err.Error()), nil
 	}
 
 	// Validate the whole submission before committing — on any rejection the
@@ -147,14 +147,14 @@ func (TodoWrite) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (
 	out := make([]Task, 0, len(in.Tasks))
 	for i, t := range in.Tasks {
 		if t.Subject == "" {
-			return errorResult(fmt.Sprintf("invalid_task: task %d has an empty subject", i+1)), nil
+			return tools.ErrorResultJSON(fmt.Sprintf("invalid_task: task %d has an empty subject", i+1)), nil
 		}
 		status := t.Status
 		if status == "" {
 			status = StatusPending
 		}
 		if !validStatus(status) {
-			return errorResult(fmt.Sprintf("invalid_status: task %d has status %q; must be one of pending, in_progress, completed", i+1, t.Status)), nil
+			return tools.ErrorResultJSON(fmt.Sprintf("invalid_status: task %d has status %q; must be one of pending, in_progress, completed", i+1, t.Status)), nil
 		}
 		out = append(out, Task{
 			ID:          i + 1,
@@ -172,8 +172,4 @@ func (TodoWrite) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (
 		"count": len(out),
 	})
 	return &tools.Result{Output: string(payload)}, nil
-}
-
-func errorResult(msg string) *tools.Result {
-	return &tools.Result{Output: fmt.Sprintf(`{"error":%q}`, msg), IsError: true}
 }

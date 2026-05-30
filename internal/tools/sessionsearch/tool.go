@@ -81,13 +81,13 @@ type hit struct {
 func (t *Tool) Run(ctx context.Context, _ *tools.Env, raw json.RawMessage) (*tools.Result, error) {
 	var in searchInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return errorResult("invalid JSON: " + err.Error()), nil
+		return tools.ErrorResultJSON("invalid JSON: " + err.Error()), nil
 	}
 	if in.Query == "" {
-		return errorResult("query must not be empty"), nil
+		return tools.ErrorResultJSON("query must not be empty"), nil
 	}
 	if in.SessionID == "" {
-		return errorResult("session_id must not be empty"), nil
+		return tools.ErrorResultJSON("session_id must not be empty"), nil
 	}
 
 	limit := in.Limit
@@ -116,7 +116,7 @@ func (t *Tool) Run(ctx context.Context, _ *tools.Env, raw json.RawMessage) (*too
 
 	sessionIDs, err := t.resolveScope(ctx, in.SessionID, in.Scope)
 	if err != nil {
-		return errorResult("scope resolution: " + err.Error()), nil
+		return tools.ErrorResultJSON("scope resolution: " + err.Error()), nil
 	}
 	if len(sessionIDs) == 0 {
 		return &tools.Result{Output: `{"hits":[],"truncated":false}`}, nil
@@ -149,7 +149,7 @@ func (t *Tool) searchFTS(ctx context.Context, matchExpr string, sessionIDs []str
 
 	rows, err := t.DB.QueryContext(ctx, query, args...)
 	if err != nil {
-		return errorResult("fts query: " + err.Error()), nil
+		return tools.ErrorResultJSON("fts query: " + err.Error()), nil
 	}
 	defer rows.Close()
 
@@ -187,7 +187,7 @@ func (t *Tool) searchLike(ctx context.Context, query string, sessionIDs []string
 
 	rows, err := t.DB.QueryContext(ctx, queryStr, args...)
 	if err != nil {
-		return errorResult("like query: " + err.Error()), nil
+		return tools.ErrorResultJSON("like query: " + err.Error()), nil
 	}
 	defer rows.Close()
 
@@ -342,8 +342,4 @@ func marshalHits(hits []hit, truncated bool) (*tools.Result, error) {
 		"truncated": truncated,
 	})
 	return &tools.Result{Output: string(out)}, nil
-}
-
-func errorResult(msg string) *tools.Result {
-	return &tools.Result{Output: fmt.Sprintf(`{"error":%q}`, msg), IsError: true}
 }

@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/wallfacers/workhorse-agent/internal/api/protocol"
 	"github.com/wallfacers/workhorse-agent/internal/idgen"
 	"github.com/wallfacers/workhorse-agent/internal/memory"
 	"github.com/wallfacers/workhorse-agent/internal/permission"
@@ -452,39 +453,50 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 }
 
 // consumeProviderStream drains the provider's event channel. It emits
-// assistant_text_delta and reasoning events as they arrive, accumulates
-// tool_use and thinking blocks, and appends the assistant turn
-// (thinking + text + tool_use blocks, in output order) to history. Returns the
-// list of tool calls and a `terminate` flag that's true when the stream ended
-// the turn (no tools and end_turn) or hit an error already surfaced.
+// assistant_text_delta and reasoning events as they arrive, accumulates the
+// assistant turn's content blocks IN THEIR EMISSION ORDER (thinking, text, and
+// tool_use interleaved exactly as the model produced them — required for
+// interleaved-thinking round-trips), and appends the turn to history. Returns
+// the list of tool calls and a `terminate` flag that's true when the stream
+// ended the turn (no tools and end_turn) or hit an error already surfaced.
 func (l *Loop) consumeProviderStream(ctx context.Context, events <-chan provider.ProviderEvent) ([]ToolCall, bool) {
 	var (
-		textAccum      string
-		toolCalls      []ToolCall
-		thinkingBlocks []provider.ContentBlock
-		stopReason     string
-		fatal          bool
+		blocks     []provider.ContentBlock // assistant content in emission order
+		toolCalls  []ToolCall
+		textLen    int // total accumulated assistant text (drives the done event)
+		stopReason string
+		fatal      bool
 	)
+	// appendText coalesces consecutive text deltas into the trailing text block
+	// so interleaving (thinking → text → tool_use) preserves block boundaries.
+	appendText := func(delta string) {
+		if n := len(blocks); n > 0 && blocks[n-1].Type == provider.BlockText {
+			blocks[n-1].Text += delta
+		} else {
+			blocks = append(blocks, provider.ContentBlock{Type: provider.BlockText, Text: delta})
+		}
+		textLen += len(delta)
+	}
 	for ev := range events {
 		switch ev.Type {
 		case provider.EventTextDelta:
-			textAccum += ev.TextDelta
-			_ = l.Session.Emit(ctx, "assistant_text_delta", map[string]any{"delta": ev.TextDelta})
+			appendText(ev.TextDelta)
+			_ = l.Session.Emit(ctx, string(protocol.EventAssistantTextDelta), map[string]any{"delta": ev.TextDelta})
 		case provider.EventReasoningStart:
-			_ = l.Session.Emit(ctx, "reasoning_start", map[string]any{
+			_ = l.Session.Emit(ctx, string(protocol.EventReasoningStart), map[string]any{
 				"block_index": ev.BlockIndex,
 				"type":        ev.ReasoningType,
 			})
 		case provider.EventReasoningDelta:
-			_ = l.Session.Emit(ctx, "reasoning_delta", map[string]any{
+			_ = l.Session.Emit(ctx, string(protocol.EventReasoningDelta), map[string]any{
 				"block_index": ev.BlockIndex,
 				"delta":       ev.ReasoningDelta,
 			})
 		case provider.EventReasoningEnd:
 			if ev.ReasoningBlock != nil {
-				thinkingBlocks = append(thinkingBlocks, *ev.ReasoningBlock)
+				blocks = append(blocks, *ev.ReasoningBlock)
 			}
-			_ = l.Session.Emit(ctx, "reasoning_end", map[string]any{
+			_ = l.Session.Emit(ctx, string(protocol.EventReasoningEnd), map[string]any{
 				"block_index": ev.BlockIndex,
 			})
 		case provider.EventToolUse:
@@ -497,6 +509,12 @@ func (l *Loop) consumeProviderStream(ctx context.Context, events <-chan provider
 				Input: ev.ToolUse.Input,
 			}
 			toolCalls = append(toolCalls, tc)
+			blocks = append(blocks, provider.ContentBlock{
+				Type:      provider.BlockToolUse,
+				ToolUseID: tc.ID,
+				ToolName:  tc.Name,
+				Input:     tc.Input,
+			})
 			l.Session.MarkToolUsePending(tc.ID, tc.Name, tc.Input)
 		case provider.EventStop:
 			stopReason = ev.StopReason
@@ -516,35 +534,23 @@ func (l *Loop) consumeProviderStream(ctx context.Context, events <-chan provider
 		return toolCalls, true
 	}
 
-	// Build and append the assistant message. Thinking, text, and tool_use
-	// blocks share one assistant message in output order so the model sees
-	// them as one turn. Signature is persisted but never sent to the client
-	// (SSE events above carry only reasoning text, not signature).
-	assistantContent := make([]provider.ContentBlock, 0,
-		len(thinkingBlocks)+1+len(toolCalls))
-	assistantContent = append(assistantContent, thinkingBlocks...)
-	if textAccum != "" {
-		assistantContent = append(assistantContent, provider.ContentBlock{
-			Type: provider.BlockText,
-			Text: textAccum,
-		})
-	}
-	for _, tc := range toolCalls {
-		assistantContent = append(assistantContent, provider.ContentBlock{
-			Type:      provider.BlockToolUse,
-			ToolUseID: tc.ID,
-			ToolName:  tc.Name,
-			Input:     tc.Input,
-		})
-	}
-	if len(assistantContent) > 0 {
+	// Append the assistant turn. Blocks are already in emission order; the
+	// signature on any thinking block is persisted but never sent to the
+	// client (SSE events above carry only reasoning text, not signature).
+	// StopReason is recorded so the thinking strip rule can read the real
+	// turn boundary instead of re-deriving it from block shape.
+	if len(blocks) > 0 {
 		l.Session.AppendMessage(provider.Message{
-			Role:    provider.RoleAssistant,
-			Content: assistantContent,
+			Role:       provider.RoleAssistant,
+			Content:    blocks,
+			StopReason: stopReason,
 		})
 	}
-	if textAccum != "" {
-		_ = l.Session.Emit(ctx, "assistant_text_done", map[string]any{
+	// Emit assistant_text_done when the turn produced text, OR when it ended
+	// without further tool calls (a terminal turn) so the client always gets a
+	// turn terminator + stop_reason — even for a thinking-only end_turn.
+	if textLen > 0 || len(toolCalls) == 0 {
+		_ = l.Session.Emit(ctx, string(protocol.EventAssistantTextDone), map[string]any{
 			"message_id":  idgen.NewULID(),
 			"stop_reason": stopReason,
 		})

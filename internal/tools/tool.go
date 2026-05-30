@@ -7,6 +7,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 )
@@ -63,6 +64,14 @@ type Result struct {
 	Output   string
 	IsError  bool
 	Modifier ContextModifier
+}
+
+// ErrorResultJSON builds a tool Result carrying a structured {"error": msg}
+// JSON envelope with IsError set. Tools that emit machine-readable errors
+// (TodoWrite, memory_*, session_search) share this single constructor so the
+// envelope shape stays consistent across them.
+func ErrorResultJSON(msg string) *Result {
+	return &Result{Output: fmt.Sprintf(`{"error":%q}`, msg), IsError: true}
 }
 
 // ContextModifier mutates session-level state when a tool wants to e.g.

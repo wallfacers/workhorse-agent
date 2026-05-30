@@ -142,6 +142,10 @@ func EstimateTokens(msgs []provider.Message) int {
 	for _, m := range msgs {
 		for _, b := range m.Content {
 			chars += len(b.Text) + len(b.Output) + len(b.ToolName) + len(b.Input)
+			// Thinking blocks count toward the model's context window too, so
+			// they must feed the auto-compaction trigger; omitting them lets a
+			// thinking-heavy active chain blow past the window undetected.
+			chars += len(b.Thinking) + len(b.Signature) + len(b.RedactedData)
 		}
 	}
 	if chars == 0 {

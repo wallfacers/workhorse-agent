@@ -118,10 +118,17 @@ are registered through the existing tool registry and gated by `allowed_tools`.
 
 ```yaml
 agent:
+  max_tokens: 24000      # MUST exceed thinking.budget_tokens (Anthropic rule)
   thinking:
     enabled: true
     budget_tokens: 16000
 ```
+
+`agent.max_tokens` is the total output budget (thinking draws from it), so
+Anthropic requires `max_tokens > thinking.budget_tokens`. Config validation
+rejects a violating pair at startup; `encodeRequest` guards it again at request
+time. The default `max_tokens` is 4096, so enabling thinking with a larger
+budget requires raising `max_tokens` accordingly.
 
 When enabled, the Anthropic adapter sends the `thinking` request parameter with
 `anthropic-beta: interleaved-thinking-2025-05-14` header. The stream parser
