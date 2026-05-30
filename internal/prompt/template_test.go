@@ -21,7 +21,7 @@ var (
 )
 
 func TestSystemPrompt_EmptyBase(t *testing.T) {
-	got := prompt.BuildSystemPrompt("")
+	got := prompt.BuildSystemPrompt(prompt.SystemPromptInput{})
 	if got != baselineEmptyBytes {
 		t.Errorf("empty base mismatch:\ngot:  %q\nwant: %q", got, baselineEmptyBytes)
 	}
@@ -31,14 +31,14 @@ func TestSystemPrompt_EmptyBase(t *testing.T) {
 }
 
 func TestSystemPrompt_WithBase(t *testing.T) {
-	got := prompt.BuildSystemPrompt("You are a helper.")
+	got := prompt.BuildSystemPrompt(prompt.SystemPromptInput{Base: "You are a helper."})
 	if got != baselineWithBaseBytes {
 		t.Errorf("with-base mismatch:\ngot:  %q\nwant: %q", got, baselineWithBaseBytes)
 	}
 }
 
 func TestSystemPrompt_TrailingWhitespace(t *testing.T) {
-	got := prompt.BuildSystemPrompt("hello   \t\n")
+	got := prompt.BuildSystemPrompt(prompt.SystemPromptInput{Base: "hello   \t\n"})
 	if !strings.HasPrefix(got, "hello\n\n") {
 		t.Errorf("trailing whitespace not trimmed: %q", got)
 	}
@@ -143,13 +143,13 @@ func TestMustParse_InvalidPanic(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_Equivalence(t *testing.T) {
-	empty := prompt.BuildSystemPrompt("")
+	empty := prompt.BuildSystemPrompt(prompt.SystemPromptInput{})
 	if empty != baselineEmptyBytes {
 		t.Errorf("BuildSystemPrompt('') not equivalent to baseline:\ngot:  %q\nwant: %q",
 			empty, baselineEmptyBytes)
 	}
 
-	withBase := prompt.BuildSystemPrompt("You are a helper.")
+	withBase := prompt.BuildSystemPrompt(prompt.SystemPromptInput{Base: "You are a helper."})
 	if withBase != baselineWithBaseBytes {
 		t.Errorf("BuildSystemPrompt('You are a helper.') not equivalent to baseline:\ngot:  %q\nwant: %q",
 			withBase, baselineWithBaseBytes)
@@ -180,7 +180,7 @@ func TestBuildSystemPrompt_ComposedWithManifest(t *testing.T) {
 		{Name: "x", Trigger: "do x"},
 	}})
 	composed := "Hello\n\n" + manifest
-	got := prompt.BuildSystemPrompt(composed)
+	got := prompt.BuildSystemPrompt(prompt.SystemPromptInput{Base: composed})
 	want := "Hello\n\n" +
 		"<available_skills>\n" +
 		"- name: x\n  trigger: do x\n" +

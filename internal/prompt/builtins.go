@@ -49,10 +49,17 @@ const CancelledNote = "Note: if a tool_result begins with `[CANCELLED]`, " +
 	"the tool call was interrupted by the user. Do not retry it automatically; " +
 	"acknowledge the interruption and ask the user how to proceed."
 
-// SystemPrompt renders the agent's system prompt. Empty base yields just the
-// CancelledNote; non-empty base yields "base\n\nCancelledNote".
+// SystemPrompt renders the agent's system prompt in a fixed order:
+// base → CancelledNote → environment → memory, joining non-empty segments with
+// "\n\n". The static base段 (BasePrompt + CancelledNote) is always the prefix so
+// it forms the Anthropic prompt-cache prefix; the dynamic Environment and Memory
+// blocks follow (optimize-prompt-cache-order spec "System prompt 组装顺序优先静态前缀").
+// Empty base yields just the CancelledNote; empty Environment/Memory render no
+// framing.
 var SystemPrompt = MustParse("system_prompt",
-	"{{.BasePrompt}}{{if .BasePrompt}}\n\n{{end}}"+CancelledNote)
+	"{{.BasePrompt}}{{if .BasePrompt}}\n\n{{end}}"+CancelledNote+
+		"{{if .Environment}}\n\n{{.Environment}}{{end}}"+
+		"{{if .Memory}}\n\n{{.Memory}}{{end}}")
 
 // Compaction is the summariser's system prompt. No placeholders.
 var Compaction = MustParse("compaction",
@@ -173,19 +180,46 @@ type AdapterGenerationExample struct {
 	Body string
 }
 
-// BuildSystemPrompt is the drop-in replacement for agent.BuildSystemPrompt.
-// It trims trailing whitespace from base and renders the SystemPrompt template.
-// On the (impossible-by-construction) Execute error, falls back to a manual
-// concatenation so CancelledNote still ships and the model isn't left without
+// SystemPromptInput is the structured input to BuildSystemPrompt. Its three
+// segments are rendered in a fixed order — the static Base first, then the
+// dynamic Environment and Memory blocks — so the most stable content forms the
+// Anthropic prompt-cache prefix. This is the single assembly path; callers pass
+// the three raw segments and the prompt package owns ordering and delimiters.
+type SystemPromptInput struct {
+	Base        string
+	Environment string
+	Memory      string
+}
+
+// BuildSystemPrompt renders the agent's system prompt from its three segments.
+// It trims trailing whitespace from Base and renders the SystemPrompt template,
+// which fixes the order to base → CancelledNote → environment → memory and joins
+// non-empty segments with "\n\n". The static base段 (Base + CancelledNote) is
+// always the prefix.
+//
+// On the (impossible-by-construction) Execute error, falls back to a manual join
+// in the same order so CancelledNote still ships and the model isn't left without
 // the [CANCELLED] marker explanation.
-func BuildSystemPrompt(base string) string {
-	base = strings.TrimRight(base, " \t\n")
-	out, err := SystemPrompt.Execute(map[string]any{"BasePrompt": base})
+func BuildSystemPrompt(in SystemPromptInput) string {
+	base := strings.TrimRight(in.Base, " \t\n")
+	out, err := SystemPrompt.Execute(map[string]any{
+		"BasePrompt":  base,
+		"Environment": in.Environment,
+		"Memory":      in.Memory,
+	})
 	if err != nil {
-		if base == "" {
-			return CancelledNote
+		segs := make([]string, 0, 4)
+		if base != "" {
+			segs = append(segs, base)
 		}
-		return base + "\n\n" + CancelledNote
+		segs = append(segs, CancelledNote)
+		if in.Environment != "" {
+			segs = append(segs, in.Environment)
+		}
+		if in.Memory != "" {
+			segs = append(segs, in.Memory)
+		}
+		return strings.Join(segs, "\n\n")
 	}
 	return out
 }

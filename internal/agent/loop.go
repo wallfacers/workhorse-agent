@@ -388,22 +388,18 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 			}
 		}
 
-		base := l.SystemPromptBase
-		// Composition order: environment → memory → base prompt, joined by
-		// "\n\n" only between non-empty pieces. Stable for prompt-cache prefix
-		// (add-external-agent-tool + add-memory-l1-l2). Each prepend wraps the
-		// existing string, so memory is prepended first and environment last
-		// to land outermost — matching the documented order.
-		if block := memory.Block(l.Session.MemorySnapshot); block != "" {
-			base = block + "\n\n" + base
-		}
-		if envBlock := l.Session.EnvSnapshot; envBlock != "" {
-			base = envBlock + "\n\n" + base
-		}
-
+		// Composition order: base → environment → memory, joined by "\n\n" only
+		// between non-empty pieces. The static base段 leads so it forms the
+		// Anthropic prompt-cache prefix; the dynamic environment and memory
+		// blocks follow (optimize-prompt-cache-order). The prompt package owns
+		// the ordering and delimiters — this is the single assembly path.
 		req := provider.Request{
-			Model:     l.Config.Model,
-			System:    prompt.BuildSystemPrompt(base),
+			Model: l.Config.Model,
+			System: prompt.BuildSystemPrompt(prompt.SystemPromptInput{
+				Base:        l.SystemPromptBase,
+				Environment: l.Session.EnvSnapshot,
+				Memory:      memory.Block(l.Session.MemorySnapshot),
+			}),
 			Messages:  l.Session.History(),
 			Tools:     l.buildToolSchemas(),
 			MaxTokens: l.Config.MaxTokens,

@@ -80,9 +80,10 @@ func TestPackageBoundary(t *testing.T) {
 	}
 }
 
-// assertBuildSystemPromptSignature pins the signature to `func(string) string`.
-// Adding parameters would force every call site to plumb new state through —
-// the memory block lives at the call site precisely to avoid that ripple.
+// assertBuildSystemPromptSignature pins the signature to
+// `func(SystemPromptInput) string`. The struct is the single structured input
+// for the converged assembly path (optimize-prompt-cache-order): callers hand
+// the prompt package the three raw segments and it owns ordering + delimiters.
 func assertBuildSystemPromptSignature(t *testing.T, fn *ast.FuncDecl) {
 	t.Helper()
 	params := fn.Type.Params.List
@@ -90,8 +91,8 @@ func assertBuildSystemPromptSignature(t *testing.T, fn *ast.FuncDecl) {
 		t.Errorf("BuildSystemPrompt should have exactly one parameter, got %d field(s)", len(params))
 		return
 	}
-	if id, ok := params[0].Type.(*ast.Ident); !ok || id.Name != "string" {
-		t.Errorf("BuildSystemPrompt parameter type drifted from string")
+	if id, ok := params[0].Type.(*ast.Ident); !ok || id.Name != "SystemPromptInput" {
+		t.Errorf("BuildSystemPrompt parameter type drifted from SystemPromptInput")
 	}
 
 	results := fn.Type.Results
