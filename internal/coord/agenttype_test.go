@@ -15,10 +15,10 @@ func writeYAML(t *testing.T, dir, name, body string) {
 }
 
 // builtinCount is the number of embedded agent types the test environment
-// expects (currently: adapter-generator). Tests that inspect List() output
-// reference this so we don't have to update them every time a new builtin
-// agent ships.
-const builtinCount = 1
+// expects (currently: adapter-generator, general-purpose). Tests that inspect
+// List() output reference this so we don't have to update them every time a
+// new builtin agent ships.
+const builtinCount = 2
 
 func TestLoader_List_EmptyDir(t *testing.T) {
 	dir := t.TempDir()

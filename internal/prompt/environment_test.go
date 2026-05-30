@@ -122,6 +122,34 @@ func TestEnvironmentBlock_SubAgentsNonResumable(t *testing.T) {
 	}
 }
 
+func TestEnvironmentBlock_DispatchAgents(t *testing.T) {
+	input := prompt.EnvironmentInput{
+		OS: "linux",
+		DispatchAgents: []prompt.SubAgentHint{
+			{Name: "zeta", Description: "Last role"},
+			{Name: "general-purpose", Description: "General sub-agent"},
+		},
+	}
+	got := prompt.EnvironmentBlock(input)
+	if err := assertContains(t, got, "dispatch_agents (invoke via Dispatch tool, pass name as agent_type):"); err != nil {
+		t.Error(err)
+	}
+	if err := assertContains(t, got, "- general-purpose: General sub-agent"); err != nil {
+		t.Error(err)
+	}
+	// Sorted alphabetically: general-purpose before zeta.
+	if indexOf(got, "general-purpose") >= indexOf(got, "zeta") {
+		t.Error("dispatch_agents not sorted alphabetically")
+	}
+}
+
+func TestEnvironmentBlock_NoDispatchAgents(t *testing.T) {
+	got := prompt.EnvironmentBlock(prompt.EnvironmentInput{OS: "linux"})
+	if err := assertContains(t, got, "dispatch_agents"); err == nil {
+		t.Error("should not contain dispatch_agents section when empty")
+	}
+}
+
 func assertContains(t *testing.T, haystack, needle string) error {
 	t.Helper()
 	for i := 0; i <= len(haystack)-len(needle); i++ {

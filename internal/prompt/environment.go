@@ -14,6 +14,10 @@ type EnvironmentInput struct {
 	CWD       string
 	CLITools  []CLIToolEntry
 	SubAgents []SubAgentHint
+	// DispatchAgents are the agent_type roles invokable via the Dispatch tool's
+	// agent_type parameter. Distinct from SubAgents, which are external CLIs
+	// reached through the ExternalAgent tool.
+	DispatchAgents []SubAgentHint
 }
 
 type CLIToolEntry struct {
@@ -77,6 +81,17 @@ func EnvironmentBlock(input EnvironmentInput) string {
 		}
 	}
 
+	// Dispatch agent_type roles section.
+	var dispatchLines []string
+	if len(input.DispatchAgents) > 0 {
+		sorted := make([]SubAgentHint, len(input.DispatchAgents))
+		copy(sorted, input.DispatchAgents)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+		for _, a := range sorted {
+			dispatchLines = append(dispatchLines, fmt.Sprintf("- %s: %s", a.Name, a.Description))
+		}
+	}
+
 	// Build sections.
 	if len(staticLines) > 0 {
 		sections = append(sections, strings.Join(staticLines, "\n"))
@@ -86,6 +101,9 @@ func EnvironmentBlock(input EnvironmentInput) string {
 	}
 	if len(agentLines) > 0 {
 		sections = append(sections, "sub_agents (invoke via ExternalAgent tool):\n"+strings.Join(agentLines, "\n"))
+	}
+	if len(dispatchLines) > 0 {
+		sections = append(sections, "dispatch_agents (invoke via Dispatch tool, pass name as agent_type):\n"+strings.Join(dispatchLines, "\n"))
 	}
 
 	if len(sections) == 0 {
