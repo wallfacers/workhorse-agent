@@ -28,8 +28,9 @@ func TestServerEventTypes_FullSet(t *testing.T) {
 	// by add-llm-adapter-generator (adapter_approval_request,
 	// adapter_approval_resolved, adapter_approval_expired) plus 2 added
 	// by add-frontend-tool-bridge (frontend_tool_use,
-	// frontend_tools_published) → 16.
-	const want = 16
+	// frontend_tools_published) plus 1 added by add-todo-tool
+	// (task_update) → 17.
+	const want = 17
 	if got := len(AllServerEventTypes); got != want {
 		t.Fatalf("event-type catalog drifted: got %d, want %d", got, want)
 	}

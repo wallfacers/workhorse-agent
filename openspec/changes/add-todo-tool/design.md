@@ -84,8 +84,22 @@ workhorse-agent 已有成熟的内置工具骨架可复用：
 
 回滚：移除工具注册即从工具面消失；无持久化（D2a）则无数据迁移。
 
-## Open Questions
+## Resolved (apply 阶段定稿)
 
-- D1 单工具还是多工具？D2 内存还是 events？D3 是否新增 SSE 事件类型并改 api-protocol？
-- 是否需要 `description`/`activeForm` 之外的字段（如 priority、blockedBy）？MVP 倾向不加。
-- 子 Agent 的任务进度是否需要冒泡到父会话展示？MVP 倾向否（各自独立）。
+- **D1 → D1a**：单 `TodoWrite`，整表覆盖。输入 `{tasks:[{subject,status?,description?,active_form?}]}`，
+  每次替换全表；任务 `id` 为提交数组内的 1-based 位置。状态默认 `pending`，校验
+  `pending|in_progress|completed`，未定义值整单拒绝且不改既有清单。
+- **D2 → D2a**：纯内存。清单挂在 per-session 的 `tasklist.Store`（`internal/tools/tasklist`），
+  随会话生命周期；不建 tasks 表、不从事件重建清单。
+- **D3 → 新增 `task_update` 事件**：每次变更经 `session.Emit` 广播整表快照。沿用
+  frontend/adapter-generator 先例——事件在本能力 spec 描述，仅在代码侧 `AllServerEventTypes`
+  catalog 登记(16→17)，**不**修改 api-protocol 的「11 种」requirement，故无 Modified Capabilities。
+- **门控**：`AllowedTools` 在执行层对所有 builtin 工具均无强制,门控仅通过「不暴露 schema」
+  (registry `Filtered`)生效。原 spec 的「调用即 emit `tool_not_allowed`」与现实不符,已收敛。
+
+## Open Questions（留待后续）
+
+- 是否需要 `description`/`active_form` 之外的字段（如 priority、blockedBy）？MVP 不加。
+- 子 Agent 的任务进度是否需要冒泡到父会话展示？MVP 否（各自独立，general-purpose 子 Agent
+  自带独立清单）。
+- 是否迭代到 D2b（落 events 表、会话恢复还原清单）？视实际需求。

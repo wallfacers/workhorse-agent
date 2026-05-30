@@ -47,6 +47,9 @@ type Env struct {
 	// Typed as any to avoid import cycles; the ExternalAgent tool
 	// type-asserts this to *extagent.Registry.
 	ExtAgentRegistry any
+	// TaskList holds the per-session task list store. Typed as any to avoid
+	// import cycles; the TodoWrite tool type-asserts this to *tasklist.Store.
+	TaskList any
 }
 
 // Result is the outcome of one tool call. Output is the canonical string the

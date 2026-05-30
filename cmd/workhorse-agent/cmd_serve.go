@@ -47,6 +47,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/tools/extagent/genbash"
 	"github.com/wallfacers/workhorse-agent/internal/tools/memorytool"
 	"github.com/wallfacers/workhorse-agent/internal/tools/sessionsearch"
+	"github.com/wallfacers/workhorse-agent/internal/tools/tasklist"
 )
 
 // adapterPermGate bridges permission.Manager to extagenttool.PermissionGate.
@@ -368,6 +369,7 @@ func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skill
 			UserLimit:   cfg.Memory.UserCharLimit,
 		},
 		&sessionsearch.Tool{DB: st.DB()},
+		tasklist.TodoWrite{},
 	} {
 		if err := reg.Register(t); err != nil {
 			return err
@@ -531,11 +533,19 @@ func newRunnerFactory(
 			}
 		}
 		loop.Config.Model = modelID
+		// Per-session task list: in-memory, broadcast over SSE on every change so
+		// the user sees progress. Independent per session — child agents get their
+		// own store (add-todo-tool D2a). sess is captured per factory call.
+		taskSess := sess
+		taskStore := tasklist.NewStore(func(ctx context.Context, tasks []tasklist.Task) {
+			_ = taskSess.Emit(ctx, "task_update", map[string]any{"tasks": tasks})
+		})
 		loop.ToolEnv = &tools.Env{
 			SessionID:        sess.ID,
 			Workdir:          sess.Workdir,
 			Env:              sess.Env,
 			ExtAgentRegistry: extReg,
+			TaskList:         taskStore,
 		}
 
 		// Build environment block for the system prompt. Always include the
@@ -563,7 +573,6 @@ func newRunnerFactory(
 		// WriteAdapterDraft is added. The global registry is left untouched
 		// so non-generator sessions cannot see either tool.
 		sessReg := reg
-		sessOrch := orch
 		if sess.AgentType == coord.AdapterGeneratorTypeName {
 			sessReg = reg.Clone()
 			extDir := cfg.ExternalAgents.Dir
@@ -578,7 +587,7 @@ func newRunnerFactory(
 			_ = sessReg.Register(drafttool.Tool{
 				Host: &drafttool.Host{ExternalAgentsDir: extDir},
 			})
-			sessOrch = &agent.Orchestrator{
+			sessOrch := &agent.Orchestrator{
 				Registry:        sessReg,
 				MaxParallel:     orch.MaxParallel,
 				DefaultTimeout:  orch.DefaultTimeout,

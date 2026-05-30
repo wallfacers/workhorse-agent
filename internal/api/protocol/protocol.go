@@ -58,6 +58,7 @@ const (
 	EventAdapterApprovalExp    ServerEventType = "adapter_approval_expired"
 	EventFrontendToolUse       ServerEventType = "frontend_tool_use"
 	EventFrontendToolsPub      ServerEventType = "frontend_tools_published"
+	EventTaskUpdate            ServerEventType = "task_update"
 )
 
 // AllServerEventTypes is the canonical list used by tests and the debug
@@ -70,9 +71,10 @@ var AllServerEventTypes = []ServerEventType{
 	EventError, EventInterrupted, EventPong,
 	EventAdapterApprovalReq, EventAdapterApprovalResolv, EventAdapterApprovalExp,
 	EventFrontendToolUse, EventFrontendToolsPub,
+	EventTaskUpdate,
 }
 
-// IsKnown reports whether t matches one of the sixteen spec-defined event types.
+// IsKnown reports whether t matches one of the seventeen spec-defined event types.
 func (t ServerEventType) IsKnown() bool {
 	for _, k := range AllServerEventTypes {
 		if k == t {

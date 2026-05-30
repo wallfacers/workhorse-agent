@@ -17,5 +17,5 @@ system_prompt: |
     only the essentials. Keep it under ~400 words unless the prompt says
     otherwise.
 tools:
-  allow: [Bash, Read, Write, Edit, Glob, Grep, Dispatch]
+  allow: [Bash, Read, Write, Edit, Glob, Grep, Dispatch, TodoWrite]
 max_iterations: 30

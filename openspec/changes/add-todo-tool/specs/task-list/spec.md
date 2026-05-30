@@ -13,8 +13,9 @@
 #### Scenario: 工具受 AllowedTools 门控
 
 - **WHEN** 会话配置 `AllowedTools` 未包含任务清单工具
-- **THEN** Agent 不向 LLM 暴露该工具 schema；若 LLM 仍尝试调用，emit
-  `error { code: "tool_not_allowed" }`
+- **THEN** Agent 不向 LLM 暴露该工具 schema（经工具注册表的 `AllowedTools` 过滤，
+  与 `memory_*` / `session_search` 等内置工具同一门控路径）；`AllowedTools` 为空时
+  表示放行全部工具，任务清单工具随之暴露
 
 #### Scenario: 创建任务
 
