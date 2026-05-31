@@ -179,6 +179,33 @@ func (s *Store) AppendMessage(ctx context.Context, m *store.Message) error {
 	return nil
 }
 
+// ReplaceMessages atomically swaps a session's entire transcript for msgs.
+// Used by the compaction rewrite path so the persisted messages stay equal to
+// the in-memory context the model actually sees (add-project-sessions D9).
+func (s *Store) ReplaceMessages(ctx context.Context, sessionID string, msgs []*store.Message) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: ReplaceMessages begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once committed
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE session_id = ?`, sessionID); err != nil {
+		return fmt.Errorf("sqlite: ReplaceMessages delete: %w", err)
+	}
+	for _, m := range msgs {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO messages(id, session_id, role, content_json, token_count, created_at)
+			 VALUES (?,?,?,?,?,?)`,
+			m.ID, m.SessionID, m.Role, m.ContentJSON, m.TokenCount, toMicros(m.CreatedAt)); err != nil {
+			return fmt.Errorf("sqlite: ReplaceMessages insert: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: ReplaceMessages commit: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]*store.Message, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, session_id, role, content_json, token_count, created_at

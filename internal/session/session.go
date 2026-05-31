@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -452,18 +453,68 @@ func (s *Session) History() []provider.Message {
 // AppendMessage appends one message to the history under the session mutex.
 func (s *Session) AppendMessage(m provider.Message) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.history = append(s.history, m)
-	s.updatedAt = time.Now().UTC()
+	now := time.Now().UTC()
+	s.updatedAt = now
+	s.mu.Unlock()
+
+	// Persist non-ephemeral transcript so it survives restart and feeds history
+	// rehydration (add-project-sessions D9). Failure is logged, never blocks the
+	// turn — the in-memory history is already authoritative for the live loop.
+	if s.store == nil || s.Ephemeral {
+		return
+	}
+	content, err := marshalContent(m.Content)
+	if err != nil {
+		slog.Error("session: marshal message content", "session", s.ID, "err", err)
+		return
+	}
+	row := &store.Message{
+		ID:          idgen.NewULID(),
+		SessionID:   s.ID,
+		Role:        string(m.Role),
+		ContentJSON: content,
+		CreatedAt:   now,
+	}
+	if err := s.store.AppendMessage(context.Background(), row); err != nil {
+		slog.Error("session: persist message", "session", s.ID, "err", err)
+	}
 }
 
 // ReplaceHistory swaps the entire history slice. Used by the compactor after a
 // summarising pass.
 func (s *Session) ReplaceHistory(msgs []provider.Message) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.history = append([]provider.Message(nil), msgs...)
-	s.updatedAt = time.Now().UTC()
+	now := time.Now().UTC()
+	s.updatedAt = now
+	s.mu.Unlock()
+
+	// Keep the persisted transcript equal to the in-memory context the model
+	// sees, so a hydrated session resumes from the compacted history (D9). The
+	// per-index microsecond offset preserves order under ListMessages'
+	// (created_at, id) sort.
+	if s.store == nil || s.Ephemeral {
+		return
+	}
+	rows := make([]*store.Message, 0, len(msgs))
+	for i, m := range msgs {
+		content, err := marshalContent(m.Content)
+		if err != nil {
+			slog.Error("session: marshal message content", "session", s.ID, "err", err)
+			return
+		}
+		rows = append(rows, &store.Message{
+			ID:          idgen.NewULID(),
+			SessionID:   s.ID,
+			Role:        string(m.Role),
+			ContentJSON: content,
+			CreatedAt:   now.Add(time.Duration(i) * time.Microsecond),
+		})
+	}
+	if err := s.store.ReplaceMessages(context.Background(), s.ID, rows); err != nil {
+		slog.Error("session: replace messages", "session", s.ID, "err", err)
+	}
 }
 
 // AllowedTools returns a copy of the per-session AllowedTools filter, or nil

@@ -26,6 +26,9 @@ type Store interface {
 	// --- Message CRUD ---
 	AppendMessage(ctx context.Context, m *Message) error
 	ListMessages(ctx context.Context, sessionID string) ([]*Message, error)
+	// ReplaceMessages atomically swaps a session's whole transcript (compaction
+	// rewrite). Passing an empty slice clears the transcript.
+	ReplaceMessages(ctx context.Context, sessionID string, msgs []*Message) error
 
 	// --- Event append + incremental query ---
 	// AppendEvent assigns the next idx and returns it. Callers should treat

@@ -164,6 +164,83 @@ func TestMessage_AppendList(t *testing.T) {
 	}
 }
 
+// TestMessage_AppendPopulatesFTS locks the contract that persisting a message
+// (the now-live AppendMessage write path) populates messages_fts so
+// session_search works on real sessions (add-project-sessions 0.4). It guards
+// against either the trigger or the write path silently regressing.
+func TestMessage_AppendPopulatesFTS(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	mustCreateSession(t, s, "sess1")
+
+	if err := s.AppendMessage(ctx, &store.Message{
+		ID:          mkID("msg", 0),
+		SessionID:   "sess1",
+		Role:        "user",
+		ContentJSON: `[{"type":"text","text":"findmexyz needle"}]`,
+		CreatedAt:   time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	var n int
+	if err := s.DB().QueryRowContext(ctx,
+		`SELECT count(*) FROM messages_fts WHERE messages_fts MATCH ?`, "findmexyz").Scan(&n); err != nil {
+		t.Fatalf("fts query: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("messages_fts row count = %d, want 1 (trigger did not fire on AppendMessage)", n)
+	}
+}
+
+func TestMessage_Replace(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC()
+	mustCreateSession(t, s, "sess1")
+
+	for i, role := range []string{"user", "assistant", "tool"} {
+		if err := s.AppendMessage(ctx, &store.Message{
+			ID:          mkID("old", i),
+			SessionID:   "sess1",
+			Role:        role,
+			ContentJSON: `[{"type":"text","text":"old"}]`,
+			CreatedAt:   now.Add(time.Duration(i) * time.Millisecond),
+		}); err != nil {
+			t.Fatalf("AppendMessage: %v", err)
+		}
+	}
+
+	// Replace the 3 messages with 2 fresh ones (the compaction rewrite path).
+	repl := []*store.Message{
+		{ID: mkID("new", 0), SessionID: "sess1", Role: "user", ContentJSON: `[{"type":"text","text":"summary"}]`, CreatedAt: now.Add(10 * time.Millisecond)},
+		{ID: mkID("new", 1), SessionID: "sess1", Role: "assistant", ContentJSON: `[{"type":"text","text":"ok"}]`, CreatedAt: now.Add(11 * time.Millisecond)},
+	}
+	if err := s.ReplaceMessages(ctx, "sess1", repl); err != nil {
+		t.Fatalf("ReplaceMessages: %v", err)
+	}
+
+	got, err := s.ListMessages(ctx, "sess1")
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("after replace got %d messages, want 2", len(got))
+	}
+	if got[0].ID != mkID("new", 0) || got[1].Role != "assistant" {
+		t.Errorf("replace content wrong: %+v", roles(got))
+	}
+
+	// Replacing with nothing clears the transcript.
+	if err := s.ReplaceMessages(ctx, "sess1", nil); err != nil {
+		t.Fatalf("ReplaceMessages(nil): %v", err)
+	}
+	got, _ = s.ListMessages(ctx, "sess1")
+	if len(got) != 0 {
+		t.Fatalf("after empty replace got %d, want 0", len(got))
+	}
+}
+
 func TestEvent_AppendIncremental(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

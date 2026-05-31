@@ -16,9 +16,10 @@ import (
 // and it assigns idx starting at 100 so tests can tell store-assigned idx
 // apart from the in-memory counter starting at 1.
 type fakeStore struct {
-	mu     sync.Mutex
-	next   int64
-	events []*store.Event
+	mu       sync.Mutex
+	next     int64
+	events   []*store.Event
+	messages []*store.Message
 }
 
 func (f *fakeStore) AppendEvent(_ context.Context, e *store.Event) (int64, error) {
@@ -37,12 +38,23 @@ func (f *fakeStore) CreateSession(context.Context, *store.Session) error { retur
 func (f *fakeStore) GetSession(context.Context, string) (*store.Session, error) {
 	return nil, store.ErrNotFound
 }
-func (f *fakeStore) ListSessions(context.Context, bool) ([]*store.Session, error)   { return nil, nil }
-func (f *fakeStore) UpdateSession(context.Context, *store.Session) error            { return nil }
-func (f *fakeStore) DeleteSession(context.Context, string) error                    { return nil }
-func (f *fakeStore) CountActiveSessions(context.Context) (int, error)               { return 0, nil }
-func (f *fakeStore) AppendMessage(context.Context, *store.Message) error            { return nil }
+func (f *fakeStore) ListSessions(context.Context, bool) ([]*store.Session, error) { return nil, nil }
+func (f *fakeStore) UpdateSession(context.Context, *store.Session) error          { return nil }
+func (f *fakeStore) DeleteSession(context.Context, string) error                  { return nil }
+func (f *fakeStore) CountActiveSessions(context.Context) (int, error)             { return 0, nil }
+func (f *fakeStore) AppendMessage(_ context.Context, m *store.Message) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.messages = append(f.messages, m)
+	return nil
+}
 func (f *fakeStore) ListMessages(context.Context, string) ([]*store.Message, error) { return nil, nil }
+func (f *fakeStore) ReplaceMessages(_ context.Context, _ string, msgs []*store.Message) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.messages = append([]*store.Message(nil), msgs...)
+	return nil
+}
 func (f *fakeStore) EventsAfter(context.Context, string, int64, int64) ([]*store.Event, error) {
 	return nil, nil
 }
