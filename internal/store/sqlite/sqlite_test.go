@@ -103,6 +103,164 @@ func TestSession_CRUD(t *testing.T) {
 	}
 }
 
+func TestListSessionsByWorkdir(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC()
+	mk := func(id, workdir string, upd time.Duration) {
+		if err := s.CreateSession(ctx, &store.Session{
+			ID: id, State: store.SessionStateIdle, Workdir: workdir, EnvJSON: "{}",
+			Title: "t-" + id, CreatedAt: now, UpdatedAt: now.Add(upd),
+		}); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	mk("s1", "/a", 2*time.Second)
+	mk("s2", "/a", 1*time.Second)
+	mk("s3", "/b", 0)
+
+	// s1 has two messages; the latest text drives the preview.
+	for i, txt := range []string{"first", "latest one"} {
+		if err := s.AppendMessage(ctx, &store.Message{
+			ID: mkID("s1m", i), SessionID: "s1", Role: "user",
+			ContentJSON: `[{"type":"text","text":"` + txt + `"}]`,
+			CreatedAt:   now.Add(time.Duration(i) * time.Second),
+		}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	got, err := s.ListSessionsByWorkdir(ctx, "/a")
+	if err != nil {
+		t.Fatalf("ListSessionsByWorkdir: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 sessions for /a, got %d", len(got))
+	}
+	// Ordered by updated_at DESC → s1 first.
+	if got[0].ID != "s1" {
+		t.Errorf("order: got[0]=%s want s1", got[0].ID)
+	}
+	if got[0].MessageCount != 2 {
+		t.Errorf("s1 MessageCount = %d, want 2", got[0].MessageCount)
+	}
+	if got[0].LastMessagePreview != "latest one" {
+		t.Errorf("s1 LastMessagePreview = %q, want %q", got[0].LastMessagePreview, "latest one")
+	}
+	if got[0].Title != "t-s1" {
+		t.Errorf("s1 Title = %q", got[0].Title)
+	}
+	if got[1].MessageCount != 0 || got[1].LastMessagePreview != "" {
+		t.Errorf("s2 should have no messages: count=%d preview=%q", got[1].MessageCount, got[1].LastMessagePreview)
+	}
+}
+
+func TestListProjects(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC()
+	for _, row := range []struct {
+		id, workdir string
+	}{{"s1", "/a"}, {"s2", "/a"}, {"s3", "/b"}} {
+		if err := s.CreateSession(ctx, &store.Session{
+			ID: row.id, State: store.SessionStateIdle, Workdir: row.workdir,
+			EnvJSON: "{}", CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+	}
+	// A deleted session must not keep a project alive on its own.
+	if err := s.PurgeSession(ctx, "s3"); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+
+	got, err := s.ListProjects(ctx)
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 project after purging /b's only session, got %d (%+v)", len(got), got)
+	}
+	if got[0].Path != "/a" || got[0].SessionCount != 2 {
+		t.Errorf("project = %+v, want {/a, 2}", got[0])
+	}
+}
+
+func TestSession_PurgeCascades(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC()
+	mustCreateSession(t, s, "s1")
+
+	if err := s.AppendMessage(ctx, &store.Message{ID: "m1", SessionID: "s1", Role: "user", ContentJSON: `[{"type":"text","text":"hi"}]`, CreatedAt: now}); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	if _, err := s.AppendEvent(ctx, &store.Event{SessionID: "s1", Type: "assistant_text_delta", PayloadJSON: `{}`}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	if err := s.AppendToolCall(ctx, &store.ToolCall{ID: "tc1", SessionID: "s1", MessageID: "m1", Tool: "Bash", InputJSON: `{}`, StartedAt: now}); err != nil {
+		t.Fatalf("AppendToolCall: %v", err)
+	}
+
+	if err := s.PurgeSession(ctx, "s1"); err != nil {
+		t.Fatalf("PurgeSession: %v", err)
+	}
+
+	if _, err := s.GetSession(ctx, "s1"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("session row should be gone, got err=%v", err)
+	}
+	if msgs, _ := s.ListMessages(ctx, "s1"); len(msgs) != 0 {
+		t.Errorf("messages should cascade-delete, got %d", len(msgs))
+	}
+	for _, tbl := range []string{"events", "tool_calls", "messages_fts"} {
+		var n int
+		q := "SELECT count(*) FROM " + tbl
+		if tbl != "messages_fts" {
+			q += " WHERE session_id = 's1'"
+		}
+		if err := s.DB().QueryRowContext(ctx, q).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", tbl, err)
+		}
+		if n != 0 {
+			t.Errorf("%s rows should be 0 after purge, got %d", tbl, n)
+		}
+	}
+
+	// Purging a missing session is a no-op error per the interface contract.
+	if err := s.PurgeSession(ctx, "nope"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("purge missing: want ErrNotFound, got %v", err)
+	}
+}
+
+func TestSession_Title(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	sess := &store.Session{
+		ID: "01ARZ3NDEKTSV4RRFFQ69G5FAW", State: store.SessionStateIdle,
+		Workdir: "/tmp/x", EnvJSON: "{}", Title: "first title",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.CreateSession(ctx, sess); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	got, _ := s.GetSession(ctx, sess.ID)
+	if got.Title != "first title" {
+		t.Errorf("title round-trip: got %q want %q", got.Title, "first title")
+	}
+
+	sess.Title = "renamed"
+	sess.UpdatedAt = now.Add(time.Second)
+	if err := s.UpdateSession(ctx, sess); err != nil {
+		t.Fatalf("UpdateSession: %v", err)
+	}
+	got, _ = s.GetSession(ctx, sess.ID)
+	if got.Title != "renamed" {
+		t.Errorf("title update did not stick: %q", got.Title)
+	}
+}
+
 func TestCountActiveSessions(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

@@ -124,11 +124,26 @@ var v2MemoryFTSDown = []string{
 	`DROP TABLE IF EXISTS messages_fts`,
 }
 
+// v3SessionTitle adds the per-session display title (derived from the first
+// user message, renamable via PATCH) and an index over workdir so the
+// project-scoped session listing (add-project-sessions) stays cheap.
+var v3SessionTitle = []string{
+	`ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT ''`,
+	`CREATE INDEX IF NOT EXISTS idx_sessions_workdir ON sessions(workdir) WHERE deleted_at IS NULL`,
+}
+
+var v3SessionTitleDown = []string{
+	`DROP INDEX IF EXISTS idx_sessions_workdir`,
+	// SQLite cannot DROP COLUMN before 3.35; the column is left in place on
+	// downgrade. The schema_version bump is what gates re-application.
+}
+
 // migrationsByVersion is the ordered list of all migrations. Each entry is
 // applied inside its own transaction; schema_version is bumped per step.
 var migrationsByVersion = []Migration{
 	{Version: 1, Up: v1Schema, Down: nil},
 	{Version: 2, Up: append(v2MemoryFTS, v2Backfill...), Down: v2MemoryFTSDown},
+	{Version: 3, Up: v3SessionTitle, Down: v3SessionTitleDown},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

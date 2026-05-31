@@ -19,13 +19,18 @@
 
 ## 1. 持久化 schema 与查询(底座)
 
-- [ ] 1.1 加 migration v3:`sessions` 增 `title TEXT NOT NULL DEFAULT ''`;补
+- [x] 1.1 加 migration v3:`sessions` 增 `title TEXT NOT NULL DEFAULT ''`;补
   `idx_sessions_workdir`(按 workdir 列举用);迁移 up/down 与测试。
-- [ ] 1.2 确认 sqlite 连接开启 `PRAGMA foreign_keys=ON`,补测试断言 DELETE 级联
-  真正清掉 `messages`/`events`/`tool_calls`。
-- [ ] 1.3 `store`:新增按 `workdir` 列举(含 `messageCount`/`lastMessagePreview`
+  → `store.Session.Title` + v3 迁移 + CRUD 全链路;`TestSession_Title`。
+- [x] 1.2 确认 sqlite 连接开启 `PRAGMA foreign_keys=ON`,补测试断言 DELETE 级联
+  真正清掉 `messages`/`events`/`tool_calls`。→ pragma 已在 Open(`SetMaxOpenConns(1)`
+  保证生效);新增 `PurgeSession`(硬删,先删 messages 触发 FTS trigger 再删 session
+  级联 events/tool_calls);`TestSession_PurgeCascades`。
+- [x] 1.3 `store`:新增按 `workdir` 列举(含 `messageCount`/`lastMessagePreview`
   聚合)、`projects` 聚合(distinct workdir + count + max updated_at)、`title`
-  读写(`UpdateSession` 覆盖)。
+  读写(`UpdateSession` 覆盖)。→ `ListSessionsByWorkdir`(extract_text 取末条预览)、
+  `ListProjects`、`store.SessionSummary`/`store.Project`;`TestListSessionsByWorkdir`/
+  `TestListProjects`。
 
 ## 2. 持久化水合(T1/T3/T4 核心)
 
