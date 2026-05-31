@@ -75,8 +75,13 @@ type AgentConfig struct {
 }
 
 type ThinkingConfig struct {
-	Enabled      bool `yaml:"enabled"`
-	BudgetTokens int  `yaml:"budget_tokens"`
+	Enabled      bool     `yaml:"enabled"`
+	BudgetTokens int      `yaml:"budget_tokens"`
+	// OnlyModels, when non-empty, restricts thinking to these model IDs.
+	// An empty list means thinking is sent to every model (the upstream
+	// API returns an error if the model doesn't support it). Use this to
+	// opt out models that are known to reject thinking requests.
+	OnlyModels []string `yaml:"only_models"`
 }
 
 type ToolsConfig struct {

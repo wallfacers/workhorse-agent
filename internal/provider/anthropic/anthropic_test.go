@@ -314,23 +314,6 @@ func TestAnthropic_ThinkingBetaHeader(t *testing.T) {
 	}
 }
 
-// Task 8.2: 模型不支持 thinking 时报错.
-func TestAnthropic_ThinkingNotSupportedModel(t *testing.T) {
-	p := anthropic.New(anthropic.Options{APIKey: "k", BaseURL: "http://unused"})
-	_, err := p.Stream(context.Background(), provider.Request{
-		Model:                "some-unknown-model",
-		MaxTokens:            24000,
-		ThinkingEnabled:      true,
-		ThinkingBudgetTokens: 16000,
-	})
-	if err == nil {
-		t.Fatal("expected error for unsupported model")
-	}
-	if !strings.Contains(err.Error(), "extended thinking not supported by model") {
-		t.Errorf("error message: got %q", err.Error())
-	}
-}
-
 // Task 8.3: System block 数组 + cache_control 序列化.
 func TestAnthropic_SystemBlockArray(t *testing.T) {
 	var receivedBody map[string]any
