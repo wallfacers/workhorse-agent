@@ -517,6 +517,16 @@ func (s *Session) ReplaceHistory(msgs []provider.Message) {
 	}
 }
 
+// RestoreHistory sets the in-memory history from a persisted transcript
+// WITHOUT writing back to the store. Used by Manager hydration to rebuild the
+// model context of a reopened session; using ReplaceHistory here would churn
+// the messages table (new ids/timestamps) on every reopen.
+func (s *Session) RestoreHistory(msgs []provider.Message) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history = append([]provider.Message(nil), msgs...)
+}
+
 // AllowedTools returns a copy of the per-session AllowedTools filter, or nil
 // when no filter is set (every registered tool is exposed).
 func (s *Session) AllowedTools() []string {

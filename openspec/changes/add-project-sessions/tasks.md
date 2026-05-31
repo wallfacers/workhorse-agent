@@ -34,14 +34,21 @@
 
 ## 2. 持久化水合(T1/T3/T4 核心)
 
-- [ ] 2.1 `Manager`:实现"按需水合"——`GetSession` 未命中内存时回源 store,
-  重建 `Session`(state=Idle)并在 `m.mu` 下 double-check 登记,避免并发重复水合。
-- [ ] 2.2 水合时调 `ListMessages` 把历史 `provider.Message` 重灌进 agent loop 的
-  模型上下文(套用既有 thinking 剥离 / token 计账),实现 T4 续聊真连续。
-- [ ] 2.3 `GET …/stream` 与 `POST …/stream` 对"已存在但未加载(含 idle)"会话工作:
-  自动触发水合后再挂流 / 收消息。补测试:重启后重开 idle 会话能继续 turn。
-- [ ] 2.4 水合失败干净回滚(不残留半个 live 会话);store 错误 → 5xx,不存在/已删
-  → 404。
+- [x] 2.1 `Manager`:实现"按需水合"——新增 `GetOrHydrate`,未命中内存时回源 store
+  重建 `Session`(state=Idle)。并发收口改为**全程持 `m.mu`**(store 已 `SetMaxOpenConns(1)`
+  串行化,持锁做快速本地读最简且无竞态);`GetSession` 保持 live-only 避免读路径起 runner。
+  → `TestManager_HydratesPersistedSession`、`buildHydrated`。
+- [x] 2.2 水合时调 `ListMessages` 把历史 `provider.Message` 重灌进上下文,实现 T4。
+  → 新增 `Session.RestoreHistory`(**非持久化**载入,避免每次重开 churn messages 表);
+  测试断言 history 还原且 transcript id 不变。
+- [x] 2.3 `GET …/stream` 与 `POST …/stream` 对"已存在但未加载(含 idle)"会话工作:
+  改用 `GetOrHydrate`。→ `TestStreamPost_HydratesPersistedSession`、
+  `TestStreamGet_HydratesPersistedSession`。
+- [x] 2.4 水合失败干净回滚(持锁内未登记即无残留);store `ErrNotFound`→`session.ErrNotFound`
+  →404,其它 store 错误→500。→ `writeSessionLookupError`、
+  `TestManager_GetOrHydrate_MissingAndDeleted`。
+  - 注:provider 名未持久化,水合用 runner factory 的默认 provider(沿用改动前行为);
+    水合会话不计入 `max_concurrent`(打开旧会话应总成功)——两者列为开放问题。
 
 ## 3. status 投影与多活并发(T3)
 

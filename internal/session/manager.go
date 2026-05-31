@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wallfacers/workhorse-agent/internal/provider"
 	"github.com/wallfacers/workhorse-agent/internal/store"
 )
 
@@ -151,9 +152,98 @@ func (m *Manager) persistNew(ctx context.Context, s *Session) error {
 	return nil
 }
 
-// GetSession returns the live in-memory session. For sessions that were
-// previously persisted but not loaded yet, the caller must hydrate via the
-// store directly (Group 9 will).
+// GetOrHydrate returns the live session, hydrating it from the store if it was
+// persisted but not currently loaded (e.g. after a restart, or a session the
+// user switched away from). The whole operation is done under m.mu: the store
+// already serialises access via a single connection, so holding the lock across
+// the (fast, local) reads keeps hydration race-free without a placeholder slot.
+// Returns ErrNotFound for unknown or soft-deleted sessions.
+func (m *Manager) GetOrHydrate(ctx context.Context, id string) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if a, ok := m.sessions[id]; ok {
+		if a == nil {
+			// A concurrent CreateSession reserved this freshly-minted id; an
+			// existing session's id never collides with it.
+			return nil, ErrNotFound
+		}
+		return a.sess, nil
+	}
+	if m.store == nil {
+		return nil, ErrNotFound
+	}
+
+	row, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if row.DeletedAt != nil {
+		return nil, ErrNotFound
+	}
+
+	sess, err := m.buildHydrated(ctx, row)
+	if err != nil {
+		return nil, err
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	m.sessions[id] = &activeSession{sess: sess, cancel: cancel, done: done}
+	if m.runnerFactory != nil {
+		runner := m.runnerFactory(sess)
+		go func() {
+			defer close(done)
+			runner.Run(runCtx)
+		}()
+	} else {
+		close(done)
+	}
+	return sess, nil
+}
+
+// buildHydrated reconstructs an idle Session from its persisted row and
+// transcript. Provider name is not persisted, so the runner factory's default
+// provider applies; the stored model is preserved.
+func (m *Manager) buildHydrated(ctx context.Context, row *store.Session) (*Session, error) {
+	env := map[string]string{}
+	if row.EnvJSON != "" {
+		_ = json.Unmarshal([]byte(row.EnvJSON), &env)
+	}
+	sess := New(Options{
+		Workdir:   row.Workdir,
+		Env:       env,
+		Model:     row.Model,
+		AgentType: row.AgentType,
+		ParentID:  row.ParentID,
+		Store:     m.store,
+	})
+	sess.ID = row.ID
+	sess.CreatedAt = row.CreatedAt
+
+	msgs, err := m.store.ListMessages(ctx, row.ID)
+	if err != nil {
+		return nil, fmt.Errorf("session: hydrate transcript: %w", err)
+	}
+	hist := make([]provider.Message, 0, len(msgs))
+	for _, mm := range msgs {
+		blocks, err := unmarshalContent(mm.ContentJSON)
+		if err != nil {
+			return nil, fmt.Errorf("session: hydrate decode message %s: %w", mm.ID, err)
+		}
+		hist = append(hist, provider.Message{Role: provider.Role(mm.Role), Content: blocks})
+	}
+	sess.RestoreHistory(hist)
+	return sess, nil
+}
+
+// GetSession returns the live in-memory session. Sessions that were persisted
+// but not yet loaded are hydrated on demand via GetOrHydrate (used by the
+// stream handlers); GetSession itself stays live-only so read paths don't spin
+// up a runner.
 func (m *Manager) GetSession(id string) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

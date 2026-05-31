@@ -6,7 +6,122 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/wallfacers/workhorse-agent/internal/provider"
+	"github.com/wallfacers/workhorse-agent/internal/store"
+	"github.com/wallfacers/workhorse-agent/internal/store/sqlite"
 )
+
+const hydID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
+func persistedStore(t *testing.T) *sqlite.Store {
+	t.Helper()
+	ctx := context.Background()
+	st, err := sqlite.Open(ctx, sqlite.Options{DSN: ":memory:"})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	now := time.Now().UTC()
+	if err := st.CreateSession(ctx, &store.Session{
+		ID: hydID, State: store.SessionStateIdle, Workdir: "/tmp/p",
+		EnvJSON: `{"K":"V"}`, Model: "anthropic:x", Title: "old chat",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	for i, m := range []struct{ id, role, text string }{
+		{"m1", "user", "earlier question"},
+		{"m2", "assistant", "earlier answer"},
+	} {
+		if err := st.AppendMessage(ctx, &store.Message{
+			ID: m.id, SessionID: hydID, Role: m.role,
+			ContentJSON: `[{"type":"text","text":"` + m.text + `"}]`,
+			CreatedAt:   now.Add(time.Duration(i) * time.Millisecond),
+		}); err != nil {
+			t.Fatalf("seed message: %v", err)
+		}
+	}
+	return st
+}
+
+func TestManager_HydratesPersistedSession(t *testing.T) {
+	ctx := context.Background()
+	st := persistedStore(t)
+	runner := &fakeRunner{}
+	m := NewManager(ManagerOptions{Store: st, RunnerFactory: func(*Session) Runner { return runner }})
+
+	// Precondition: not live in memory.
+	if _, err := m.GetSession(hydID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("precondition: want not-live, got %v", err)
+	}
+
+	sess, err := m.GetOrHydrate(ctx, hydID)
+	if err != nil {
+		t.Fatalf("GetOrHydrate: %v", err)
+	}
+	if sess.ID != hydID || sess.Workdir != "/tmp/p" || sess.Env["K"] != "V" {
+		t.Errorf("metadata not restored: id=%q workdir=%q env=%v", sess.ID, sess.Workdir, sess.Env)
+	}
+	if sess.State() != StateIdle {
+		t.Errorf("hydrated state = %v, want idle", sess.State())
+	}
+
+	// T4: the model context is rebuilt from the persisted transcript.
+	hist := sess.History()
+	if len(hist) != 2 {
+		t.Fatalf("restored history len = %d, want 2", len(hist))
+	}
+	if hist[0].Role != provider.RoleUser || hist[0].Content[0].Text != "earlier question" {
+		t.Errorf("history[0] wrong: %+v", hist[0])
+	}
+	if hist[1].Content[0].Text != "earlier answer" {
+		t.Errorf("history[1] wrong: %+v", hist[1])
+	}
+
+	// Now live and idempotent: a second hydrate returns the same pointer.
+	got, err := m.GetSession(hydID)
+	if err != nil || got != sess {
+		t.Fatalf("after hydrate GetSession should return same live session: got=%p err=%v", got, err)
+	}
+	again, err := m.GetOrHydrate(ctx, hydID)
+	if err != nil || again != sess {
+		t.Errorf("re-hydrate must return the existing live session")
+	}
+
+	// Hydration must NOT re-persist the transcript (ids unchanged).
+	msgs, _ := st.ListMessages(ctx, hydID)
+	if len(msgs) != 2 || msgs[0].ID != "m1" || msgs[1].ID != "m2" {
+		t.Errorf("hydration rewrote the transcript: %+v", msgs)
+	}
+
+	// Runner goroutine started.
+	deadline := time.Now().Add(time.Second)
+	for !runner.started.Load() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !runner.started.Load() {
+		t.Error("hydrated session runner never started")
+	}
+}
+
+func TestManager_GetOrHydrate_MissingAndDeleted(t *testing.T) {
+	ctx := context.Background()
+	st := persistedStore(t)
+	m := NewManager(ManagerOptions{Store: st, RunnerFactory: func(*Session) Runner { return &fakeRunner{} }})
+
+	if _, err := m.GetOrHydrate(ctx, "01ZZZZZZZZZZZZZZZZZZZZZZZZ"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing id: want ErrNotFound, got %v", err)
+	}
+
+	// Soft-deleted sessions are not hydratable.
+	if err := st.DeleteSession(ctx, hydID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+	if _, err := m.GetOrHydrate(ctx, hydID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("deleted id: want ErrNotFound, got %v", err)
+	}
+}
 
 // fakeRunner records context cancellation and waits up to a configurable
 // "drain" delay before its Run method returns. Used to verify cancel cascade
