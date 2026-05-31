@@ -5,9 +5,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/wallfacers/workhorse-agent/internal/api/protocol"
+	"github.com/wallfacers/workhorse-agent/internal/provider"
 	"github.com/wallfacers/workhorse-agent/internal/session"
+	"github.com/wallfacers/workhorse-agent/internal/store"
 )
 
 // createSessionRequest is the POST /v1/sessions body shape.
@@ -22,35 +26,79 @@ type createSessionRequest struct {
 	ParentID     string            `json:"parent_id,omitempty"`
 }
 
-// sessionView is the JSON projection returned for both POST and GET.
-type sessionView struct {
-	ID        string            `json:"id"`
-	ParentID  string            `json:"parent_id,omitempty"`
-	Status    string            `json:"status"`
-	Workdir   string            `json:"workdir"`
-	Env       map[string]string `json:"env,omitempty"`
-	Provider  string            `json:"provider"`
-	Model     string            `json:"model"`
-	AgentType string            `json:"agent_type,omitempty"`
-	Ephemeral bool              `json:"ephemeral"`
-	CreatedAt string            `json:"created_at"`
-	UpdatedAt string            `json:"updated_at"`
+// isoMillis is the ISO-8601 timestamp format the wire SessionMeta uses.
+const isoMillis = "2006-01-02T15:04:05.000Z"
+
+// sessionMeta is the camelCase wire projection consumed by workhorse-assistant
+// (AgentSessionMeta). id/workdir/title/status are always present; title is
+// emitted even when empty (the TS interface types it non-optional) and status
+// is strictly "idle"|"running" (add-project-sessions D1/D2).
+type sessionMeta struct {
+	ID                 string `json:"id"`
+	Workdir            string `json:"workdir"`
+	Title              string `json:"title"`
+	Status             string `json:"status"`
+	CreatedAt          string `json:"createdAt,omitempty"`
+	UpdatedAt          string `json:"updatedAt,omitempty"`
+	MessageCount       int    `json:"messageCount"`
+	LastMessagePreview string `json:"lastMessagePreview,omitempty"`
+	ParentID           string `json:"parentId,omitempty"`
+	Provider           string `json:"provider,omitempty"`
+	Model              string `json:"model,omitempty"`
+	AgentType          string `json:"agentType,omitempty"`
+	Ephemeral          bool   `json:"ephemeral,omitempty"`
 }
 
-func viewOf(s *session.Session) sessionView {
-	return sessionView{
-		ID:        s.ID,
-		ParentID:  s.ParentID,
-		Status:    string(s.State()),
-		Workdir:   s.Workdir,
-		Env:       s.Env,
-		Provider:  s.ProviderName,
-		Model:     s.Model,
-		AgentType: s.AgentType,
-		Ephemeral: s.Ephemeral,
-		CreatedAt: s.CreatedAt.Format("2006-01-02T15:04:05.000Z"),
-		UpdatedAt: s.UpdatedAt().Format("2006-01-02T15:04:05.000Z"),
+// metaFromLive projects a live in-memory session. MessageCount mirrors the
+// persisted transcript (one row per appended message).
+func metaFromLive(s *session.Session) sessionMeta {
+	return sessionMeta{
+		ID:           s.ID,
+		Workdir:      s.Workdir,
+		Title:        s.Title(),
+		Status:       s.Status(),
+		CreatedAt:    s.CreatedAt.Format(isoMillis),
+		UpdatedAt:    s.UpdatedAt().Format(isoMillis),
+		MessageCount: len(s.History()),
+		ParentID:     s.ParentID,
+		Provider:     s.ProviderName,
+		Model:        s.Model,
+		AgentType:    s.AgentType,
+		Ephemeral:    s.Ephemeral,
 	}
+}
+
+// metaFromSummary projects a persisted session row. status is overlaid by the
+// caller (live → running, otherwise idle).
+func metaFromSummary(sum *store.SessionSummary, status string) sessionMeta {
+	return sessionMeta{
+		ID:                 sum.ID,
+		Workdir:            sum.Workdir,
+		Title:              sum.Title,
+		Status:             status,
+		CreatedAt:          sum.CreatedAt.Format(isoMillis),
+		UpdatedAt:          sum.UpdatedAt.Format(isoMillis),
+		MessageCount:       sum.MessageCount,
+		LastMessagePreview: previewLine(sum.LastMessagePreview),
+		ParentID:           sum.ParentID,
+		Model:              sum.Model,
+		AgentType:          sum.AgentType,
+		Ephemeral:          sum.Ephemeral,
+	}
+}
+
+// previewLine collapses a last-message preview to a single trimmed line capped
+// at 120 runes for the session-list subtitle.
+func previewLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = s[:i]
+	}
+	r := []rune(s)
+	if len(r) > 120 {
+		return string(r[:120]) + "…"
+	}
+	return s
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -121,14 +169,46 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	writeJSON(w, http.StatusCreated, viewOf(sess))
+	writeJSON(w, http.StatusCreated, metaFromLive(sess))
 }
 
+// handleListSessions serves GET /v1/sessions. With ?workdir=<path> it returns
+// the project-scoped, persistence-backed listing (survives restart); without it
+// it lists the currently-live sessions.
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	if workdir := r.URL.Query().Get("workdir"); workdir != "" {
+		s.listSessionsByWorkdir(w, r, workdir)
+		return
+	}
 	all := s.manager.ListSessions()
-	out := make([]sessionView, 0, len(all))
+	out := make([]sessionMeta, 0, len(all))
 	for _, sess := range all {
-		out = append(out, viewOf(sess))
+		out = append(out, metaFromLive(sess))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
+}
+
+func (s *Server) listSessionsByWorkdir(w http.ResponseWriter, r *http.Request, workdir string) {
+	if s.store == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"sessions": []sessionMeta{}})
+		return
+	}
+	rows, err := s.store.ListSessionsByWorkdir(r.Context(), workdir)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"code": "internal", "message": "list sessions failed",
+		})
+		return
+	}
+	out := make([]sessionMeta, 0, len(rows))
+	for _, row := range rows {
+		// Overlay live status: a session currently running a turn reports
+		// "running"; everything persisted-but-idle reports "idle".
+		status := "idle"
+		if live, err := s.manager.GetSession(row.ID); err == nil {
+			status = live.Status()
+		}
+		out = append(out, metaFromSummary(row, status))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
 }
@@ -136,14 +216,81 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sess, err := s.manager.GetSession(id)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{
-			"code":    "session_not_found",
-			"message": "no such session",
-		})
+	if err == nil {
+		writeJSON(w, http.StatusOK, metaFromLive(sess))
 		return
 	}
-	writeJSON(w, http.StatusOK, viewOf(sess))
+	// Fall back to store for persisted-but-not-loaded sessions.
+	if s.store != nil {
+		row, serr := s.store.GetSession(r.Context(), id)
+		if serr == nil && row.DeletedAt == nil {
+			writeJSON(w, http.StatusOK, metaFromSummary(&store.SessionSummary{Session: *row}, "idle"))
+			return
+		}
+	}
+	writeJSON(w, http.StatusNotFound, map[string]any{
+		"code": "session_not_found", "message": "no such session",
+	})
+}
+
+// handleRenameSession serves PATCH /v1/sessions/{id} with body {"title": ...}.
+// It updates the persisted title (if the session is stored) and the live title
+// (if loaded), then returns the updated SessionMeta. No hydration: renaming an
+// unloaded session must not spin up a runner.
+func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
+	if !requireJSONBody(w, r) {
+		return
+	}
+	defer r.Body.Close()
+	id := r.PathValue("id")
+
+	var req struct {
+		Title string `json:"title"`
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		if isMaxBytesError(err) {
+			writeRequestTooLarge(w, s.cfg.MaxRequestBodyBytes)
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "bad_request", "message": err.Error()})
+		return
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "bad_request", "message": "invalid JSON body"})
+		return
+	}
+
+	live, liveErr := s.manager.GetSession(id)
+
+	var row *store.Session
+	if s.store != nil {
+		if r2, err := s.store.GetSession(r.Context(), id); err == nil && r2.DeletedAt == nil {
+			row = r2
+		}
+	}
+	if liveErr != nil && row == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"code": "session_not_found", "message": "no such session"})
+		return
+	}
+
+	if liveErr == nil {
+		live.SetTitle(req.Title)
+	}
+	if row != nil {
+		row.Title = req.Title
+		row.UpdatedAt = time.Now().UTC()
+		if err := s.store.UpdateSession(r.Context(), row); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"code": "internal", "message": "rename failed"})
+			return
+		}
+	}
+
+	if liveErr == nil {
+		writeJSON(w, http.StatusOK, metaFromLive(live))
+		return
+	}
+	writeJSON(w, http.StatusOK, metaFromSummary(&store.SessionSummary{Session: *row}, "idle"))
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
@@ -151,15 +298,20 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	err := s.manager.DeleteSession(r.Context(), id, s.cfg.GracefulShutdownTimeout)
 	if err != nil {
 		if errors.Is(err, session.ErrNotFound) {
+			// Not live — try hard-purging from store directly (add-project-sessions D6).
+			if s.store != nil {
+				if perr := s.store.PurgeSession(r.Context(), id); perr == nil {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+			}
 			writeJSON(w, http.StatusNotFound, map[string]any{
-				"code":    "session_not_found",
-				"message": "no such session",
+				"code": "session_not_found", "message": "no such session",
 			})
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]any{
-			"code":    "internal",
-			"message": err.Error(),
+			"code": "internal", "message": err.Error(),
 		})
 		return
 	}
@@ -210,6 +362,183 @@ func (s *Server) handleCompactSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// handleHistory returns the reconstructed transcript for a session
+// (add-project-sessions T2, design D4). tool_result blocks are merged into
+// their matching tool_call by toolUseId — they do not appear as separate parts.
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if s.store == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"messages": []any{}})
+		return
+	}
+	// Verify the session exists (live or persisted).
+	if _, err := s.manager.GetSession(id); err != nil {
+		row, serr := s.store.GetSession(r.Context(), id)
+		if serr != nil || row.DeletedAt != nil {
+			writeJSON(w, http.StatusNotFound, map[string]any{
+				"code": "session_not_found", "message": "no such session",
+			})
+			return
+		}
+	}
+
+	msgs, err := s.store.ListMessages(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"code": "internal", "message": err.Error(),
+		})
+		return
+	}
+	result := buildHistory(msgs)
+	writeJSON(w, http.StatusOK, map[string]any{"messages": result})
+}
+
+// handleListProjects returns distinct workdirs with at least one non-deleted
+// session (add-project-sessions T2).
+func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"projects": []any{}})
+		return
+	}
+	projects, err := s.store.ListProjects(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"code": "internal", "message": err.Error(),
+		})
+		return
+	}
+	type projectMeta struct {
+		Path         string `json:"path"`
+		SessionCount int    `json:"sessionCount,omitempty"`
+		UpdatedAt    string `json:"updatedAt,omitempty"`
+	}
+	out := make([]projectMeta, 0, len(projects))
+	for _, p := range projects {
+		out = append(out, projectMeta{
+			Path:         p.Path,
+			SessionCount: p.SessionCount,
+			UpdatedAt:    p.UpdatedAt.Format(isoMillis),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"projects": out})
+}
+
+// historyPart is one content block in a HistoryMessage (add-project-sessions D4).
+type historyPart struct {
+	Type     string          `json:"type"`
+	Content  string          `json:"content,omitempty"`
+	Text     string          `json:"text,omitempty"`
+	Status   string          `json:"status,omitempty"`
+	Redacted bool            `json:"redacted,omitempty"`
+	ID       string          `json:"id,omitempty"`
+	Name     string          `json:"name,omitempty"`
+	Input    json.RawMessage `json:"input,omitempty"`
+	Output   json.RawMessage `json:"output,omitempty"`
+}
+
+type historyMessage struct {
+	ID    string        `json:"id"`
+	Role  string        `json:"role"`
+	Parts []historyPart `json:"parts"`
+}
+
+// buildHistory converts stored messages into wire HistoryMessage slices.
+func buildHistory(msgs []*store.Message) []historyMessage {
+	type toolCallRef struct{ msgIdx, partIdx int }
+	toolCallMap := make(map[string]toolCallRef)
+
+	// Pre-parse content blocks.
+	type parsed struct {
+		id     string
+		role   string
+		blocks []provider.ContentBlock
+	}
+	parsedMsgs := make([]parsed, 0, len(msgs))
+	for _, m := range msgs {
+		blocks := unmarshalContentBlocks(m.ContentJSON)
+		parsedMsgs = append(parsedMsgs, parsed{id: m.ID, role: m.Role, blocks: blocks})
+	}
+
+	allParts := make([][]historyPart, len(parsedMsgs))
+	for mi, pm := range parsedMsgs {
+		parts := make([]historyPart, 0, len(pm.blocks))
+		for _, b := range pm.blocks {
+			switch b.Type {
+			case provider.BlockText:
+				parts = append(parts, historyPart{Type: "text", Content: b.Text})
+			case provider.BlockThinking:
+				parts = append(parts, historyPart{Type: "reasoning", Text: b.Thinking, Status: "done"})
+			case provider.BlockRedactedThinking:
+				parts = append(parts, historyPart{Type: "reasoning", Text: b.RedactedData, Status: "done", Redacted: true})
+			case provider.BlockToolUse:
+				pi := len(parts)
+				parts = append(parts, historyPart{
+					Type: "tool_call", ID: b.ToolUseID, Name: b.ToolName,
+					Input: b.Input, Status: "done",
+				})
+				toolCallMap[b.ToolUseID] = toolCallRef{msgIdx: mi, partIdx: pi}
+			case provider.BlockToolResult:
+				if ref, ok := toolCallMap[b.ToolUseID]; ok {
+					tc := &allParts[ref.msgIdx][ref.partIdx]
+					if b.IsError {
+						tc.Status = "error"
+					}
+					if b.Output != "" {
+						raw := json.RawMessage(b.Output)
+						if !json.Valid(raw) {
+							quoted, _ := json.Marshal(b.Output)
+							raw = quoted
+						}
+						tc.Output = raw
+					}
+				}
+			}
+		}
+		allParts[mi] = parts
+	}
+
+	result := make([]historyMessage, 0, len(parsedMsgs))
+	for i, pm := range parsedMsgs {
+		if len(allParts[i]) == 0 {
+			continue
+		}
+		result = append(result, historyMessage{ID: pm.id, Role: pm.role, Parts: allParts[i]})
+	}
+	return result
+}
+
+// unmarshalContentBlocks parses stored content_json back to ContentBlock slices.
+func unmarshalContentBlocks(s string) []provider.ContentBlock {
+	if s == "" {
+		return nil
+	}
+	type sb struct {
+		Type         provider.BlockType `json:"type"`
+		Text         string             `json:"text,omitempty"`
+		ToolUseID    string             `json:"toolUseId,omitempty"`
+		ToolName     string             `json:"toolName,omitempty"`
+		Input        json.RawMessage    `json:"input,omitempty"`
+		Output       string             `json:"output,omitempty"`
+		IsError      bool               `json:"isError,omitempty"`
+		Thinking     string             `json:"thinking,omitempty"`
+		Signature    string             `json:"signature,omitempty"`
+		RedactedData string             `json:"redactedData,omitempty"`
+	}
+	var in []sb
+	if err := json.Unmarshal([]byte(s), &in); err != nil {
+		return nil
+	}
+	out := make([]provider.ContentBlock, 0, len(in))
+	for _, b := range in {
+		out = append(out, provider.ContentBlock{
+			Type: b.Type, Text: b.Text, ToolUseID: b.ToolUseID, ToolName: b.ToolName,
+			Input: b.Input, Output: b.Output, IsError: b.IsError,
+			Thinking: b.Thinking, Signature: b.Signature, RedactedData: b.RedactedData,
+		})
+	}
+	return out
 }
 
 // requireJSONBody enforces Content-Type: application/json on POST. Returns

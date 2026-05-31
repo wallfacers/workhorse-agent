@@ -105,6 +105,54 @@ func TestManager_HydratesPersistedSession(t *testing.T) {
 	}
 }
 
+// TestPersistTitle_PreservesFields locks the fix for the partial-row clobber
+// bug: persisting a title must not blank workdir/model/etc. (UpdateSession
+// overwrites every column).
+func TestPersistTitle_PreservesFields(t *testing.T) {
+	ctx := context.Background()
+	st, err := sqlite.Open(ctx, sqlite.Options{DSN: ":memory:"})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	now := time.Now().UTC()
+	const id = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+	if err := st.CreateSession(ctx, &store.Session{
+		ID: id, State: store.SessionStateIdle, Workdir: "/keep/me",
+		EnvJSON: `{"K":"V"}`, Model: "anthropic:keep", AgentType: "coder",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	sess := New(Options{
+		Workdir: "/keep/me", Env: map[string]string{"K": "V"},
+		Model: "anthropic:keep", AgentType: "coder", Store: st,
+	})
+	sess.ID = id
+	sess.CreatedAt = now
+	sess.SetTitle("derived title")
+	sess.PersistTitle(ctx)
+
+	got, err := st.GetSession(ctx, id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Title != "derived title" {
+		t.Errorf("title not persisted: %q", got.Title)
+	}
+	if got.Workdir != "/keep/me" {
+		t.Errorf("workdir clobbered: %q", got.Workdir)
+	}
+	if got.Model != "anthropic:keep" {
+		t.Errorf("model clobbered: %q", got.Model)
+	}
+	if got.AgentType != "coder" {
+		t.Errorf("agent_type clobbered: %q", got.AgentType)
+	}
+}
+
 func TestManager_GetOrHydrate_MissingAndDeleted(t *testing.T) {
 	ctx := context.Background()
 	st := persistedStore(t)

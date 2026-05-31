@@ -49,6 +49,13 @@ func marshalContent(blocks []provider.ContentBlock) (string, error) {
 	return string(raw), nil
 }
 
+// DecodeContent exposes the persisted content_json → []ContentBlock decoder to
+// other packages (the history endpoint maps the blocks onto the wire parts[]
+// shape). It is the read side of the same format Session persistence writes.
+func DecodeContent(s string) ([]provider.ContentBlock, error) {
+	return unmarshalContent(s)
+}
+
 // unmarshalContent is the inverse of marshalContent.
 func unmarshalContent(s string) ([]provider.ContentBlock, error) {
 	if s == "" {

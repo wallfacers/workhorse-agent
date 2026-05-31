@@ -193,7 +193,7 @@ type PendingToolUse struct {
 // Fields fall into three categories:
 //
 //   - Immutable after construction: ID, ParentID, Workdir, Env, Ephemeral,
-//     Model, ProviderName, AgentType, CreatedAt, Inbox, Outbox.
+//     Model, ProviderName, AgentType, CreatedAt, Title, Inbox, Outbox.
 //   - Guarded by mu: state, history, idx, pending, allowed, updatedAt.
 //   - Goroutine-owned: ctx / cancel (created in Start, closed in Stop).
 type Session struct {
@@ -269,6 +269,7 @@ type Session struct {
 	idx       int64
 	pending   map[string]PendingToolUse
 	allowed   []string
+	title     string
 	updatedAt time.Time
 
 	// adapterSetupDedup tracks per-session adapter-generation state for the
@@ -514,6 +515,66 @@ func (s *Session) ReplaceHistory(msgs []provider.Message) {
 	}
 	if err := s.store.ReplaceMessages(context.Background(), s.ID, rows); err != nil {
 		slog.Error("session: replace messages", "session", s.ID, "err", err)
+	}
+}
+
+// Status projects the six-state machine onto the binary idle|running the wire
+// SessionMeta exposes (add-project-sessions D2): Idle and Cancelled read as
+// "idle"; any in-flight state reads as "running".
+func (s *Session) Status() string {
+	switch s.State() {
+	case StateIdle, StateCancelled:
+		return "idle"
+	default:
+		return "running"
+	}
+}
+
+// Title returns the session's display title (may be empty until derived from
+// the first user message).
+func (s *Session) Title() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.title
+}
+
+// SetTitle updates the in-memory display title. Persistence is the caller's
+// responsibility (title derivation / rename also write the store).
+func (s *Session) SetTitle(t string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.title = t
+}
+
+// PersistTitle writes the current title to the store. Used by the agent loop
+// after deriving the title from the first user message. No-op for ephemeral
+// or store-less sessions. The full row is rebuilt from the session's own state
+// because UpdateSession overwrites every column — a partial row would blank
+// workdir/model/env and break the project listing.
+func (s *Session) PersistTitle(ctx context.Context) {
+	s.mu.Lock()
+	t := s.title
+	s.mu.Unlock()
+	if s.store == nil || s.Ephemeral {
+		return
+	}
+	env, err := json.Marshal(s.Env)
+	if err != nil {
+		env = []byte("{}")
+	}
+	if err := s.store.UpdateSession(ctx, &store.Session{
+		ID:        s.ID,
+		ParentID:  s.ParentID,
+		State:     store.SessionState(s.State()),
+		Workdir:   s.Workdir,
+		EnvJSON:   string(env),
+		AgentType: s.AgentType,
+		Model:     s.Model,
+		Title:     t,
+		CreatedAt: s.CreatedAt,
+		UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		slog.Error("session: persist title", "session", s.ID, "err", err)
 	}
 }
 

@@ -54,7 +54,7 @@ func TestCreateSession_201(t *testing.T) {
 		raw, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status %d: %s", resp.StatusCode, raw)
 	}
-	var view sessionView
+	var view sessionMeta
 	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestListSessions(t *testing.T) {
 	}
 	defer resp.Body.Close()
 	var body struct {
-		Sessions []sessionView `json:"sessions"`
+		Sessions []sessionMeta `json:"sessions"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
