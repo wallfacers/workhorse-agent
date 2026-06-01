@@ -26,7 +26,7 @@ COMMANDS
   serve         start the HTTP + MCP Streamable HTTP server
   setup-agent   trigger adapter generation for a newly installed CLI (talks to a running server)
   approve       resolve a pending adapter-generation approval by id
-	  permissions   manage permanent permission rules (talks to a running server)
+  permissions   manage permanent permission rules (talks to a running server)
   version       print build version
 
 GLOBAL FLAGS

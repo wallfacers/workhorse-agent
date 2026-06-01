@@ -12,7 +12,7 @@ TBD - created by archiving change add-permission-default-and-api. Update Purpose
 
 ```json
 {
-  "id": "perm-a1b2c3d4e5f6g7h8",
+  "id": "preset-a1b2c3d4e5f6g7h8",
   "session_id": "",
   "tool": "Bash",
   "pattern": "git *",
@@ -23,7 +23,7 @@ TBD - created by archiving change add-permission-default-and-api. Update Purpose
 }
 ```
 
-`source` 字段 SHALL 按以下规则判定：若规则 ID 匹配当前 `tools.preset_rules` 中任一条的确定性 ID，则为 `"preset"`；否则为 `"manual"`。
+`source` 字段 SHALL 按规则 ID 前缀判定：以 `preset-` 开头为 `"preset"`，否则为 `"manual"`（手动创建的规则使用 `perm-` 前缀，二者永不冲突）。
 
 空列表时 SHALL 返回 `200` 含 `{"rules": []}`。
 
@@ -84,7 +84,7 @@ TBD - created by archiving change add-permission-default-and-api. Update Purpose
 
 服务 SHALL 提供 `DELETE /v1/permissions/{id}` 端点，删除指定 ID 的永久规则。
 
-成功时 SHALL 返回 `204 No Content`。ID 不存在时 SHALL 返回 `404` 含 `{"error": "not found"}`。
+成功时 SHALL 返回 `204 No Content`。ID 不存在时 SHALL 返回 `404` 含 `{"error": "not found"}`。底层存储错误等其它失败 SHALL 返回 `500`,不得将其混淆为 `404`。
 
 删除预设规则 SHALL 被允许；被删除的预设规则在下次服务重启时 SHALL 被重新创建。
 

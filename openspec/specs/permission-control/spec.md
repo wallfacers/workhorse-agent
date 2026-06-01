@@ -61,7 +61,7 @@ Agent SHALL 在每次工具执行前按以下顺序查询：
 
 1. 检查工具调用是否命中 DangerousCommandGuard（仅 Bash），若命中：**强制询问，绕过所有 allow 规则**
 2. 查 session-scope 规则（内存）
-3. 查 permanent-scope 规则（SQLite）
+3. 查 permanent-scope 规则（SQLite）。当同一调用匹配到多条永久规则时，`deny_permanent` SHALL 优先于 `allow_permanent`，与规则创建顺序无关——使后加（或更具体）的 deny 规则总能收紧一条更早、更宽的 allow（如某条预设）
 4. 命中 `allow` → 执行；命中 `deny` → 返回 `tool_result { is_error: true, output: "denied by permission rule" }`
 5. 若 `tools.default_permission` 已配置（非空），SHALL 直接返回该决策值，**不弹窗**
 6. 未配置 `default_permission` → emit `permission_request` 事件并阻塞等 `permission_decision`
@@ -72,6 +72,11 @@ Agent SHALL 在每次工具执行前按以下顺序查询：
 
 - **WHEN** 存在规则 `Bash: "rm *" deny session`，LLM 调用 `Bash { command: "rm tmp.txt" }`
 - **THEN** Agent 不执行 Bash；返回 `tool_result { is_error: true, output: "denied by permission rule" }`
+
+#### Scenario: deny_permanent 优先于更早的 allow_permanent
+
+- **WHEN** 存在更早创建的 `Bash: "*" allow_permanent`（如预设）与更晚创建的 `Bash: "rm *" deny_permanent`，LLM 调用 `Bash { command: "rm file" }`
+- **THEN** Agent 命中 deny_permanent，返回 `tool_result { is_error: true, output: "denied by permission rule" }`；而调用 `Bash { command: "ls" }`（仅 allow 覆盖）仍执行
 
 #### Scenario: 询问超时
 

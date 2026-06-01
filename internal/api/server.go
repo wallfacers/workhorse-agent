@@ -42,14 +42,6 @@ type Config struct {
 	MaxConcurrentSessions   int
 	MaxHistoryTokens        int
 	Version                 string
-	PresetRules             []PresetRuleConfig
-}
-
-// PresetRuleConfig is a read-only copy of config.PresetRule for the API layer.
-type PresetRuleConfig struct {
-	Tool     string
-	Pattern  string
-	Decision string
 }
 
 // Server is the long-lived HTTP server bound by serve. Construct via

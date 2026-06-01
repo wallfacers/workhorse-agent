@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,6 +30,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/extagent/regen"
 	"github.com/wallfacers/workhorse-agent/internal/extagent/smoke"
 	"github.com/wallfacers/workhorse-agent/internal/idgen"
+	"github.com/wallfacers/workhorse-agent/internal/instructions"
 	"github.com/wallfacers/workhorse-agent/internal/memory"
 	"github.com/wallfacers/workhorse-agent/internal/permission"
 	"github.com/wallfacers/workhorse-agent/internal/prompt"
@@ -501,12 +502,20 @@ func newRunnerFactory(
 	defaultModel := cfg.Models.Default
 	defaultFastModel := cfg.Models.Fast
 	memLoader := &memory.Loader{ProfileDir: profileDir(cfg)}
+	instrLoader := &instructions.Loader{ProfileDir: profileDir(cfg)}
 	return func(sess *session.Session) session.Runner {
 		snap, err := memLoader.Load()
 		if err != nil {
 			slog.Warn("memory snapshot load failed, proceeding without memory", "error", err)
 		}
 		sess.MemorySnapshot = snap
+
+		instrSnap, err := instrLoader.Load(sess.Workdir)
+		if err != nil {
+			slog.Warn("instruction snapshot load failed, proceeding without instructions", "error", err)
+		}
+		sess.InstructionSnapshot = instrSnap
+		sess.InstructionResolver = instructions.NewResolver(instrSnap)
 
 		provName := sess.ProviderName
 		if provName == "" {
@@ -579,7 +588,8 @@ func newRunnerFactory(
 			Workdir:          sess.Workdir,
 			Env:              sess.Env,
 			ExtAgentRegistry: extReg,
-			TaskList:         taskStore,
+			TaskList:            taskStore,
+			InstructionResolver: sess.InstructionResolver,
 		}
 
 		// Build environment block for the system prompt. Always include the
@@ -921,14 +931,6 @@ func apiConfigFrom(cfg config.Config) api.Config {
 	if bytesLimit <= 0 {
 		bytesLimit = 1 << 20
 	}
-	presetRules := make([]api.PresetRuleConfig, len(cfg.Tools.PresetRules))
-	for i, r := range cfg.Tools.PresetRules {
-		presetRules[i] = api.PresetRuleConfig{
-			Tool:     r.Tool,
-			Pattern:  r.Pattern,
-			Decision: r.Decision,
-		}
-	}
 	return api.Config{
 		Host:                    cfg.Server.Host,
 		Port:                    cfg.Server.Port,
@@ -950,19 +952,25 @@ func apiConfigFrom(cfg config.Config) api.Config {
 		MaxConcurrentSessions: cfg.Sessions.MaxConcurrent,
 		MaxHistoryTokens:      cfg.Agent.MaxHistoryTokens,
 		Version:               versionString(),
-		PresetRules:           presetRules,
 	}
 }
 
-// applyPresetRules injects the configured preset_rules into the store at
-// startup. Uses deterministic IDs derived from the rule content so repeated
-// restarts are idempotent via INSERT OR REPLACE.
+// presetIDPrefix tags permission rows that originate from config preset_rules
+// so they are self-identifying: the API reports their source and startup
+// reconciliation can drop ones no longer declared in config. Manual rules use
+// the "perm-" prefix instead, so the two never collide.
+const presetIDPrefix = "preset-"
+
+// applyPresetRules reconciles the configured preset_rules into the store at
+// startup. The deterministic ID derives from (tool, pattern) only — excluding
+// decision — so retightening a preset's decision REPLACEs the same row instead
+// of leaving the old grant behind. Presets dropped from config are deleted so
+// they don't linger as stale grants.
 func applyPresetRules(ctx context.Context, st *sqlite.Store, rules []config.PresetRule, logger *slog.Logger) error {
-	if len(rules) == 0 {
-		return nil
-	}
+	desired := make(map[string]struct{}, len(rules))
 	for _, r := range rules {
-		id := presetRuleID(r.Tool, r.Pattern, r.Decision)
+		id := presetRuleID(r.Tool, r.Pattern)
+		desired[id] = struct{}{}
 		if err := st.SavePermission(ctx, &store.Permission{
 			ID:        id,
 			SessionID: "",
@@ -975,14 +983,38 @@ func applyPresetRules(ctx context.Context, st *sqlite.Store, rules []config.Pres
 			return fmt.Errorf("preset rule %q: %w", id, err)
 		}
 	}
-	logger.Info("applied preset permission rules", "count", len(rules))
+
+	// Drop preset rows no longer declared in config (removed or retightened to
+	// a different (tool, pattern)). Global permanent rules carry session_id="".
+	existing, err := st.ListPermissions(ctx, "")
+	if err != nil {
+		return fmt.Errorf("list permissions: %w", err)
+	}
+	removed := 0
+	for _, p := range existing {
+		if !strings.HasPrefix(p.ID, presetIDPrefix) {
+			continue
+		}
+		if _, ok := desired[p.ID]; ok {
+			continue
+		}
+		if err := st.DeletePermission(ctx, p.ID); err != nil {
+			return fmt.Errorf("remove stale preset %q: %w", p.ID, err)
+		}
+		removed++
+	}
+
+	if len(rules) > 0 || removed > 0 {
+		logger.Info("applied preset permission rules", "count", len(rules), "removed_stale", removed)
+	}
 	return nil
 }
 
-// presetRuleID returns a deterministic permission ID for a preset rule.
-func presetRuleID(tool, pattern, decision string) string {
-	h := md5.Sum([]byte(tool + "\x00" + pattern + "\x00" + decision))
-	return "perm-" + hex.EncodeToString(h[:])[:16]
+// presetRuleID returns a deterministic permission ID for a preset rule, keyed
+// on (tool, pattern) so a decision change updates the same row in place.
+func presetRuleID(tool, pattern string) string {
+	h := sha256.Sum256([]byte(tool + "\x00" + pattern))
+	return presetIDPrefix + hex.EncodeToString(h[:])[:16]
 }
 
 func msToDurations(ms []int) []time.Duration {

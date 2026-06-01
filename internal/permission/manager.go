@@ -148,14 +148,32 @@ func (m *Manager) matchPermanentRule(ctx context.Context, sessionID, tool, resou
 	if err != nil {
 		return "", false, fmt.Errorf("permission: list: %w", err)
 	}
+	// Deny takes precedence over allow regardless of creation order: a
+	// matching deny_permanent must win even if a broader allow_permanent
+	// (e.g. an older or less specific preset) was created earlier. Otherwise
+	// retightening a permission via a deny rule would be silently ineffective.
+	var (
+		allow      Decision
+		foundAllow bool
+	)
 	for _, p := range rules {
 		if p.Scope != store.ScopePermanent {
 			continue
 		}
 		r := rule{pattern: p.Pattern, tool: p.Tool, decision: p.Decision, scope: p.Scope}
-		if matchToolResource(r, tool, resource) {
+		if !matchToolResource(r, tool, resource) {
+			continue
+		}
+		if p.Decision == DenyPermanent {
 			return p.Decision, true, nil
 		}
+		if !foundAllow {
+			allow = p.Decision
+			foundAllow = true
+		}
+	}
+	if foundAllow {
+		return allow, true, nil
 	}
 	return "", false, nil
 }

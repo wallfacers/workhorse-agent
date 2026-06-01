@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/wallfacers/workhorse-agent/internal/config"
 )
@@ -46,6 +47,9 @@ func permList(cfg config.Config, stdout, _ io.Writer) error {
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+	}
 	type rule struct {
 		ID       string `json:"id"`
 		Tool     string `json:"tool"`
@@ -141,6 +145,9 @@ func permRemove(cfg config.Config, args []string, stdout, stderr io.Writer) erro
 		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(respBody))
 	}
 	fmt.Fprintf(stdout, "Deleted: %s\n", id)
+	if strings.HasPrefix(id, "preset-") {
+		fmt.Fprintln(stdout, "warning: this is a preset rule; it will be re-injected on the next server restart unless removed from config tools.preset_rules")
+	}
 	return nil
 }
 

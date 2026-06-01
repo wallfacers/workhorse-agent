@@ -257,6 +257,37 @@ func TestCheck_DenyPermanentOverridesDefaultDecision(t *testing.T) {
 	}
 }
 
+// A matching deny_permanent must win over a broader allow_permanent even when
+// the allow was created first (e.g. a pre-existing preset). Otherwise
+// retightening a permission with a deny rule would be silently ineffective.
+func TestCheck_PermanentDenyOverridesEarlierAllow(t *testing.T) {
+	s := newStore(t)
+	must(t, s.SavePermission(context.Background(), &store.Permission{
+		ID: "allow-broad", Tool: "Bash", Pattern: "*",
+		Decision: store.DecisionAllowPermanent, Scope: store.ScopePermanent,
+		CreatedAt: time.Now(),
+	}))
+	must(t, s.SavePermission(context.Background(), &store.Permission{
+		ID: "deny-specific", Tool: "Bash", Pattern: "rm *",
+		Decision: store.DecisionDenyPermanent, Scope: store.ScopePermanent,
+		CreatedAt: time.Now().Add(time.Second),
+	}))
+	m := permission.New(s,
+		func(ctx context.Context, req permission.Request) (permission.Decision, bool) {
+			t.Error("prompt should not fire when a permanent rule matches")
+			return permission.Deny, true
+		}, nil, time.Second, "")
+	d, err := m.Check(context.Background(), "sess", "Bash", "rm file")
+	if err != nil || d != permission.DenyPermanent {
+		t.Errorf("deny_permanent should win over earlier allow_permanent: got %v %v", d, err)
+	}
+	// A resource only the allow covers still resolves to allow.
+	d, err = m.Check(context.Background(), "sess", "Bash", "ls")
+	if err != nil || d != permission.AllowPermanent {
+		t.Errorf("non-denied resource should allow: got %v %v", d, err)
+	}
+}
+
 func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {

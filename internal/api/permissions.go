@@ -1,15 +1,29 @@
 package api
 
 import (
-	"crypto/md5"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/wallfacers/workhorse-agent/internal/store"
 )
+
+// presetIDPrefix tags permission rows injected from config preset_rules. It
+// must match the prefix used by the serve command when it derives preset IDs.
+const presetIDPrefix = "preset-"
+
+// permissionSource reports whether a rule originated from a config preset
+// (self-identifying via its ID prefix) or was created manually.
+func permissionSource(id string) string {
+	if strings.HasPrefix(id, presetIDPrefix) {
+		return "preset"
+	}
+	return "manual"
+}
 
 // permissionRuleJSON is the JSON shape for a single rule in the list/create response.
 type permissionRuleJSON struct {
@@ -38,15 +52,10 @@ func (s *Server) handleListPermissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	presetIDs := s.presetRuleIDs()
 	out := make([]permissionRuleJSON, 0, len(rules))
 	for _, p := range rules {
 		if p.Scope != store.ScopePermanent {
 			continue
-		}
-		source := "manual"
-		if _, ok := presetIDs[p.ID]; ok {
-			source = "preset"
 		}
 		out = append(out, permissionRuleJSON{
 			ID:        p.ID,
@@ -55,7 +64,7 @@ func (s *Server) handleListPermissions(w http.ResponseWriter, r *http.Request) {
 			Pattern:   p.Pattern,
 			Decision:  string(p.Decision),
 			Scope:     string(p.Scope),
-			Source:    source,
+			Source:    permissionSource(p.ID),
 			CreatedAt: p.CreatedAt,
 		})
 	}
@@ -100,12 +109,6 @@ func (s *Server) handleCreatePermission(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	presetIDs := s.presetRuleIDs()
-	source := "manual"
-	if _, ok := presetIDs[id]; ok {
-		source = "preset"
-	}
-
 	writeJSON(w, http.StatusCreated, permissionRuleJSON{
 		ID:        p.ID,
 		SessionID: p.SessionID,
@@ -113,7 +116,7 @@ func (s *Server) handleCreatePermission(w http.ResponseWriter, r *http.Request) 
 		Pattern:   p.Pattern,
 		Decision:  string(p.Decision),
 		Scope:     string(p.Scope),
-		Source:    source,
+		Source:    permissionSource(id),
 		CreatedAt: p.CreatedAt,
 	})
 }
@@ -122,21 +125,12 @@ func (s *Server) handleCreatePermission(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleDeletePermission(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := s.store.DeletePermission(r.Context(), id); err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+		if errors.Is(err, store.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "delete permission: " + err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusNoContent, nil)
-}
-
-// presetRuleIDs builds a set of deterministic permission IDs from the
-// configured preset rules. Used to annotate the `source` field in API
-// responses.
-func (s *Server) presetRuleIDs() map[string]struct{} {
-	m := make(map[string]struct{}, len(s.cfg.PresetRules))
-	for _, r := range s.cfg.PresetRules {
-		h := md5.Sum([]byte(r.Tool + "\x00" + r.Pattern + "\x00" + r.Decision))
-		id := "perm-" + hex.EncodeToString(h[:])[:16]
-		m[id] = struct{}{}
-	}
-	return m
 }

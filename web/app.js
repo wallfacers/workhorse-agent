@@ -217,13 +217,17 @@
       html += '<div style="border-bottom:1px solid #f0f0f0;padding:4px 0;display:flex;align-items:center;gap:4px;">' +
         '<span style="flex:1;"><b>' + esc(tool) + '</b> ' + esc(pat) + '</span>' +
         '<span style="font-size:10px;color:#666;white-space:nowrap;">' + esc(d.replace('allow_','').replace('_permanent','')) + ' (' + esc(src[0]) + ')' + '</span>' +
-        '<button class="perm-del" data-id="' + esc(r.id) + '" style="background:#c53030;border:none;color:#fff;padding:1px 6px;border-radius:3px;cursor:pointer;font-size:10px;">x</button>' +
+        '<button class="perm-del" data-id="' + esc(r.id) + '" data-source="' + esc(src) + '" style="background:#c53030;border:none;color:#fff;padding:1px 6px;border-radius:3px;cursor:pointer;font-size:10px;">x</button>' +
         '</div>';
     }
     el.innerHTML = html;
     el.querySelectorAll(".perm-del").forEach((b) => {
       b.onclick = async () => {
         const id = b.getAttribute("data-id");
+        if (b.getAttribute("data-source") === "preset" &&
+            !confirm("This is a preset rule. Deleting it now only lasts until the next server restart, when config tools.preset_rules re-injects it. Delete anyway?")) {
+          return;
+        }
         try {
           const r = await fetch("/v1/permissions/" + id, { method: "DELETE" });
           if (r.status === 204) listPermissions();

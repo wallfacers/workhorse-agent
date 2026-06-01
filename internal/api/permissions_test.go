@@ -2,7 +2,7 @@ package api_test
 
 import (
 	"context"
-	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
@@ -125,16 +125,13 @@ func TestPermissions_SourcePreset(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 
 	srv := api.NewServer(api.Config{
-		Port:               0,
-		Version:            "test",
+		Port:                0,
+		Version:             "test",
 		MaxRequestBodyBytes: 1 << 20,
-		PresetRules: []api.PresetRuleConfig{
-			{Tool: "Bash", Pattern: "git *", Decision: "allow_permanent"},
-		},
 	}, nil, st, nil)
 
 	ctx := context.Background()
-	presetID := presetRuleID("Bash", "git *", "allow_permanent")
+	presetID := presetRuleID("Bash", "git *")
 	if err := st.SavePermission(ctx, &store.Permission{
 		ID: presetID, Tool: "Bash", Pattern: "git *",
 		Decision: store.DecisionAllowPermanent, Scope: store.ScopePermanent,
@@ -149,9 +146,9 @@ func TestPermissions_SourcePreset(t *testing.T) {
 	}
 }
 
-func presetRuleID(tool, pattern, decision string) string {
-	h := md5.Sum([]byte(tool + "\x00" + pattern + "\x00" + decision))
-	return "perm-" + hex.EncodeToString(h[:])[:16]
+func presetRuleID(tool, pattern string) string {
+	h := sha256.Sum256([]byte(tool + "\x00" + pattern))
+	return "preset-" + hex.EncodeToString(h[:])[:16]
 }
 
 func doGet(t *testing.T, srv *api.Server, path string) *httptest.ResponseRecorder {
