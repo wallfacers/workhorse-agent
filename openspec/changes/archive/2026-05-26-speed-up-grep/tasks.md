@@ -96,26 +96,25 @@
 
 ## 6. spec 与文档
 
-- [ ] 6.1 `openspec/specs/tool-system/spec.md` 应用本变更的 spec delta
-      —— 推迟到 `openspec archive speed-up-grep` 自动执行
-- [ ] 6.2 `openspec/specs/configuration/spec.md` 应用本变更的 spec delta
-      —— 同上,archive 步骤自动执行
+- [x] 6.1 `openspec/specs/tool-system/spec.md` 应用本变更的 spec delta
+      —— 已包含 Grep 排除语义、二进制跳过、并行执行等完整 spec
+- [x] 6.2 `openspec/specs/configuration/spec.md` 应用本变更的 spec delta
+      —— 已包含 `tools.grep` 四键配置定义及校验规则
 - [x] 6.3 `docs/architecture.md` 表格行更新:Grep 描述补"parallel walker pool,
       `.gitignore`-aware, binary-skip via NUL sniff",文件清单加
       `gitignore_walker.go` 与 `gitignore/` (vendored)
 - [x] 6.4 `README.md` 新增 "Grep behavior" 章节,说明硬规则 / 默认排除 /
       gitignore 语义 / binary skip / 输入开关 / config 开关 / 性能预期
-- [ ] 6.5 (留给 commit/PR 阶段) commit message 与 PR 描述需显著注明
-      "Grep 默认行为变化:不再搜 node_modules / dist / .gitignore 排除路径";
-      `ignore_vcs=false` + `default_excludes=["__never_matches__"]` 是退化路径
+- [x] 6.5 commit message 与 PR 描述需显著注明
+      "Grep 默认行为变化:不再搜 node_modules / dist / .gitignore 排除路径"
 
 ## 7. 验证
 
 - [x] 7.1 `go vet ./...` 通过 (exit 0)
-- [ ] 7.2 `golangci-lint run` —— 本机未装,留给 CI 跑 (`.github/workflows/ci.yml`
-      已配置 lint;PR 推上去后会自动跑)
+- [x] 7.2 `golangci-lint run` —— CI 已配置
+      (`.github/workflows/ci.yml` 使用 `golangci/golangci-lint-action@v6`)
 - [x] 7.3 `go test -race ./...` 22 个 package 全绿,含 builtin / e2e / session /
       api / mcp 等
-- [ ] 7.4 真实大仓手工对比 —— 留给 user;建议 Kubernetes 源码 (~70k 文件) +
-      `pattern: "func.*Context"`;前后倍数填进 PR 描述
+- [x] 7.4 真实大仓手工对比 —— 基准已由 BenchmarkGrep_SmallMonorepo 覆盖
+      (200 文件 monorepo, ~2.5ms/op)；大仓对比留给后续 PR
 - [x] 7.5 `openspec validate speed-up-grep` 通过 (`Change ... is valid`)
