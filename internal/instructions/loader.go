@@ -57,6 +57,14 @@ func findProjectFiles(workdir string) ([]File, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Resolve symlinks so snapshot paths match the symlink-resolved paths the
+	// Read tool's proximity resolver produces (via pathguard). Otherwise the
+	// per-session dedup keyed on file path misses on a symlinked workdir and a
+	// file already in the system prompt gets re-injected. Fall back to absWorkdir
+	// if resolution fails.
+	if resolved, rerr := filepath.EvalSymlinks(absWorkdir); rerr == nil {
+		absWorkdir = resolved
+	}
 
 	gitRoot := findGitRoot(absWorkdir)
 	topBound := gitRoot

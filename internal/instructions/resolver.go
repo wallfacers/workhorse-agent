@@ -34,7 +34,7 @@ func NewResolver(snapshot *Snapshot) *Resolver {
 		}
 	}
 	return &Resolver{
-		systemPaths:    sys,
+		systemPaths:   sys,
 		injectedPaths: make(map[string]bool),
 	}
 }
@@ -47,7 +47,15 @@ func NewResolver(snapshot *Snapshot) *Resolver {
 func (r *Resolver) Resolve(filePath string, workdirRoot string) []Injection {
 	target := filepath.Clean(filePath)
 	dir := filepath.Dir(target)
+	// filePath arrives symlink-resolved (Read passes pathguard.Resolve's output,
+	// which runs filepath.EvalSymlinks). The workdir root must be resolved the
+	// same way or the Rel comparison below compares two spellings of the same
+	// tree (e.g. /tmp vs /private/tmp on macOS, or a symlinked project root) and
+	// proximity injection silently never fires.
 	root := filepath.Clean(workdirRoot)
+	if resolvedRoot, err := filepath.EvalSymlinks(workdirRoot); err == nil {
+		root = resolvedRoot
+	}
 
 	var results []Injection
 

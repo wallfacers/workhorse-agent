@@ -42,6 +42,32 @@ func TestResolve_duplicateSkipped(t *testing.T) {
 	}
 }
 
+// Regression: the Read tool passes pathguard.Resolve's symlink-resolved path as
+// filePath but the raw (unresolved) workdir as root. When the workdir contains a
+// symlink component the two spellings diverge and proximity injection must still
+// fire — the resolver resolves the root's symlinks to compare on equal footing.
+func TestResolve_symlinkedWorkdirRoot(t *testing.T) {
+	realRoot, srcDir, srcFooDir := setupResolverTree(t)
+	os.WriteFile(filepath.Join(srcDir, "AGENTS.md"), []byte("src rules"), 0o644)
+
+	// symRoot is a symlink pointing at realRoot, mimicking a project root whose
+	// path contains a symlink (macOS /tmp→/private/tmp, or a symlinked checkout).
+	symRoot := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realRoot, symRoot); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	r := NewResolver(nil)
+	// filePath is the real (symlink-resolved) path; root is the symlink spelling.
+	results := r.Resolve(filepath.Join(srcFooDir, "bar.go"), symRoot)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 injection through symlinked root, got %d", len(results))
+	}
+	if results[0].Content != "src rules" {
+		t.Fatalf("expected 'src rules', got %q", results[0].Content)
+	}
+}
+
 func TestResolve_systemLevelPathSkipped(t *testing.T) {
 	root, srcDir, srcFooDir := setupResolverTree(t)
 	srcAgents := filepath.Join(srcDir, "AGENTS.md")
