@@ -75,11 +75,14 @@ func findProjectFiles(workdir string) ([]File, error) {
 	// Collect all directories from workdir to topBound (inclusive).
 	dirs := collectAncestorDirs(absWorkdir, topBound)
 
-	// Determine which filename to use (first one with any match).
+	// Determine which filename to use (first one with a non-empty instance). A
+	// filename only wins on content: an empty AGENTS.md must not blackhole a
+	// content-bearing CLAUDE.md fallback (the collection loop below also skips
+	// empty files, so a winner with no content would yield an empty snapshot).
 	var winner string
 	for _, name := range searchFiles {
 		for _, dir := range dirs {
-			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			if fi, err := os.Stat(filepath.Join(dir, name)); err == nil && fi.Size() > 0 {
 				winner = name
 				break
 			}

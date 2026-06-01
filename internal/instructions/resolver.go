@@ -72,12 +72,21 @@ func (r *Resolver) Resolve(filePath string, workdirRoot string) []Injection {
 			r.mu.Lock()
 			already := r.systemPaths[found] || r.injectedPaths[found]
 			if !already {
+				// Claim the path before reading so a concurrent Read of a sibling
+				// file does not also inject it.
 				r.injectedPaths[found] = true
 			}
 			r.mu.Unlock()
 			if !already {
 				content, err := readFile(found)
-				if err == nil && content != "" {
+				switch {
+				case err != nil:
+					// A transient read error must not permanently suppress the
+					// path: release the claim so a later Read can retry.
+					r.mu.Lock()
+					delete(r.injectedPaths, found)
+					r.mu.Unlock()
+				case content != "":
 					results = append(results, Injection{
 						Path:    found,
 						Content: content,

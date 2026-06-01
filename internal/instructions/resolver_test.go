@@ -68,6 +68,28 @@ func TestResolve_symlinkedWorkdirRoot(t *testing.T) {
 	}
 }
 
+// Regression: a transient read error must release the dedup claim so a later
+// Read can retry, rather than permanently suppressing the path. An AGENTS.md
+// that is a directory passes os.Stat (findInDir) but fails os.ReadFile.
+func TestResolve_readErrorReleasesClaim(t *testing.T) {
+	root, srcDir, srcFooDir := setupResolverTree(t)
+	agentsAsDir := filepath.Join(srcDir, "AGENTS.md")
+	os.MkdirAll(agentsAsDir, 0o755)
+
+	r := NewResolver(nil)
+	results := r.Resolve(filepath.Join(srcFooDir, "bar.go"), root)
+	if len(results) != 0 {
+		t.Fatalf("expected 0 injections on read error, got %d", len(results))
+	}
+
+	r.mu.Lock()
+	claimed := r.injectedPaths[agentsAsDir]
+	r.mu.Unlock()
+	if claimed {
+		t.Fatal("read error must release the claim so a later Read can retry")
+	}
+}
+
 func TestResolve_systemLevelPathSkipped(t *testing.T) {
 	root, srcDir, srcFooDir := setupResolverTree(t)
 	srcAgents := filepath.Join(srcDir, "AGENTS.md")

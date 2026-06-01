@@ -139,6 +139,26 @@ func TestLoad_projectAndGlobal(t *testing.T) {
 	}
 }
 
+func TestLoad_emptyAgentsMdDoesNotBlackholeClaudeMd(t *testing.T) {
+	dir := t.TempDir()
+	// Empty AGENTS.md (e.g. a stray `touch`) must not suppress a content-bearing
+	// CLAUDE.md fallback.
+	os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte(""), 0o644)
+	os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("claude rules"), 0o644)
+
+	l := Loader{ProfileDir: t.TempDir()}
+	snap, err := l.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(snap.Files))
+	}
+	if snap.Files[0].Content != "claude rules" {
+		t.Fatalf("expected claude rules content, got %q", snap.Files[0].Content)
+	}
+}
+
 func TestLoad_missingGlobalFile(t *testing.T) {
 	projectDir := t.TempDir()
 	os.WriteFile(filepath.Join(projectDir, "AGENTS.md"), []byte("project"), 0o644)
