@@ -57,6 +57,73 @@ func TestHealth_OKShape(t *testing.T) {
 	}
 }
 
+func TestHealth_DefaultWorkdirAndPlatform(t *testing.T) {
+	_, ts := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	wd, ok := body["default_workdir"].(string)
+	if !ok || wd == "" {
+		t.Fatalf("default_workdir missing or empty: %v", body["default_workdir"])
+	}
+
+	plat, ok := body["platform"].(string)
+	if !ok || plat == "" {
+		t.Fatalf("platform missing or empty: %v", body["platform"])
+	}
+	if plat == "" {
+		t.Fatalf("platform should not be empty")
+	}
+}
+
+func TestHealth_DefaultWorkdirConfigOverride(t *testing.T) {
+	_, ts := newTestServer(t, func(c *Config) {
+		c.DefaultWorkdir = "/opt/projects"
+	})
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["default_workdir"] != "/opt/projects" {
+		t.Fatalf("default_workdir: %v", body["default_workdir"])
+	}
+}
+
+func TestHealth_DistroOnlyOnWSL(t *testing.T) {
+	_, ts := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if isWSL() {
+		distro, ok := body["distro"].(string)
+		if !ok || distro == "" {
+			t.Fatalf("WSL environment: distro should be non-empty string")
+		}
+	} else {
+		if _, ok := body["distro"]; ok {
+			t.Fatalf("non-WSL environment: distro should not be present")
+		}
+	}
+}
+
 func TestHealth_NoAuthRequired(t *testing.T) {
 	_, ts := newTestServer(t, func(c *Config) {
 		c.Auth = BearerConfig{Enabled: true, Token: "secret"}

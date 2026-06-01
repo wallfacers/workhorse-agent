@@ -26,6 +26,7 @@ type Config struct {
 type ServerConfig struct {
 	Host                           string   `yaml:"host"`
 	Port                           int      `yaml:"port"`
+	DefaultWorkdir                 string   `yaml:"default_workdir"`
 	ReadHeaderTimeoutSeconds       int      `yaml:"read_header_timeout_seconds"`
 	ReadTimeoutSeconds             int      `yaml:"read_timeout_seconds"`
 	IdleTimeoutSeconds             int      `yaml:"idle_timeout_seconds"`

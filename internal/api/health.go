@@ -3,7 +3,10 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"runtime"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -20,19 +23,40 @@ var DefaultCapabilities = []string{
 	"external_agents",
 }
 
+// defaultWorkdir resolves the sidecar's default project directory:
+// config override (server.default_workdir) > os.Getwd().
+func (s *Server) defaultWorkdir() string {
+	if s.cfg.DefaultWorkdir != "" {
+		return s.cfg.DefaultWorkdir
+	}
+	wd, _ := os.Getwd()
+	if wd == "" {
+		wd = "/"
+	}
+	return wd
+}
+
 // handleHealth answers GET /health. The endpoint is intentionally exempt from
 // bearer auth (monitoring probes) and Origin checks (server-side probes).
 // Returns protocol_version and capabilities so the frontend can verify
 // identity and feature compatibility before attaching.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"ok":               true,
 		"version":          s.cfg.Version,
 		"protocol_version": ProtocolVersion,
 		"capabilities":     DefaultCapabilities,
 		"uptime_sec":       int(time.Since(s.startedAt).Seconds()),
 		"sessions_active":  s.manager.CountActive(),
-	})
+		"default_workdir":  s.defaultWorkdir(),
+		"platform":         runtime.GOOS,
+	}
+
+	if distro := getDistro(); distro != "" {
+		resp["distro"] = distro
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleDebugEvents serves GET /debug/sessions/{id}/events?since=N as a
@@ -100,4 +124,32 @@ func (s *Server) handleDebugEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// getDistro returns the Linux distribution name when running under WSL.
+// Returns empty string on non-WSL environments.
+func getDistro() string {
+	if !isWSL() {
+		return ""
+	}
+	return parseOSRelease()
+}
+
+// parseOSRelease reads /etc/os-release and returns PRETTY_NAME (or NAME).
+func parseOSRelease() string {
+	data, err := os.ReadFile("/etc/os-release")
+	if err != nil {
+		return ""
+	}
+	var name string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "PRETTY_NAME=") {
+			return strings.Trim(line[len("PRETTY_NAME="):], `"`)
+		}
+		if strings.HasPrefix(line, "NAME=") && name == "" {
+			name = strings.Trim(line[len("NAME="):], `"`)
+		}
+	}
+	return name
 }

@@ -915,6 +915,7 @@ func apiConfigFrom(cfg config.Config) api.Config {
 	return api.Config{
 		Host:                    cfg.Server.Host,
 		Port:                    cfg.Server.Port,
+		DefaultWorkdir:          cfg.Server.DefaultWorkdir,
 		ReadHeaderTimeout:       time.Duration(cfg.Server.ReadHeaderTimeoutSeconds) * time.Second,
 		ReadTimeout:             time.Duration(cfg.Server.ReadTimeoutSeconds) * time.Second,
 		IdleTimeout:             time.Duration(cfg.Server.IdleTimeoutSeconds) * time.Second,

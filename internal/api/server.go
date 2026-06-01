@@ -27,6 +27,7 @@ import (
 type Config struct {
 	Host                    string
 	Port                    int
+	DefaultWorkdir          string
 	ReadHeaderTimeout       time.Duration
 	ReadTimeout             time.Duration
 	IdleTimeout             time.Duration
@@ -130,6 +131,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/sessions/{id}/stream", s.handleStream)
 	mux.HandleFunc("GET /v1/projects", s.handleListProjects)
 
+	mux.HandleFunc("GET /v1/fs/list", s.handleFSList)
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("GET /v1/diagnostics", s.handleDiagnostics)
 	mux.HandleFunc("GET /debug/sessions/{id}/events", s.handleDebugEvents)
