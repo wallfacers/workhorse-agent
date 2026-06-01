@@ -468,7 +468,7 @@ func (s *Store) ListToolCalls(ctx context.Context, sessionID string) ([]*store.T
 
 func (s *Store) SavePermission(ctx context.Context, p *store.Permission) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO permissions(id, session_id, tool, pattern, decision, scope, created_at)
+		`INSERT OR REPLACE INTO permissions(id, session_id, tool, pattern, decision, scope, created_at)
 		 VALUES (?,?,?,?,?,?,?)`,
 		p.ID, p.SessionID, p.Tool, p.Pattern, string(p.Decision), string(p.Scope),
 		toMicros(p.CreatedAt))

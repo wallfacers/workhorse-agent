@@ -195,5 +195,65 @@
     };
   });
 
+  // Permissions panel
+  async function listPermissions() {
+    try {
+      const r = await fetch("/v1/permissions");
+      const data = await r.json();
+      renderPermissions(data.rules || []);
+    } catch (e) {
+      $("perm-list").innerHTML = '<div style="color:#c53030;">' + esc(String(e)) + '</div>';
+    }
+  }
+  function renderPermissions(rules) {
+    const el = $("perm-list");
+    if (!rules.length) { el.innerHTML = '<div style="color:#888;font-size:11px;">no rules</div>'; return; }
+    let html = '';
+    for (const r of rules) {
+      const tool = r.tool || '*';
+      const pat = r.pattern || '**';
+      const d = r.decision || '';
+      const src = r.source || 'manual';
+      html += '<div style="border-bottom:1px solid #f0f0f0;padding:4px 0;display:flex;align-items:center;gap:4px;">' +
+        '<span style="flex:1;"><b>' + esc(tool) + '</b> ' + esc(pat) + '</span>' +
+        '<span style="font-size:10px;color:#666;white-space:nowrap;">' + esc(d.replace('allow_','').replace('_permanent','')) + ' (' + esc(src[0]) + ')' + '</span>' +
+        '<button class="perm-del" data-id="' + esc(r.id) + '" style="background:#c53030;border:none;color:#fff;padding:1px 6px;border-radius:3px;cursor:pointer;font-size:10px;">x</button>' +
+        '</div>';
+    }
+    el.innerHTML = html;
+    el.querySelectorAll(".perm-del").forEach((b) => {
+      b.onclick = async () => {
+        const id = b.getAttribute("data-id");
+        try {
+          const r = await fetch("/v1/permissions/" + id, { method: "DELETE" });
+          if (r.status === 204) listPermissions();
+          else alert("delete failed: " + r.status + " " + await r.text());
+        } catch (e) { alert(String(e)); }
+      };
+    });
+  }
+  async function addPermission() {
+    const tool = $("perm-tool").value;
+    const pattern = $("perm-pattern").value.trim();
+    const decision = $("perm-decision").value;
+    try {
+      const r = await fetch("/v1/permissions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tool, pattern, decision })
+      });
+      if (r.status === 201) {
+        $("perm-pattern").value = "";
+        listPermissions();
+      } else {
+        const err = await r.text();
+        alert("add failed: " + r.status + " " + err);
+      }
+    } catch (e) { alert(String(e)); }
+  }
+  $("btn-perm-refresh").onclick = listPermissions;
+  $("btn-perm-add").onclick = addPermission;
+
   listSessions();
+  listPermissions();
 })();

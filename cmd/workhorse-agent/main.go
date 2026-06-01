@@ -26,6 +26,7 @@ COMMANDS
   serve         start the HTTP + MCP Streamable HTTP server
   setup-agent   trigger adapter generation for a newly installed CLI (talks to a running server)
   approve       resolve a pending adapter-generation approval by id
+	  permissions   manage permanent permission rules (talks to a running server)
   version       print build version
 
 GLOBAL FLAGS
@@ -65,6 +66,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runSetupAgent(args[1:], stdout, stderr)
 	case "approve":
 		return runApprove(args[1:], stdout, stderr)
+	case "permissions", "perm":
+		return runPermissions(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		return runVersion(stdout)
 	case "help", "--help", "-h":

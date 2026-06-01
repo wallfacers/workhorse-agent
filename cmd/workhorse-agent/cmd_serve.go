@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -107,6 +109,12 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("serve: open store: %w", err)
 	}
 
+	// 1b. Inject preset permission rules from config (idempotent).
+	if err := applyPresetRules(ctx, st, cfg.Tools.PresetRules, logger); err != nil {
+		_ = st.Close()
+		return fmt.Errorf("serve: apply preset rules: %w", err)
+	}
+
 	// 2. Providers — build all known providers so per-session ProviderName can
 	// pick one (multi-agent spec: child may override parent's provider).
 	providers, fastProviders, err := buildProviderRegistry(cfg)
@@ -161,6 +169,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		permissionPromptUsingSessions(&sessMgr, logger),
 		dangerousCommandPredicate(),
 		time.Duration(cfg.Agent.PermissionRequestTimeoutSeconds)*time.Second,
+		store.PermissionDecision(cfg.Tools.DefaultPermission),
 	)
 
 	// 3c. Register ExternalAgent tool (after permMgr exists for gating).
@@ -912,6 +921,14 @@ func apiConfigFrom(cfg config.Config) api.Config {
 	if bytesLimit <= 0 {
 		bytesLimit = 1 << 20
 	}
+	presetRules := make([]api.PresetRuleConfig, len(cfg.Tools.PresetRules))
+	for i, r := range cfg.Tools.PresetRules {
+		presetRules[i] = api.PresetRuleConfig{
+			Tool:     r.Tool,
+			Pattern:  r.Pattern,
+			Decision: r.Decision,
+		}
+	}
 	return api.Config{
 		Host:                    cfg.Server.Host,
 		Port:                    cfg.Server.Port,
@@ -933,7 +950,39 @@ func apiConfigFrom(cfg config.Config) api.Config {
 		MaxConcurrentSessions: cfg.Sessions.MaxConcurrent,
 		MaxHistoryTokens:      cfg.Agent.MaxHistoryTokens,
 		Version:               versionString(),
+		PresetRules:           presetRules,
 	}
+}
+
+// applyPresetRules injects the configured preset_rules into the store at
+// startup. Uses deterministic IDs derived from the rule content so repeated
+// restarts are idempotent via INSERT OR REPLACE.
+func applyPresetRules(ctx context.Context, st *sqlite.Store, rules []config.PresetRule, logger *slog.Logger) error {
+	if len(rules) == 0 {
+		return nil
+	}
+	for _, r := range rules {
+		id := presetRuleID(r.Tool, r.Pattern, r.Decision)
+		if err := st.SavePermission(ctx, &store.Permission{
+			ID:        id,
+			SessionID: "",
+			Tool:      r.Tool,
+			Pattern:   r.Pattern,
+			Decision:  store.PermissionDecision(r.Decision),
+			Scope:     store.ScopePermanent,
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			return fmt.Errorf("preset rule %q: %w", id, err)
+		}
+	}
+	logger.Info("applied preset permission rules", "count", len(rules))
+	return nil
+}
+
+// presetRuleID returns a deterministic permission ID for a preset rule.
+func presetRuleID(tool, pattern, decision string) string {
+	h := md5.Sum([]byte(tool + "\x00" + pattern + "\x00" + decision))
+	return "perm-" + hex.EncodeToString(h[:])[:16]
 }
 
 func msToDurations(ms []int) []time.Duration {

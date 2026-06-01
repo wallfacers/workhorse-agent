@@ -580,6 +580,102 @@ func TestLoad_ExternalAgentsDefaultsOptional(t *testing.T) {
 	}
 }
 
+func TestDefault_PermissionConfig(t *testing.T) {
+	c := config.Default()
+	if c.Tools.DefaultPermission != "" {
+		t.Errorf("default_permission: got %q, want empty", c.Tools.DefaultPermission)
+	}
+	if c.Tools.PresetRules != nil {
+		t.Errorf("preset_rules: got %v, want nil", c.Tools.PresetRules)
+	}
+}
+
+// Scenario from spec: default_permission 非法值拒绝启动
+func TestLoad_RejectsIllegalDefaultPermission(t *testing.T) {
+	for _, v := range []string{"allow_once", "allow_session", "deny", "ask"} {
+		path := writeYAML(t, "tools:\n  default_permission: "+v)
+		_, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+		if err == nil {
+			t.Fatalf("default_permission=%q: expected validation error", v)
+		}
+		// %q in error message quotes the value
+		want := "tools.default_permission must be empty, allow_permanent, or deny_permanent"
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("default_permission=%q: unexpected error: %v", v, err)
+		}
+	}
+}
+
+// Scenario from spec: preset_rules decision 非法值拒绝启动
+func TestLoad_RejectsIllegalPresetRuleDecision(t *testing.T) {
+	path := writeYAML(t, `
+tools:
+  preset_rules:
+    - tool: Bash
+      pattern: "git *"
+      decision: allow_session
+`)
+	_, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err == nil {
+		t.Fatal("expected validation error for preset_rules[0].decision=allow_session")
+	}
+	if !strings.Contains(err.Error(), "tools.preset_rules[0].decision must be allow_permanent or deny_permanent") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestLoad_ValidDefaultPermissionAndPresetRules(t *testing.T) {
+	path := writeYAML(t, `
+tools:
+  default_permission: allow_permanent
+  preset_rules:
+    - tool: Bash
+      pattern: "git *"
+      decision: allow_permanent
+    - tool: Read
+      pattern: "**"
+      decision: deny_permanent
+`)
+	cfg, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Tools.DefaultPermission != "allow_permanent" {
+		t.Errorf("default_permission: got %q, want allow_permanent", cfg.Tools.DefaultPermission)
+	}
+	if len(cfg.Tools.PresetRules) != 2 {
+		t.Fatalf("preset_rules len: got %d, want 2", len(cfg.Tools.PresetRules))
+	}
+	if cfg.Tools.PresetRules[0].Tool != "Bash" || cfg.Tools.PresetRules[0].Pattern != "git *" || cfg.Tools.PresetRules[0].Decision != "allow_permanent" {
+		t.Errorf("preset_rules[0]: got %+v", cfg.Tools.PresetRules[0])
+	}
+	if cfg.Tools.PresetRules[1].Tool != "Read" || cfg.Tools.PresetRules[1].Decision != "deny_permanent" {
+		t.Errorf("preset_rules[1]: got %+v", cfg.Tools.PresetRules[1])
+	}
+}
+
+func TestLoad_DefaultPermissionEmptyIsValid(t *testing.T) {
+	path := writeYAML(t, `
+tools:
+  default_permission: ""
+`)
+	_, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err != nil {
+		t.Fatalf("empty default_permission should be valid, got: %v", err)
+	}
+}
+
+func TestLoad_PresetRulesEmptyIsValid(t *testing.T) {
+	path := writeYAML(t, `
+tools:
+  preset_rules: []
+`)
+	_, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err != nil {
+		t.Fatalf("empty preset_rules should be valid, got: %v", err)
+	}
+}
+
 // helpers
 
 func writeYAML(t *testing.T, body string) string {

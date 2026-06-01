@@ -47,14 +47,15 @@ type PromptFunc func(ctx context.Context, req Request) (Decision, bool)
 
 // Manager evaluates whether a tool call may proceed for a session. It
 // consults (in order): persistent rules from the store, session-scoped
-// in-memory rules, then falls back to a prompt — unless DangerousGuard
-// flagged the call, in which case the prompt is *forced* regardless of any
-// existing allow_* rules.
+// in-memory rules, the configured default decision, then falls back to a
+// prompt — unless DangerousGuard flagged the call, in which case the prompt
+// is *forced* regardless of any existing allow_* rules.
 type Manager struct {
-	store     store.Store
-	prompt    PromptFunc
-	timeout   time.Duration
-	dangerous func(tool, resource string) (bool, string)
+	store           store.Store
+	prompt          PromptFunc
+	timeout         time.Duration
+	dangerous       func(tool, resource string) (bool, string)
+	defaultDecision Decision
 
 	mu sync.Mutex
 	// rules cached per session: ScopeSession rules + ScopeOnce rules pending
@@ -76,13 +77,14 @@ type rule struct {
 //
 // timeout is the per-prompt deadline; 0 means inherit the ctx the caller
 // passes in.
-func New(s store.Store, prompt PromptFunc, dangerous func(tool, resource string) (bool, string), timeout time.Duration) *Manager {
+func New(s store.Store, prompt PromptFunc, dangerous func(tool, resource string) (bool, string), timeout time.Duration, defaultDecision Decision) *Manager {
 	return &Manager{
-		store:        s,
-		prompt:       prompt,
-		timeout:      timeout,
-		dangerous:    dangerous,
-		sessionRules: map[string][]rule{},
+		store:           s,
+		prompt:          prompt,
+		timeout:         timeout,
+		dangerous:       dangerous,
+		defaultDecision: defaultDecision,
+		sessionRules:    map[string][]rule{},
 	}
 }
 
@@ -115,7 +117,12 @@ func (m *Manager) Check(ctx context.Context, sessionID, tool, resource string) (
 		}
 	}
 
-	// 4. No cached rule (or dangerous override). Prompt the user.
+	// 4. No cached rule — fall back to configured default if set (unless dangerous).
+	if !dangerous && m.defaultDecision != "" {
+		return m.defaultDecision, nil
+	}
+
+	// 5. No cached rule and no default configured (or dangerous override). Prompt the user.
 	return m.promptAndPersist(ctx, sessionID, tool, resource, dangerous, reason)
 }
 

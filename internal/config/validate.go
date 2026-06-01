@@ -171,6 +171,22 @@ func validateTools(t ToolsConfig) error {
 			return fmt.Errorf("invalid config: tools.grep.default_excludes[%d] is not a valid glob: %v (pattern: %q)", i, err, pat)
 		}
 	}
+	// Validate default_permission
+	if t.DefaultPermission != "" {
+		switch t.DefaultPermission {
+		case "allow_permanent", "deny_permanent":
+		default:
+			return fmt.Errorf("invalid config: tools.default_permission must be empty, allow_permanent, or deny_permanent, got %q", t.DefaultPermission)
+		}
+	}
+	// Validate preset_rules
+	for i, r := range t.PresetRules {
+		switch r.Decision {
+		case "allow_permanent", "deny_permanent":
+		default:
+			return fmt.Errorf("invalid config: tools.preset_rules[%d].decision must be allow_permanent or deny_permanent, got %q", i, r.Decision)
+		}
+	}
 	return nil
 }
 

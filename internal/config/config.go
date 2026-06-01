@@ -92,6 +92,15 @@ type ToolsConfig struct {
 	Read                  ToolTimeout `yaml:"read"`
 	Grep                  ToolsGrep   `yaml:"grep"`
 	DefaultAllowedTools   []string    `yaml:"default_allowed_tools"`
+	DefaultPermission     string      `yaml:"default_permission"`
+	PresetRules           []PresetRule `yaml:"preset_rules"`
+}
+
+// PresetRule is a permission rule declared in config and injected at startup.
+type PresetRule struct {
+	Tool     string `yaml:"tool"`
+	Pattern  string `yaml:"pattern"`
+	Decision string `yaml:"decision"`
 }
 
 type ToolTimeout struct {
@@ -226,6 +235,8 @@ func Default() Config {
 				RespectGitignore: true,
 				DefaultExcludes:  nil,
 			},
+			DefaultPermission: "",
+			PresetRules:       nil,
 		},
 		Store:    StoreConfig{Path: "~/.workhorse-agent/state.db", BusyTimeoutMs: 5000},
 		Sessions: SessionsConfig{MaxConcurrent: 50},

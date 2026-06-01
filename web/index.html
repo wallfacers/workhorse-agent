@@ -79,6 +79,32 @@
       </div>
       <div id="session-list"></div>
     </div>
+    <div class="panel">
+      <div class="row" style="margin-top:0;justify-content:space-between;">
+        <h2 style="margin:0;">Permissions</h2>
+        <button id="btn-perm-refresh" class="secondary" style="background:#fff;color:#2d3748;border-color:#ccc;padding:2px 8px;font-size:11px;">Refresh</button>
+      </div>
+      <div id="perm-list" style="max-height:300px;overflow-y:auto;font-size:11px;"></div>
+      <div style="margin-top:8px;border-top:1px solid #e5e5e5;padding-top:8px;">
+        <select id="perm-tool" style="width:100%;margin-bottom:4px;">
+          <option value="">All tools</option>
+          <option value="Bash">Bash</option>
+          <option value="Read">Read</option>
+          <option value="Write">Write</option>
+          <option value="Edit">Edit</option>
+          <option value="Grep">Grep</option>
+          <option value="ExternalAgent">ExternalAgent</option>
+        </select>
+        <input id="perm-pattern" placeholder="glob pattern (e.g. git * or **)" style="width:100%;margin-bottom:4px;">
+        <div class="row" style="margin-top:4px;">
+          <select id="perm-decision" style="flex:1;">
+            <option value="allow_permanent">allow_permanent</option>
+            <option value="deny_permanent">deny_permanent</option>
+          </select>
+          <button id="btn-perm-add" style="white-space:nowrap;">Add</button>
+        </div>
+      </div>
+    </div>
   </aside>
   <main>
     <div class="toolbar">

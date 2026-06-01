@@ -68,7 +68,7 @@ func TestCheck_PermanentAllowFromStore(t *testing.T) {
 		func(ctx context.Context, req permission.Request) (permission.Decision, bool) {
 			called = true
 			return permission.Deny, true
-		}, nil, time.Second)
+		}, nil, time.Second, "")
 	d, err := m.Check(context.Background(), "sess", "Read", "docs/intro.md")
 	if err != nil || d != permission.AllowPermanent {
 		t.Errorf("got %v %v", d, err)
@@ -85,7 +85,7 @@ func TestCheck_PromptIssuedWhenNoRule(t *testing.T) {
 		func(ctx context.Context, req permission.Request) (permission.Decision, bool) {
 			called++
 			return permission.AllowSession, true
-		}, nil, time.Second)
+		}, nil, time.Second, "")
 	d, err := m.Check(context.Background(), "sess", "Bash", "ls")
 	if err != nil || d != permission.AllowSession {
 		t.Errorf("got %v %v", d, err)
@@ -107,7 +107,7 @@ func TestCheck_AllowOnceConsumed(t *testing.T) {
 		func(ctx context.Context, req permission.Request) (permission.Decision, bool) {
 			called++
 			return permission.AllowOnce, true
-		}, nil, time.Second)
+		}, nil, time.Second, "")
 	for i := 0; i < 3; i++ {
 		_, _ = m.Check(context.Background(), "sess", "Bash", "ls")
 	}
@@ -138,7 +138,7 @@ func TestCheck_DangerousOverridesAllow(t *testing.T) {
 			return permission.Deny, true
 		},
 		func(tool, resource string) (bool, string) { return true, "destructive_rm" },
-		time.Second)
+		time.Second, "")
 	d, _ := m.Check(context.Background(), "sess", "Bash", "rm -rf /")
 	if !promptCalled {
 		t.Error("dangerous must force prompt even with allow_permanent")
@@ -154,7 +154,7 @@ func TestCheck_TimeoutDenies(t *testing.T) {
 		func(ctx context.Context, req permission.Request) (permission.Decision, bool) {
 			<-ctx.Done() // wait until timeout fires
 			return permission.Deny, false
-		}, nil, 20*time.Millisecond)
+		}, nil, 20*time.Millisecond, "")
 	d, err := m.Check(context.Background(), "sess", "Bash", "echo")
 	if d != permission.Deny || !errors.Is(err, permission.ErrTimeout) {
 		t.Errorf("got %v %v", d, err)
@@ -169,7 +169,7 @@ func TestCheck_PermanentAllowAcrossSessions(t *testing.T) {
 		func(ctx context.Context, req permission.Request) (permission.Decision, bool) {
 			prompts++
 			return permission.AllowPermanent, true
-		}, nil, time.Second)
+		}, nil, time.Second, "")
 	// First session triggers prompt + persists.
 	_, _ = m.Check(context.Background(), "sessA", "Read", "docs/x.md")
 	if prompts != 1 {
@@ -179,6 +179,81 @@ func TestCheck_PermanentAllowAcrossSessions(t *testing.T) {
 	_, _ = m.Check(context.Background(), "sessB", "Read", "docs/x.md")
 	if prompts != 1 {
 		t.Errorf("permanent allow should skip prompt on second session, prompts=%d", prompts)
+	}
+}
+
+func TestCheck_DefaultDecisionFallsBack(t *testing.T) {
+	s := newStore(t)
+	promptCalled := false
+	m := permission.New(s,
+		func(ctx context.Context, req permission.Request) (permission.Decision, bool) {
+			promptCalled = true
+			return permission.Deny, true
+		}, nil, time.Second, permission.AllowPermanent)
+	d, err := m.Check(context.Background(), "sess", "Read", "file.txt")
+	if err != nil || d != permission.AllowPermanent {
+		t.Errorf("got %v %v", d, err)
+	}
+	if promptCalled {
+		t.Error("prompt should not fire when defaultDecision is set")
+	}
+}
+
+func TestCheck_DefaultDecisionEmptyStillPrompts(t *testing.T) {
+	s := newStore(t)
+	promptCalled := false
+	m := permission.New(s,
+		func(ctx context.Context, req permission.Request) (permission.Decision, bool) {
+			promptCalled = true
+			return permission.AllowSession, true
+		}, nil, time.Second, "")
+	d, _ := m.Check(context.Background(), "sess", "Bash", "echo")
+	if d != permission.AllowSession {
+		t.Errorf("got %v", d)
+	}
+	if !promptCalled {
+		t.Error("empty defaultDecision should still prompt")
+	}
+}
+
+func TestCheck_DangerousIgnoresDefaultDecision(t *testing.T) {
+	s := newStore(t)
+	promptCalled := false
+	m := permission.New(s,
+		func(ctx context.Context, req permission.Request) (permission.Decision, bool) {
+			promptCalled = true
+			return permission.Deny, true
+		},
+		func(tool, resource string) (bool, string) { return true, "destructive_rm" },
+		time.Second, permission.AllowPermanent)
+	d, _ := m.Check(context.Background(), "sess", "Bash", "rm -rf /")
+	if !promptCalled {
+		t.Error("dangerous must force prompt even with defaultDecision")
+	}
+	if d != permission.Deny {
+		t.Errorf("expected deny, got %v", d)
+	}
+}
+
+func TestCheck_DenyPermanentOverridesDefaultDecision(t *testing.T) {
+	s := newStore(t)
+	must(t, s.SavePermission(context.Background(), &store.Permission{
+		ID: "p1", Tool: "Read", Pattern: "**",
+		Decision: store.DecisionDenyPermanent, Scope: store.ScopePermanent,
+		CreatedAt: time.Now(),
+	}))
+	promptCalled := false
+	m := permission.New(s,
+		func(ctx context.Context, req permission.Request) (permission.Decision, bool) {
+			promptCalled = true
+			return permission.AllowSession, true
+		}, nil, time.Second, permission.AllowPermanent)
+	d, err := m.Check(context.Background(), "sess", "Read", "file.txt")
+	if err != nil || d != permission.DenyPermanent {
+		t.Errorf("deny_permanent should override defaultDecision: got %v %v", d, err)
+	}
+	if promptCalled {
+		t.Error("prompt should not fire when permanent deny matches")
 	}
 }
 

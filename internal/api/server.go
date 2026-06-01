@@ -42,6 +42,14 @@ type Config struct {
 	MaxConcurrentSessions   int
 	MaxHistoryTokens        int
 	Version                 string
+	PresetRules             []PresetRuleConfig
+}
+
+// PresetRuleConfig is a read-only copy of config.PresetRule for the API layer.
+type PresetRuleConfig struct {
+	Tool     string
+	Pattern  string
+	Decision string
 }
 
 // Server is the long-lived HTTP server bound by serve. Construct via
@@ -130,6 +138,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/sessions/{id}/approvals/{aid}", s.handleAdapterApproval)
 	mux.HandleFunc("/v1/sessions/{id}/stream", s.handleStream)
 	mux.HandleFunc("GET /v1/projects", s.handleListProjects)
+
+	mux.HandleFunc("GET /v1/permissions", s.handleListPermissions)
+	mux.HandleFunc("POST /v1/permissions", s.handleCreatePermission)
+	mux.HandleFunc("DELETE /v1/permissions/{id}", s.handleDeletePermission)
 
 	mux.HandleFunc("GET /v1/fs/list", s.handleFSList)
 	mux.HandleFunc("GET /health", s.handleHealth)

@@ -554,6 +554,42 @@ func TestPermission_PermanentVsSession(t *testing.T) {
 	}
 }
 
+func TestPermission_InsertOrReplace(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC()
+
+	must(t, s.SavePermission(ctx, &store.Permission{
+		ID:        "perm-abc",
+		Tool:      "Bash",
+		Pattern:   "git *",
+		Decision:  store.DecisionAllowPermanent,
+		Scope:     store.ScopePermanent,
+		CreatedAt: now,
+	}))
+
+	// Save same ID with different decision — should replace, not error.
+	must(t, s.SavePermission(ctx, &store.Permission{
+		ID:        "perm-abc",
+		Tool:      "Bash",
+		Pattern:   "git *",
+		Decision:  store.DecisionDenyPermanent,
+		Scope:     store.ScopePermanent,
+		CreatedAt: now.Add(time.Hour),
+	}))
+
+	got, err := s.ListPermissions(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("after replace, want 1 row, got %d", len(got))
+	}
+	if got[0].Decision != store.DecisionDenyPermanent {
+		t.Errorf("decision not updated: got %q", got[0].Decision)
+	}
+}
+
 func TestConcurrentAppend_NoDuplicateIdx(t *testing.T) {
 	// 50 goroutines each appending 20 events. We expect 1000 distinct idx
 	// values, no errors, no duplicates. Catches any "SetMaxOpenConns(1)"

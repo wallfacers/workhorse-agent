@@ -59,7 +59,7 @@ func newStack(t *testing.T, opts ...func(*api.Config)) *stack {
 	mock := mockprovider.New("anthropic")
 	reg := tools.NewRegistry()
 	orch := &agent.Orchestrator{Registry: reg, MaxParallel: 4, DefaultTimeout: 2 * time.Second}
-	permMgr := permission.New(st, nil, nil, 0)
+	permMgr := permission.New(st, nil, nil, 0, "")
 
 	var mgr *session.Manager
 	mgr = session.NewManager(session.ManagerOptions{
@@ -424,7 +424,7 @@ func newMemoryStack(t *testing.T) (*stack, string) {
 	mock := mockprovider.New("anthropic")
 	reg := tools.NewRegistry()
 	orch := &agent.Orchestrator{Registry: reg, MaxParallel: 4, DefaultTimeout: 2 * time.Second}
-	permMgr := permission.New(st, nil, nil, 0)
+	permMgr := permission.New(st, nil, nil, 0, "")
 
 	memLoader := &memory.Loader{ProfileDir: profileDir}
 
@@ -563,7 +563,7 @@ func newSearchStack(t *testing.T) *stack {
 	}
 
 	orch := &agent.Orchestrator{Registry: reg, MaxParallel: 4, DefaultTimeout: 2 * time.Second}
-	permMgr := permission.New(st, nil, nil, 0)
+	permMgr := permission.New(st, nil, nil, 0, "")
 
 	var mgr *session.Manager
 	mgr = session.NewManager(session.ManagerOptions{
