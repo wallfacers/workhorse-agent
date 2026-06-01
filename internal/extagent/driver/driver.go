@@ -95,8 +95,8 @@ func (d *Driver) Run(ctx context.Context, adapter *extagent.Adapter, promptText 
 		defer cr.cleanup()
 	}
 
-	// Set process group.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Set process group (platform-specific).
+	setProcessGroup(cmd)
 
 	// Build env.
 	cmd.Env, err = d.buildEnv(adapter)
@@ -528,8 +528,7 @@ func (d *Driver) teardown(cmd *exec.Cmd, adapter *extagent.Adapter) {
 		d.logger().Warn("driver: unknown cancel_signal, falling back to SIGINT",
 			"signal", adapter.Control.CancelSignal, "adapter", adapter.Name)
 	}
-	pgid := -cmd.Process.Pid
-	_ = syscall.Kill(pgid, sig)
+	killProcessGroup(cmd, sig)
 
 	// Skip grace period if the process has already exited.
 	if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
@@ -541,7 +540,7 @@ func (d *Driver) teardown(cmd *exec.Cmd, adapter *extagent.Adapter) {
 		grace = 5 * time.Second
 	}
 	time.Sleep(grace)
-	_ = syscall.Kill(pgid, syscall.SIGKILL)
+	killProcessGroup(cmd, syscall.SIGKILL)
 }
 
 func (d *Driver) logger() *slog.Logger {

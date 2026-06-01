@@ -4,8 +4,9 @@ package memory
 
 import (
 	"os"
-	"syscall"
-	unsafe "unsafe"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 func acquireLock(path string) (func(), error) {
@@ -14,10 +15,10 @@ func acquireLock(path string) (func(), error) {
 		return nil, err
 	}
 
-	var overlapped syscall.Overlapped
-	err = syscall.LockFileEx(
-		syscall.Handle(f.Fd()),
-		syscall.LOCKFILE_EXCLUSIVE_LOCK,
+	var overlapped windows.Overlapped
+	err = windows.LockFileEx(
+		windows.Handle(f.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK,
 		0, 0xFFFFFFFF, 0xFFFFFFFF,
 		&overlapped,
 	)
@@ -26,7 +27,7 @@ func acquireLock(path string) (func(), error) {
 		return nil, err
 	}
 	return func() {
-		syscall.UnlockFile(syscall.Handle(f.Fd()), 0, 0, 0xFFFFFFFF, 0xFFFFFFFF, &overlapped)
+		windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 0xFFFFFFFF, 0xFFFFFFFF, &overlapped)
 		f.Close()
 	}, nil
 }

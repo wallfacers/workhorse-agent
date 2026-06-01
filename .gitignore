@@ -16,3 +16,4 @@ coverage.*
 .DS_Store
 /workhorse-agent
 /docs/superpowers/
+workhorse-agent.exe
