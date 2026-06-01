@@ -126,11 +126,25 @@ func (s *Server) handleDebugEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// getDistro returns the Linux distribution name when running under WSL.
-// Returns empty string on non-WSL environments.
+// getDistro returns the WSL distribution identifier when running under WSL, or
+// "" otherwise. See distroName for why WSL_DISTRO_NAME is preferred.
+// (add-wsl-remote D-WSL-8 / A4)
 func getDistro() string {
 	if !isWSL() {
 		return ""
+	}
+	return distroName(os.Getenv("WSL_DISTRO_NAME"))
+}
+
+// distroName picks the WSL *registration* name — what `wsl.exe -d <distro>`
+// requires. WSL sets WSL_DISTRO_NAME to the registration name (as listed by
+// `wsl -l`, e.g. "Ubuntu") inside every distro, so it is preferred. The
+// /etc/os-release PRETTY_NAME fallback (e.g. "Ubuntu 24.04.3 LTS") is NOT a
+// valid `-d` argument and would yield WSL_E_DISTRO_NOT_FOUND on the host; it is
+// used only when the env var is unset.
+func distroName(envName string) string {
+	if name := strings.TrimSpace(envName); name != "" {
+		return name
 	}
 	return parseOSRelease()
 }

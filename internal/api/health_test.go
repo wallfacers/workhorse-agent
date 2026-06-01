@@ -124,6 +124,22 @@ func TestHealth_DistroOnlyOnWSL(t *testing.T) {
 	}
 }
 
+func TestDistroName_PrefersEnvOverOSRelease(t *testing.T) {
+	// WSL_DISTRO_NAME is the registration name `wsl.exe -d` needs; it wins over
+	// the /etc/os-release PRETTY_NAME fallback (add-wsl-remote D-WSL-8 / A4).
+	if got := distroName("Ubuntu"); got != "Ubuntu" {
+		t.Fatalf("env should win: got %q", got)
+	}
+	if got := distroName("  Ubuntu-22.04  "); got != "Ubuntu-22.04" {
+		t.Fatalf("env should be trimmed: got %q", got)
+	}
+	// Empty env → falls back to parseOSRelease() (host-dependent); the only
+	// invariant is it never returns the blank env value as a registration name.
+	if got := distroName("   "); got == "   " {
+		t.Fatalf("blank env must not be used verbatim: got %q", got)
+	}
+}
+
 func TestHealth_NoAuthRequired(t *testing.T) {
 	_, ts := newTestServer(t, func(c *Config) {
 		c.Auth = BearerConfig{Enabled: true, Token: "secret"}
