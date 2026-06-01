@@ -24,6 +24,10 @@ type Store interface {
 	// non-deleted session, with per-project session counts.
 	ListProjects(ctx context.Context) ([]*Project, error)
 	UpdateSession(ctx context.Context, s *Session) error
+	// UpdateSessionTitle updates only the title and updated_at for a session
+	// without requiring a full-row rebuild. Returns ErrNotFound if the session
+	// does not exist.
+	UpdateSessionTitle(ctx context.Context, id, title string) error
 	DeleteSession(ctx context.Context, id string) error
 	// PurgeSession hard-deletes a session and cascades to its messages, events,
 	// and tool_calls (the "delete also removes the transcript" contract).
@@ -39,6 +43,8 @@ type Store interface {
 	// ReplaceMessages atomically swaps a session's whole transcript (compaction
 	// rewrite). Passing an empty slice clears the transcript.
 	ReplaceMessages(ctx context.Context, sessionID string, msgs []*Message) error
+	// CountMessages returns the number of messages for a session.
+	CountMessages(ctx context.Context, sessionID string) (int, error)
 
 	// --- Event append + incremental query ---
 	// AppendEvent assigns the next idx and returns it. Callers should treat

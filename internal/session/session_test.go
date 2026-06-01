@@ -44,6 +44,8 @@ func (f *fakeStore) ListSessionsByWorkdir(context.Context, string) ([]*store.Ses
 }
 func (f *fakeStore) ListProjects(context.Context) ([]*store.Project, error) { return nil, nil }
 func (f *fakeStore) UpdateSession(context.Context, *store.Session) error    { return nil }
+func (f *fakeStore) UpdateSessionTitle(context.Context, string, string) error { return nil }
+func (f *fakeStore) CountMessages(context.Context, string) (int, error)     { return 0, nil }
 func (f *fakeStore) DeleteSession(context.Context, string) error            { return nil }
 func (f *fakeStore) PurgeSession(context.Context, string) error             { return nil }
 func (f *fakeStore) CountActiveSessions(context.Context) (int, error)       { return 0, nil }
@@ -265,13 +267,13 @@ func TestAllowedTools_RoundTrip(t *testing.T) {
 
 func TestHistory_AppendAndReplace(t *testing.T) {
 	s := New(Options{})
-	s.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "hi"}}})
-	s.AppendMessage(provider.Message{Role: provider.RoleAssistant, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "hello"}}})
+	s.AppendMessage(context.Background(), provider.Message{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "hi"}}})
+	s.AppendMessage(context.Background(), provider.Message{Role: provider.RoleAssistant, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "hello"}}})
 	hist := s.History()
 	if len(hist) != 2 {
 		t.Fatalf("expected 2 history entries, got %d", len(hist))
 	}
-	s.ReplaceHistory([]provider.Message{
+	s.ReplaceHistory(context.Background(), []provider.Message{
 		{Role: provider.RoleSystem, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "summary"}}},
 	})
 	hist = s.History()

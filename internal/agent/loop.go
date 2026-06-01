@@ -160,7 +160,7 @@ func (l *Loop) dispatchCompactIdle(ctx context.Context) {
 		_ = l.Session.Transition(session.StateCompacting, session.StateIdle)
 		return
 	}
-	l.Session.ReplaceHistory(newHistory)
+	l.Session.ReplaceHistory(context.Background(), newHistory)
 	_ = l.Session.Emit(ctx, "compaction", map[string]any{
 		"before_messages": result.BeforeMessages,
 		"after_messages":  result.AfterMessages,
@@ -212,7 +212,7 @@ func (l *Loop) runTurnSafe(parent context.Context, msg session.ClientMessage) {
 			map[string]any{"state": string(l.Session.State())}, true)
 		return
 	}
-	l.Session.AppendMessage(provider.Message{
+	l.Session.AppendMessage(context.Background(), provider.Message{
 		Role:    provider.RoleUser,
 		Content: []provider.ContentBlock{{Type: provider.BlockText, Text: u.Content}},
 	})
@@ -298,7 +298,7 @@ func (l *Loop) finishCancelledTurn() {
 				IsError:   true,
 			})
 		}
-		l.Session.AppendMessage(provider.Message{
+		l.Session.AppendMessage(context.Background(), provider.Message{
 			Role:    provider.RoleUser,
 			Content: blocks,
 		})
@@ -329,7 +329,7 @@ func (l *Loop) drainOrphanedPending() {
 			IsError:   true,
 		})
 	}
-	l.Session.AppendMessage(provider.Message{
+	l.Session.AppendMessage(context.Background(), provider.Message{
 		Role:    provider.RoleUser,
 		Content: blocks,
 	})
@@ -548,7 +548,7 @@ func (l *Loop) consumeProviderStream(ctx context.Context, events <-chan provider
 	// StopReason is recorded so the thinking strip rule can read the real
 	// turn boundary instead of re-deriving it from block shape.
 	if len(blocks) > 0 {
-		l.Session.AppendMessage(provider.Message{
+		l.Session.AppendMessage(context.Background(), provider.Message{
 			Role:       provider.RoleAssistant,
 			Content:    blocks,
 			StopReason: stopReason,
@@ -680,7 +680,7 @@ func (l *Loop) runToolBatch(ctx context.Context, calls []ToolCall) {
 			IsError:   isErr,
 		})
 	}
-	l.Session.AppendMessage(provider.Message{
+	l.Session.AppendMessage(context.Background(), provider.Message{
 		Role:    provider.RoleUser,
 		Content: contentBlocks,
 	})
@@ -816,7 +816,7 @@ func (l *Loop) runCompaction(ctx context.Context) error {
 	if !ok {
 		return nil
 	}
-	l.Session.ReplaceHistory(newHistory)
+	l.Session.ReplaceHistory(context.Background(), newHistory)
 	_ = l.Session.Emit(ctx, "compaction", map[string]any{
 		"before_tokens":   result.BeforeTokens,
 		"after_tokens":    result.AfterTokens,
@@ -846,7 +846,7 @@ func (l *Loop) handlePanic(parent context.Context, r any, stack []byte) {
 				IsError:   true,
 			})
 		}
-		l.Session.AppendMessage(provider.Message{
+		l.Session.AppendMessage(context.Background(), provider.Message{
 			Role:    provider.RoleUser,
 			Content: blocks,
 		})

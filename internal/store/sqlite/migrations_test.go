@@ -29,8 +29,8 @@ func TestMigration_IdempotentRerun(t *testing.T) {
 	if err := s.DB().QueryRowContext(ctx, "SELECT MAX(version) FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 3 {
-		t.Errorf("expected version 3 after first open, got %d", version)
+	if version != 4 {
+		t.Errorf("expected version 4 after first open, got %d", version)
 	}
 	s.Close()
 

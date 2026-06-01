@@ -316,10 +316,10 @@ func TestLoop_Compaction_TriggersAndPreservesErrors(t *testing.T) {
 	// "old + error" to preserve. ~100 chars each → ~25 tokens each.
 	longErr := strings.Repeat("E", 100)
 	longTxt := strings.Repeat("T", 100)
-	h.Session.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: longTxt}}})
-	h.Session.AppendMessage(provider.Message{Role: provider.RoleAssistant, Content: []provider.ContentBlock{{Type: provider.BlockToolUse, ToolUseID: "tu-old", ToolName: "Read", Input: json.RawMessage(`{}`)}}})
-	h.Session.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.BlockToolResult, ToolUseID: "tu-old", Output: longErr, IsError: true}}})
-	h.Session.AppendMessage(provider.Message{Role: provider.RoleAssistant, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: longTxt}}})
+	h.Session.AppendMessage(context.Background(), provider.Message{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: longTxt}}})
+	h.Session.AppendMessage(context.Background(), provider.Message{Role: provider.RoleAssistant, Content: []provider.ContentBlock{{Type: provider.BlockToolUse, ToolUseID: "tu-old", ToolName: "Read", Input: json.RawMessage(`{}`)}}})
+	h.Session.AppendMessage(context.Background(), provider.Message{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.BlockToolResult, ToolUseID: "tu-old", Output: longErr, IsError: true}}})
+	h.Session.AppendMessage(context.Background(), provider.Message{Role: provider.RoleAssistant, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: longTxt}}})
 
 	// Main provider returns end_turn after the user message.
 	h.Mock.QueueResponse([]provider.ProviderEvent{

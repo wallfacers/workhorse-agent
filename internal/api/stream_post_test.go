@@ -274,7 +274,7 @@ func TestStreamPost_409_HistoryTokenLimit(t *testing.T) {
 	sess := newSessionWithState(t, s, session.StateIdle)
 	// Append enough history to blow past the 1-token cap (EstimateTokens
 	// returns at least 1 for non-empty content).
-	sess.AppendMessage(provider.Message{
+	sess.AppendMessage(context.Background(), provider.Message{
 		Role:    provider.RoleUser,
 		Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "lots of words go here far beyond one token"}},
 	})

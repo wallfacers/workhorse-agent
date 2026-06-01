@@ -452,22 +452,20 @@ func (s *Session) History() []provider.Message {
 }
 
 // AppendMessage appends one message to the history under the session mutex.
-func (s *Session) AppendMessage(m provider.Message) {
+func (s *Session) AppendMessage(ctx context.Context, m provider.Message) {
 	s.mu.Lock()
 	s.history = append(s.history, m)
 	now := time.Now().UTC()
 	s.updatedAt = now
-	s.mu.Unlock()
 
-	// Persist non-ephemeral transcript so it survives restart and feeds history
-	// rehydration (add-project-sessions D9). Failure is logged, never blocks the
-	// turn — the in-memory history is already authoritative for the live loop.
 	if s.store == nil || s.Ephemeral {
+		s.mu.Unlock()
 		return
 	}
 	content, err := marshalContent(m.Content)
 	if err != nil {
 		slog.Error("session: marshal message content", "session", s.ID, "err", err)
+		s.mu.Unlock()
 		return
 	}
 	row := &store.Message{
@@ -475,47 +473,63 @@ func (s *Session) AppendMessage(m provider.Message) {
 		SessionID:   s.ID,
 		Role:        string(m.Role),
 		ContentJSON: content,
+		StopReason:  string(m.StopReason),
 		CreatedAt:   now,
 	}
-	if err := s.store.AppendMessage(context.Background(), row); err != nil {
+	if err := s.store.AppendMessage(ctx, row); err != nil {
 		slog.Error("session: persist message", "session", s.ID, "err", err)
 	}
+	s.mu.Unlock()
 }
 
 // ReplaceHistory swaps the entire history slice. Used by the compactor after a
-// summarising pass.
-func (s *Session) ReplaceHistory(msgs []provider.Message) {
-	s.mu.Lock()
-	s.history = append([]provider.Message(nil), msgs...)
-	now := time.Now().UTC()
-	s.updatedAt = now
-	s.mu.Unlock()
-
-	// Keep the persisted transcript equal to the in-memory context the model
-	// sees, so a hydrated session resumes from the compacted history (D9). The
-	// per-index microsecond offset preserves order under ListMessages'
-	// (created_at, id) sort.
-	if s.store == nil || s.Ephemeral {
-		return
+// summarising pass. All messages are serialized before the in-memory history is
+// swapped so that a marshal failure does not leave memory and store diverged.
+func (s *Session) ReplaceHistory(ctx context.Context, msgs []provider.Message) {
+	type serialized struct {
+		role    string
+		content string
+		reason  string
 	}
-	rows := make([]*store.Message, 0, len(msgs))
-	for i, m := range msgs {
+	pre := make([]serialized, 0, len(msgs))
+	for _, m := range msgs {
 		content, err := marshalContent(m.Content)
 		if err != nil {
 			slog.Error("session: marshal message content", "session", s.ID, "err", err)
 			return
 		}
+		pre = append(pre, serialized{
+			role:    string(m.Role),
+			content: content,
+			reason:  string(m.StopReason),
+		})
+	}
+
+	s.mu.Lock()
+	s.history = append([]provider.Message(nil), msgs...)
+	now := time.Now().UTC()
+	s.updatedAt = now
+
+	if s.store == nil || s.Ephemeral {
+		s.mu.Unlock()
+		return
+	}
+
+	rows := make([]*store.Message, 0, len(pre))
+	for i, sm := range pre {
 		rows = append(rows, &store.Message{
 			ID:          idgen.NewULID(),
 			SessionID:   s.ID,
-			Role:        string(m.Role),
-			ContentJSON: content,
+			Role:        sm.role,
+			ContentJSON: sm.content,
+			StopReason:  sm.reason,
 			CreatedAt:   now.Add(time.Duration(i) * time.Microsecond),
 		})
 	}
-	if err := s.store.ReplaceMessages(context.Background(), s.ID, rows); err != nil {
+	if err := s.store.ReplaceMessages(ctx, s.ID, rows); err != nil {
 		slog.Error("session: replace messages", "session", s.ID, "err", err)
 	}
+	s.mu.Unlock()
 }
 
 // Status projects the six-state machine onto the binary idle|running the wire
@@ -548,9 +562,7 @@ func (s *Session) SetTitle(t string) {
 
 // PersistTitle writes the current title to the store. Used by the agent loop
 // after deriving the title from the first user message. No-op for ephemeral
-// or store-less sessions. The full row is rebuilt from the session's own state
-// because UpdateSession overwrites every column — a partial row would blank
-// workdir/model/env and break the project listing.
+// or store-less sessions.
 func (s *Session) PersistTitle(ctx context.Context) {
 	s.mu.Lock()
 	t := s.title
@@ -558,22 +570,7 @@ func (s *Session) PersistTitle(ctx context.Context) {
 	if s.store == nil || s.Ephemeral {
 		return
 	}
-	env, err := json.Marshal(s.Env)
-	if err != nil {
-		env = []byte("{}")
-	}
-	if err := s.store.UpdateSession(ctx, &store.Session{
-		ID:        s.ID,
-		ParentID:  s.ParentID,
-		State:     store.SessionState(s.State()),
-		Workdir:   s.Workdir,
-		EnvJSON:   string(env),
-		AgentType: s.AgentType,
-		Model:     s.Model,
-		Title:     t,
-		CreatedAt: s.CreatedAt,
-		UpdatedAt: time.Now().UTC(),
-	}); err != nil {
+	if err := s.store.UpdateSessionTitle(ctx, s.ID, t); err != nil {
 		slog.Error("session: persist title", "session", s.ID, "err", err)
 	}
 }

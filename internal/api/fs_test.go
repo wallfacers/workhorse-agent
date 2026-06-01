@@ -139,6 +139,43 @@ func TestFSList_VirtualFS(t *testing.T) {
 	}
 }
 
+func TestFSList_OutsideWorkdir(t *testing.T) {
+	dir := t.TempDir()
+	_, ts := newTestServer(t, func(c *Config) {
+		c.DefaultWorkdir = dir
+	})
+
+	resp, err := http.Get(ts.URL + "/v1/fs/list?path=/etc")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: %d want 403 (path outside workdir)", resp.StatusCode)
+	}
+}
+
+func TestFSList_SymlinkEscapesWorkdir(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "escape")
+	if err := os.Symlink("/etc", link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	_, ts := newTestServer(t, func(c *Config) {
+		c.DefaultWorkdir = dir
+	})
+
+	resp, err := http.Get(ts.URL + "/v1/fs/list?path=" + link)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: %d want 403 (symlink escapes workdir)", resp.StatusCode)
+	}
+}
+
 func TestFSList_SymlinkResolved(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target")

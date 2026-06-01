@@ -170,7 +170,7 @@ func TestDispatch_ChildInheritsWorkdir_HistoryIndependent(t *testing.T) {
 	parent := h.parent(t, session.Options{Workdir: "/proj"})
 	defer h.mgr.DeleteSession(context.Background(), parent.ID, time.Second)
 	// Give the parent some history so we can prove the child doesn't see it.
-	parent.AppendMessage(provider.Message{
+	parent.AppendMessage(context.Background(), provider.Message{
 		Role:    provider.RoleUser,
 		Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "old parent turn"}},
 	})

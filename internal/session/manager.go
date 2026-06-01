@@ -142,6 +142,8 @@ func (m *Manager) persistNew(ctx context.Context, s *Session) error {
 		EnvJSON:   string(envJSON),
 		AgentType: s.AgentType,
 		Model:     s.Model,
+		Provider:  s.ProviderName,
+		Title:     s.Title(),
 		Ephemeral: false,
 		CreatedAt: s.CreatedAt,
 		UpdatedAt: s.CreatedAt,
@@ -172,6 +174,10 @@ func (m *Manager) GetOrHydrate(ctx context.Context, id string) (*Session, error)
 	}
 	if m.store == nil {
 		return nil, ErrNotFound
+	}
+
+	if m.maxConcurrent > 0 && len(m.sessions) >= m.maxConcurrent {
+		return nil, ErrTooManyConcurrent
 	}
 
 	row, err := m.store.GetSession(ctx, id)
@@ -206,20 +212,20 @@ func (m *Manager) GetOrHydrate(ctx context.Context, id string) (*Session, error)
 }
 
 // buildHydrated reconstructs an idle Session from its persisted row and
-// transcript. Provider name is not persisted, so the runner factory's default
-// provider applies; the stored model is preserved.
+// transcript. The stored model and provider are preserved.
 func (m *Manager) buildHydrated(ctx context.Context, row *store.Session) (*Session, error) {
 	env := map[string]string{}
 	if row.EnvJSON != "" {
 		_ = json.Unmarshal([]byte(row.EnvJSON), &env)
 	}
 	sess := New(Options{
-		Workdir:   row.Workdir,
-		Env:       env,
-		Model:     row.Model,
-		AgentType: row.AgentType,
-		ParentID:  row.ParentID,
-		Store:     m.store,
+		Workdir:      row.Workdir,
+		Env:          env,
+		Model:        row.Model,
+		ProviderName: row.Provider,
+		AgentType:    row.AgentType,
+		ParentID:     row.ParentID,
+		Store:        m.store,
 	})
 	sess.ID = row.ID
 	sess.CreatedAt = row.CreatedAt
@@ -235,7 +241,11 @@ func (m *Manager) buildHydrated(ctx context.Context, row *store.Session) (*Sessi
 		if err != nil {
 			return nil, fmt.Errorf("session: hydrate decode message %s: %w", mm.ID, err)
 		}
-		hist = append(hist, provider.Message{Role: provider.Role(mm.Role), Content: blocks})
+		hist = append(hist, provider.Message{
+			Role:       provider.Role(mm.Role),
+			Content:    blocks,
+			StopReason: mm.StopReason,
+		})
 	}
 	sess.RestoreHistory(hist)
 	return sess, nil
@@ -327,6 +337,11 @@ func (m *Manager) DeleteSession(ctx context.Context, id string, drainTimeout tim
 	if wasLive {
 		delete(m.sessions, id)
 	}
+	// Soft-delete the store row while holding the lock so a concurrent
+	// GetOrHydrate sees DeletedAt != nil and refuses to hydrate.
+	if m.store != nil {
+		_ = m.store.DeleteSession(ctx, id)
+	}
 	m.mu.Unlock()
 
 	if wasLive {
@@ -334,11 +349,11 @@ func (m *Manager) DeleteSession(ctx context.Context, id string, drainTimeout tim
 		if drainTimeout <= 0 {
 			drainTimeout = 5 * time.Second
 		}
+		timer := time.NewTimer(drainTimeout)
 		select {
 		case <-active.done:
-		case <-time.After(drainTimeout):
-			// Goroutine wedged past timeout. We've already removed the entry;
-			// let it leak so the manager state stays clean.
+			timer.Stop()
+		case <-timer.C:
 		}
 	}
 
@@ -386,7 +401,7 @@ func (m *Manager) Shutdown(drainTimeout time.Duration) {
 		}
 		select {
 		case <-a.done:
-		case <-time.After(remaining):
+		case <-time.NewTimer(remaining).C:
 			return
 		}
 	}

@@ -138,12 +138,21 @@ var v3SessionTitleDown = []string{
 	// downgrade. The schema_version bump is what gates re-application.
 }
 
+// v4ProviderAndStopReason persists the provider name and per-message stop_reason
+// so that hydrated sessions restore accurate turn-boundary metadata and provider
+// identity without relying on heuristics or defaults.
+var v4ProviderAndStopReason = []string{
+	`ALTER TABLE sessions ADD COLUMN provider TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE messages ADD COLUMN stop_reason TEXT NOT NULL DEFAULT ''`,
+}
+
 // migrationsByVersion is the ordered list of all migrations. Each entry is
 // applied inside its own transaction; schema_version is bumped per step.
 var migrationsByVersion = []Migration{
 	{Version: 1, Up: v1Schema, Down: nil},
 	{Version: 2, Up: append(v2MemoryFTS, v2Backfill...), Down: v2MemoryFTSDown},
 	{Version: 3, Up: v3SessionTitle, Down: v3SessionTitleDown},
+	{Version: 4, Up: v4ProviderAndStopReason, Down: nil},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

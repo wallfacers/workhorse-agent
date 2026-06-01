@@ -35,11 +35,11 @@
 - [x] 6.2 Unit tests for §2 and the protocol decode pass
 - [x] 6.3 Integration test (mirroring existing stream/permission tests): publish a 1-tool catalog → drive a turn where the model calls it → assert `frontend_tool_use` emitted, POST a `frontend_tool_result`, assert the turn completes with the value; and a timeout case asserting `is_error`
 - [x] 6.4 Collision test: publish an entry colliding with a server-side tool → assert it lands in `rejected` and the server-side tool still runs
-- [ ] 6.5 End-to-end with workhorse-assistant: client connects, publishes its catalog, model opens a tab / reads a button (cross-repo; coordinate the `/stream` alignment on the client side)
+- [x] 6.5 End-to-end with workhorse-assistant: client connects, publishes its catalog, model opens a tab / reads a button (cross-repo; coordinate the `/stream` alignment on the client side)
 
 ## 7. Cross-repo follow-up (workhorse-assistant, separate repo)
 
 > Tracked here for coordination; lands in the client repo on its own cadence.
 
-- [ ] 7.1 Align the Rust bridge (`src-tauri/src/agent/mod.rs`) to the real protocol: `POST /v1/sessions` with `{provider, model, workdir}` and read `id`; use `POST /v1/sessions/{id}/stream` with `ClientMessage{type,payload}` envelopes for `publish_frontend_tools` and `frontend_tool_result`; subscribe `GET …/stream` and relay `frontend_tool_use`
-- [ ] 7.2 Update `contract.md` to the real endpoint/message/event names
+- [x] 7.1 Align the Rust bridge (`src-tauri/src/agent/mod.rs`) to the real protocol: `POST /v1/sessions` with `{provider, model, workdir}` and read `id`; use `POST /v1/sessions/{id}/stream` with `ClientMessage{type,payload}` envelopes for `publish_frontend_tools` and `frontend_tool_result`; subscribe `GET …/stream` and relay `frontend_tool_use`
+- [x] 7.2 Update `contract.md` to the real endpoint/message/event names

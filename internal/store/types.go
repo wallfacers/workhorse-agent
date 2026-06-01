@@ -31,6 +31,7 @@ type Session struct {
 	EnvJSON   string
 	AgentType string
 	Model     string
+	Provider  string
 	Title     string
 	Ephemeral bool
 	CreatedAt time.Time
@@ -63,6 +64,7 @@ type Message struct {
 	Role        string
 	ContentJSON string
 	TokenCount  int
+	StopReason  string
 	CreatedAt   time.Time
 }
 

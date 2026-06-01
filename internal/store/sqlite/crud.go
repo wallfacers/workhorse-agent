@@ -50,10 +50,10 @@ func fromNullableMicros(n sql.NullInt64) *time.Time {
 func (s *Store) CreateSession(ctx context.Context, sess *store.Session) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO sessions(id, parent_id, state, workdir, env_json,
-			agent_type, model, title, ephemeral, created_at, updated_at, deleted_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+			agent_type, model, provider, title, ephemeral, created_at, updated_at, deleted_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		sess.ID, sess.ParentID, string(sess.State), sess.Workdir, sess.EnvJSON,
-		sess.AgentType, sess.Model, sess.Title, boolToInt(sess.Ephemeral),
+		sess.AgentType, sess.Model, sess.Provider, sess.Title, boolToInt(sess.Ephemeral),
 		toMicros(sess.CreatedAt), toMicros(sess.UpdatedAt), nullableMicros(sess.DeletedAt))
 	if err != nil {
 		return fmt.Errorf("sqlite: CreateSession: %w", err)
@@ -63,14 +63,14 @@ func (s *Store) CreateSession(ctx context.Context, sess *store.Session) error {
 
 func (s *Store) GetSession(ctx context.Context, id string) (*store.Session, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, parent_id, state, workdir, env_json, agent_type, model, title,
+		`SELECT id, parent_id, state, workdir, env_json, agent_type, model, provider, title,
 			ephemeral, created_at, updated_at, deleted_at
 		 FROM sessions WHERE id = ?`, id)
 	return scanSession(row)
 }
 
 func (s *Store) ListSessions(ctx context.Context, includeDeleted bool) ([]*store.Session, error) {
-	q := `SELECT id, parent_id, state, workdir, env_json, agent_type, model, title,
+	q := `SELECT id, parent_id, state, workdir, env_json, agent_type, model, provider, title,
 			ephemeral, created_at, updated_at, deleted_at
 		  FROM sessions`
 	if !includeDeleted {
@@ -101,7 +101,7 @@ func (s *Store) ListSessions(ctx context.Context, includeDeleted bool) ([]*store
 func (s *Store) ListSessionsByWorkdir(ctx context.Context, workdir string) ([]*store.SessionSummary, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT s.id, s.parent_id, s.state, s.workdir, s.env_json, s.agent_type,
-			s.model, s.title, s.ephemeral, s.created_at, s.updated_at, s.deleted_at,
+			s.model, s.provider, s.title, s.ephemeral, s.created_at, s.updated_at, s.deleted_at,
 			(SELECT count(*) FROM messages m WHERE m.session_id = s.id) AS msg_count,
 			coalesce((SELECT extract_text(m.content_json) FROM messages m
 				WHERE m.session_id = s.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1), '') AS last_preview
@@ -121,7 +121,7 @@ func (s *Store) ListSessionsByWorkdir(ctx context.Context, workdir string) ([]*s
 		var createdAt, updatedAt int64
 		var deletedAt sql.NullInt64
 		if err := rows.Scan(&sum.ID, &sum.ParentID, &state, &sum.Workdir,
-			&sum.EnvJSON, &sum.AgentType, &sum.Model, &sum.Title, &ephemeral,
+			&sum.EnvJSON, &sum.AgentType, &sum.Model, &sum.Provider, &sum.Title, &ephemeral,
 			&createdAt, &updatedAt, &deletedAt,
 			&sum.MessageCount, &sum.LastMessagePreview); err != nil {
 			return nil, fmt.Errorf("sqlite: scan session summary: %w", err)
@@ -163,10 +163,10 @@ func (s *Store) ListProjects(ctx context.Context) ([]*store.Project, error) {
 func (s *Store) UpdateSession(ctx context.Context, sess *store.Session) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET parent_id=?, state=?, workdir=?, env_json=?,
-			agent_type=?, model=?, title=?, ephemeral=?, updated_at=?, deleted_at=?
+			agent_type=?, model=?, provider=?, title=?, ephemeral=?, updated_at=?, deleted_at=?
 		 WHERE id=?`,
 		sess.ParentID, string(sess.State), sess.Workdir, sess.EnvJSON,
-		sess.AgentType, sess.Model, sess.Title, boolToInt(sess.Ephemeral),
+		sess.AgentType, sess.Model, sess.Provider, sess.Title, boolToInt(sess.Ephemeral),
 		toMicros(sess.UpdatedAt), nullableMicros(sess.DeletedAt), sess.ID)
 	if err != nil {
 		return fmt.Errorf("sqlite: UpdateSession: %w", err)
@@ -231,6 +231,25 @@ func (s *Store) CountActiveSessions(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+func (s *Store) UpdateSessionTitle(ctx context.Context, id, title string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?`,
+		title, toMicros(time.Now().UTC()), id)
+	if err != nil {
+		return fmt.Errorf("sqlite: UpdateSessionTitle: %w", err)
+	}
+	return ensureRowsAffected(res, store.ErrNotFound)
+}
+
+func (s *Store) CountMessages(ctx context.Context, sessionID string) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM messages WHERE session_id = ?`, sessionID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("sqlite: CountMessages: %w", err)
+	}
+	return n, nil
+}
+
 // scanner is the smallest interface that both *sql.Row and *sql.Rows satisfy
 // for our purposes — lets us share the column ordering between Get and List.
 type scanner interface {
@@ -244,7 +263,7 @@ func scanSession(sc scanner) (*store.Session, error) {
 	var createdAt, updatedAt int64
 	var deletedAt sql.NullInt64
 	if err := sc.Scan(&sess.ID, &sess.ParentID, &state, &sess.Workdir,
-		&sess.EnvJSON, &sess.AgentType, &sess.Model, &sess.Title, &ephemeral,
+		&sess.EnvJSON, &sess.AgentType, &sess.Model, &sess.Provider, &sess.Title, &ephemeral,
 		&createdAt, &updatedAt, &deletedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -263,9 +282,9 @@ func scanSession(sc scanner) (*store.Session, error) {
 
 func (s *Store) AppendMessage(ctx context.Context, m *store.Message) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO messages(id, session_id, role, content_json, token_count, created_at)
-		 VALUES (?,?,?,?,?,?)`,
-		m.ID, m.SessionID, m.Role, m.ContentJSON, m.TokenCount, toMicros(m.CreatedAt))
+		`INSERT INTO messages(id, session_id, role, content_json, stop_reason, token_count, created_at)
+		 VALUES (?,?,?,?,?,?,?)`,
+		m.ID, m.SessionID, m.Role, m.ContentJSON, m.StopReason, m.TokenCount, toMicros(m.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("sqlite: AppendMessage: %w", err)
 	}
@@ -287,9 +306,9 @@ func (s *Store) ReplaceMessages(ctx context.Context, sessionID string, msgs []*s
 	}
 	for _, m := range msgs {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO messages(id, session_id, role, content_json, token_count, created_at)
-			 VALUES (?,?,?,?,?,?)`,
-			m.ID, m.SessionID, m.Role, m.ContentJSON, m.TokenCount, toMicros(m.CreatedAt)); err != nil {
+			`INSERT INTO messages(id, session_id, role, content_json, stop_reason, token_count, created_at)
+			 VALUES (?,?,?,?,?,?,?)`,
+			m.ID, m.SessionID, m.Role, m.ContentJSON, m.StopReason, m.TokenCount, toMicros(m.CreatedAt)); err != nil {
 			return fmt.Errorf("sqlite: ReplaceMessages insert: %w", err)
 		}
 	}
@@ -301,7 +320,7 @@ func (s *Store) ReplaceMessages(ctx context.Context, sessionID string, msgs []*s
 
 func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]*store.Message, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, role, content_json, token_count, created_at
+		`SELECT id, session_id, role, content_json, stop_reason, token_count, created_at
 		 FROM messages WHERE session_id = ? ORDER BY created_at, id`, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: ListMessages: %w", err)
@@ -313,7 +332,7 @@ func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]*store.Me
 		var m store.Message
 		var createdAt int64
 		if err := rows.Scan(&m.ID, &m.SessionID, &m.Role, &m.ContentJSON,
-			&m.TokenCount, &createdAt); err != nil {
+			&m.StopReason, &m.TokenCount, &createdAt); err != nil {
 			return nil, fmt.Errorf("sqlite: scan message: %w", err)
 		}
 		m.CreatedAt = fromMicros(createdAt)

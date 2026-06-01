@@ -55,6 +55,11 @@ func (s *Server) handleFSList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !isWithinWorkdir(clean, s.cfg.DefaultWorkdir) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden"})
+		return
+	}
+
 	info, err := os.Stat(clean)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -110,4 +115,16 @@ func isVirtualFS(p string) bool {
 		}
 	}
 	return false
+}
+
+// isWithinWorkdir returns true if path is equal to or a descendant of workdir.
+func isWithinWorkdir(path, workdir string) bool {
+	if workdir == "" {
+		return true
+	}
+	resolvedWorkdir, err := filepath.EvalSymlinks(workdir)
+	if err != nil {
+		return false
+	}
+	return strings.HasPrefix(path, resolvedWorkdir+"/") || path == resolvedWorkdir
 }

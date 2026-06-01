@@ -3,10 +3,10 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/wallfacers/workhorse-agent/internal/api/protocol"
 	"github.com/wallfacers/workhorse-agent/internal/provider"
@@ -99,6 +99,21 @@ func previewLine(s string) string {
 		return string(r[:120]) + "…"
 	}
 	return s
+}
+
+func sanitizeTitle(raw string) (string, error) {
+	t := strings.TrimSpace(raw)
+	if i := strings.IndexAny(t, "\r\n"); i >= 0 {
+		t = t[:i]
+	}
+	r := []rune(t)
+	if len(r) > 200 {
+		t = string(r[:197]) + "..."
+	}
+	if t == "" {
+		return "", fmt.Errorf("title must not be empty")
+	}
+	return t, nil
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
@@ -224,7 +239,11 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	if s.store != nil {
 		row, serr := s.store.GetSession(r.Context(), id)
 		if serr == nil && row.DeletedAt == nil {
-			writeJSON(w, http.StatusOK, metaFromSummary(&store.SessionSummary{Session: *row}, "idle"))
+			msgCount, _ := s.store.CountMessages(r.Context(), id)
+			writeJSON(w, http.StatusOK, metaFromSummary(&store.SessionSummary{
+				Session:      *row,
+				MessageCount: msgCount,
+			}, "idle"))
 			return
 		}
 	}
@@ -260,6 +279,11 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "bad_request", "message": "invalid JSON body"})
 		return
 	}
+	title, titleErr := sanitizeTitle(req.Title)
+	if titleErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "bad_request", "message": titleErr.Error()})
+		return
+	}
 
 	live, liveErr := s.manager.GetSession(id)
 
@@ -275,15 +299,14 @@ func (s *Server) handleRenameSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if liveErr == nil {
-		live.SetTitle(req.Title)
+		live.SetTitle(title)
 	}
 	if row != nil {
-		row.Title = req.Title
-		row.UpdatedAt = time.Now().UTC()
-		if err := s.store.UpdateSession(r.Context(), row); err != nil {
+		if err := s.store.UpdateSessionTitle(r.Context(), id, title); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"code": "internal", "message": "rename failed"})
 			return
 		}
+		row.Title = title
 	}
 
 	if liveErr == nil {
@@ -457,7 +480,7 @@ func buildHistory(msgs []*store.Message) []historyMessage {
 	}
 	parsedMsgs := make([]parsed, 0, len(msgs))
 	for _, m := range msgs {
-		blocks := unmarshalContentBlocks(m.ContentJSON)
+		blocks, _ := session.DecodeContent(m.ContentJSON)
 		parsedMsgs = append(parsedMsgs, parsed{id: m.ID, role: m.Role, blocks: blocks})
 	}
 
@@ -476,7 +499,7 @@ func buildHistory(msgs []*store.Message) []historyMessage {
 				pi := len(parts)
 				parts = append(parts, historyPart{
 					Type: "tool_call", ID: b.ToolUseID, Name: b.ToolName,
-					Input: b.Input, Status: "done",
+					Input: b.Input, Status: "pending",
 				})
 				toolCallMap[b.ToolUseID] = toolCallRef{msgIdx: mi, partIdx: pi}
 			case provider.BlockToolResult:
@@ -484,6 +507,8 @@ func buildHistory(msgs []*store.Message) []historyMessage {
 					tc := &allParts[ref.msgIdx][ref.partIdx]
 					if b.IsError {
 						tc.Status = "error"
+					} else {
+						tc.Status = "done"
 					}
 					if b.Output != "" {
 						raw := json.RawMessage(b.Output)
@@ -507,38 +532,6 @@ func buildHistory(msgs []*store.Message) []historyMessage {
 		result = append(result, historyMessage{ID: pm.id, Role: pm.role, Parts: allParts[i]})
 	}
 	return result
-}
-
-// unmarshalContentBlocks parses stored content_json back to ContentBlock slices.
-func unmarshalContentBlocks(s string) []provider.ContentBlock {
-	if s == "" {
-		return nil
-	}
-	type sb struct {
-		Type         provider.BlockType `json:"type"`
-		Text         string             `json:"text,omitempty"`
-		ToolUseID    string             `json:"toolUseId,omitempty"`
-		ToolName     string             `json:"toolName,omitempty"`
-		Input        json.RawMessage    `json:"input,omitempty"`
-		Output       string             `json:"output,omitempty"`
-		IsError      bool               `json:"isError,omitempty"`
-		Thinking     string             `json:"thinking,omitempty"`
-		Signature    string             `json:"signature,omitempty"`
-		RedactedData string             `json:"redactedData,omitempty"`
-	}
-	var in []sb
-	if err := json.Unmarshal([]byte(s), &in); err != nil {
-		return nil
-	}
-	out := make([]provider.ContentBlock, 0, len(in))
-	for _, b := range in {
-		out = append(out, provider.ContentBlock{
-			Type: b.Type, Text: b.Text, ToolUseID: b.ToolUseID, ToolName: b.ToolName,
-			Input: b.Input, Output: b.Output, IsError: b.IsError,
-			Thinking: b.Thinking, Signature: b.Signature, RedactedData: b.RedactedData,
-		})
-	}
-	return out
 }
 
 // requireJSONBody enforces Content-Type: application/json on POST. Returns

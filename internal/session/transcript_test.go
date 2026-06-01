@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"encoding/json"
 	"reflect"
 	"testing"
@@ -46,7 +47,7 @@ func TestAppendMessagePersists(t *testing.T) {
 	s := New(Options{Store: fs, Workdir: "/tmp"})
 	blocks := []provider.ContentBlock{{Type: provider.BlockText, Text: "hi"}}
 
-	s.AppendMessage(provider.Message{Role: provider.RoleUser, Content: blocks})
+	s.AppendMessage(context.Background(), provider.Message{Role: provider.RoleUser, Content: blocks})
 
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -82,7 +83,7 @@ func TestAppendMessageEphemeralSkipsStore(t *testing.T) {
 	fs := &fakeStore{}
 	s := New(Options{Store: fs, Workdir: "/tmp", Ephemeral: true})
 
-	s.AppendMessage(provider.Message{Role: provider.RoleAssistant, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "x"}}})
+	s.AppendMessage(context.Background(), provider.Message{Role: provider.RoleAssistant, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "x"}}})
 
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -100,13 +101,13 @@ func TestAppendMessageEphemeralSkipsStore(t *testing.T) {
 func TestReplaceHistoryPersists(t *testing.T) {
 	fs := &fakeStore{}
 	s := New(Options{Store: fs, Workdir: "/tmp"})
-	s.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "one"}}})
-	s.AppendMessage(provider.Message{Role: provider.RoleAssistant, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "two"}}})
+	s.AppendMessage(context.Background(), provider.Message{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "one"}}})
+	s.AppendMessage(context.Background(), provider.Message{Role: provider.RoleAssistant, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "two"}}})
 
 	summary := []provider.Message{
 		{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "summary"}}},
 	}
-	s.ReplaceHistory(summary)
+	s.ReplaceHistory(context.Background(), summary)
 
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
@@ -130,8 +131,8 @@ func TestReplaceHistoryPersists(t *testing.T) {
 func TestReplaceHistoryEphemeralSkipsStore(t *testing.T) {
 	fs := &fakeStore{}
 	s := New(Options{Store: fs, Workdir: "/tmp", Ephemeral: true})
-	s.AppendMessage(provider.Message{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "x"}}})
-	s.ReplaceHistory([]provider.Message{{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "y"}}}})
+	s.AppendMessage(context.Background(), provider.Message{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "x"}}})
+	s.ReplaceHistory(context.Background(), []provider.Message{{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "y"}}}})
 
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
