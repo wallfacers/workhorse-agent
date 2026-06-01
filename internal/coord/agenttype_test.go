@@ -204,3 +204,16 @@ max_iterations: 99
 		}
 	}
 }
+
+func TestAgentTypeInheritsInstructions(t *testing.T) {
+	cases := map[string]bool{
+		"":                       true,  // top-level / generic dispatch
+		"code-reviewer":          true,  // ordinary project sub-agent
+		AdapterGeneratorTypeName: false, // locked-down internal type
+	}
+	for agentType, want := range cases {
+		if got := AgentTypeInheritsInstructions(agentType); got != want {
+			t.Errorf("AgentTypeInheritsInstructions(%q) = %v, want %v", agentType, got, want)
+		}
+	}
+}

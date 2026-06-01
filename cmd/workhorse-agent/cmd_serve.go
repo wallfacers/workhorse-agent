@@ -510,12 +510,19 @@ func newRunnerFactory(
 		}
 		sess.MemorySnapshot = snap
 
-		instrSnap, err := instrLoader.Load(sess.Workdir)
-		if err != nil {
-			slog.Warn("instruction snapshot load failed, proceeding without instructions", "error", err)
+		// Locked-down internal agent types (adapter-generator) do not inherit
+		// project instructions: their prompt is a fixed sandboxed surface and
+		// arbitrary AGENTS.md content is a prompt-injection vector. Leaving both
+		// fields nil yields an empty instructions block and a nil resolver, both
+		// handled by the downstream nil checks.
+		if coord.AgentTypeInheritsInstructions(sess.AgentType) {
+			instrSnap, err := instrLoader.Load(sess.Workdir)
+			if err != nil {
+				slog.Warn("instruction snapshot load failed, proceeding without instructions", "error", err)
+			}
+			sess.InstructionSnapshot = instrSnap
+			sess.InstructionResolver = instructions.NewResolver(instrSnap)
 		}
-		sess.InstructionSnapshot = instrSnap
-		sess.InstructionResolver = instructions.NewResolver(instrSnap)
 
 		provName := sess.ProviderName
 		if provName == "" {
@@ -584,10 +591,10 @@ func newRunnerFactory(
 			_ = taskSess.Emit(ctx, string(protocol.EventTaskUpdate), map[string]any{"tasks": tasks})
 		})
 		loop.ToolEnv = &tools.Env{
-			SessionID:        sess.ID,
-			Workdir:          sess.Workdir,
-			Env:              sess.Env,
-			ExtAgentRegistry: extReg,
+			SessionID:           sess.ID,
+			Workdir:             sess.Workdir,
+			Env:                 sess.Env,
+			ExtAgentRegistry:    extReg,
 			TaskList:            taskStore,
 			InstructionResolver: sess.InstructionResolver,
 		}

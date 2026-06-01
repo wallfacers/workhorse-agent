@@ -13,6 +13,20 @@ import (
 // lockdown branch) can spell it consistently.
 const AdapterGeneratorTypeName = "adapter-generator"
 
+// AgentTypeInheritsInstructions reports whether a session of the given agent
+// type should receive project/global instruction (AGENTS.md) injection — both
+// the system-prompt snapshot and Read-tool proximity injection.
+//
+// General sessions (the empty agent type for top-level and generic Dispatch
+// children) inherit, so a child editing code in the project still sees its
+// conventions. Internal system agent types are excluded: their prompt is a
+// fixed, sandboxed surface and arbitrary project AGENTS.md content is both
+// irrelevant noise and a prompt-injection vector into a security-sensitive
+// flow (adapter-generator approves generated YAML).
+func AgentTypeInheritsInstructions(agentType string) bool {
+	return agentType != AdapterGeneratorTypeName
+}
+
 // adapterGeneratorEnforcedTools is the fixed allow/deny list applied to any
 // session whose agent_type is adapter-generator, regardless of what the YAML
 // on disk says. See applyAdapterGeneratorLockdown.

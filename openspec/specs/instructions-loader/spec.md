@@ -76,6 +76,11 @@ The system SHALL load all discovered instruction files exactly once when a sessi
 - **WHEN** `AGENTS.md` is modified after session A starts but before session B starts
 - **THEN** session A retains the pre-modification content and session B loads the post-modification content
 
+#### Scenario: Locked-down internal agent types do not inherit instructions
+
+- **WHEN** a session is created whose agent type is a locked-down internal type (e.g. `adapter-generator`)
+- **THEN** no instruction snapshot is loaded and no proximity resolver is attached, so neither the system-prompt `<instructions>` block nor Read-tool proximity injection occurs for that session. General sessions (the empty agent type for top-level and generic Dispatch children) inherit instructions normally.
+
 ### Requirement: No file size limit
 
 The system SHALL NOT impose a character or byte limit on instruction files. The full content of each discovered file SHALL be loaded without truncation.
