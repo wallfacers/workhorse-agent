@@ -30,8 +30,9 @@ func TestServerEventTypes_FullSet(t *testing.T) {
 	// by add-frontend-tool-bridge (frontend_tool_use,
 	// frontend_tools_published) plus 1 added by add-todo-tool
 	// (task_update) plus 3 added by add-thinking-mode-and-prompt-cache
-	// (reasoning_start, reasoning_delta, reasoning_end) → 20.
-	const want = 20
+	// (reasoning_start, reasoning_delta, reasoning_end) plus 1 added for
+	// auto-derived title broadcast (session_title_updated) → 21.
+	const want = 21
 	if got := len(AllServerEventTypes); got != want {
 		t.Fatalf("event-type catalog drifted: got %d, want %d", got, want)
 	}

@@ -1,6 +1,6 @@
 // Package protocol defines the wire types for the workhorse-agent
 // application-level Streamable HTTP protocol: the seven Client → Server message
-// types, the twenty Server → Client event types, and the structured `error`
+// types, the twenty-one Server → Client event types, and the structured `error`
 // event with its full code enum.
 //
 // The package is intentionally pure data — no HTTP, no SSE framing, no
@@ -62,6 +62,7 @@ const (
 	EventFrontendToolUse       ServerEventType = "frontend_tool_use"
 	EventFrontendToolsPub      ServerEventType = "frontend_tools_published"
 	EventTaskUpdate            ServerEventType = "task_update"
+	EventSessionTitleUpdated   ServerEventType = "session_title_updated"
 )
 
 // AllServerEventTypes is the canonical list used by tests and the debug
@@ -76,9 +77,10 @@ var AllServerEventTypes = []ServerEventType{
 	EventAdapterApprovalReq, EventAdapterApprovalResolv, EventAdapterApprovalExp,
 	EventFrontendToolUse, EventFrontendToolsPub,
 	EventTaskUpdate,
+	EventSessionTitleUpdated,
 }
 
-// IsKnown reports whether t matches one of the twenty spec-defined event types.
+// IsKnown reports whether t matches one of the twenty-one spec-defined event types.
 func (t ServerEventType) IsKnown() bool {
 	for _, k := range AllServerEventTypes {
 		if k == t {

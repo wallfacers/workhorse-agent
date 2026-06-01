@@ -231,6 +231,55 @@ func TestLoop_FullCycle_UserToolText(t *testing.T) {
 	}
 }
 
+// The first user message of an untitled session broadcasts a
+// session_title_updated event carrying the derived title; a follow-up message
+// must not re-emit it (title is no longer empty).
+func TestLoop_FirstMessage_BroadcastsTitle(t *testing.T) {
+	h := newLoopHarness(t)
+	h.Mock.QueueResponse([]provider.ProviderEvent{
+		{Type: provider.EventTextDelta, TextDelta: "ok"},
+		{Type: provider.EventStop, StopReason: "end_turn"},
+	})
+	h.Mock.QueueResponse([]provider.ProviderEvent{
+		{Type: provider.EventTextDelta, TextDelta: "ok again"},
+		{Type: provider.EventStop, StopReason: "end_turn"},
+	})
+
+	h.start()
+	defer h.stop()
+	h.sendUser(t, "help me inspect the open tabs")
+
+	events := h.collectUntil(t, 2*time.Second, func(es []session.Event) bool {
+		return countType(es, "assistant_text_done") >= 1
+	})
+
+	var title string
+	for _, e := range events {
+		if e.Type == "session_title_updated" {
+			title, _ = e.Payload["title"].(string)
+		}
+	}
+	if countType(events, "session_title_updated") != 1 {
+		t.Fatalf("want exactly 1 session_title_updated, got %d: %v",
+			countType(events, "session_title_updated"), eventTypes(events))
+	}
+	if title != "help me inspect the open tabs" {
+		t.Fatalf("title payload = %q", title)
+	}
+	if got := h.Session.Title(); got != title {
+		t.Fatalf("session title = %q, want %q", got, title)
+	}
+
+	waitForState(t, h.Session, session.StateIdle, time.Second)
+	h.sendUser(t, "now close them")
+	events2 := h.collectUntil(t, 2*time.Second, func(es []session.Event) bool {
+		return countType(es, "assistant_text_done") >= 1
+	})
+	if n := countType(events2, "session_title_updated"); n != 0 {
+		t.Fatalf("follow-up must not re-emit title, got %d", n)
+	}
+}
+
 func TestLoop_TextOnlyResponse_NoTools(t *testing.T) {
 	h := newLoopHarness(t)
 	h.Mock.QueueResponse([]provider.ProviderEvent{

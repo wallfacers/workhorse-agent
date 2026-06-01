@@ -218,11 +218,14 @@ func (l *Loop) runTurnSafe(parent context.Context, msg session.ClientMessage) {
 		Content: []provider.ContentBlock{{Type: provider.BlockText, Text: u.Content}},
 	})
 
-	// Derive title from the first user message if empty.
+	// Derive title from the first user message if empty. The broadcast lets a
+	// connected client update its session list live; manual rename goes through
+	// the REST PATCH path and needs no SSE frame.
 	if l.Session.Title() == "" && u.Content != "" {
 		title := deriveTitle(u.Content)
 		l.Session.SetTitle(title)
 		l.Session.PersistTitle(parent)
+		_ = l.Session.Emit(parent, string(protocol.EventSessionTitleUpdated), map[string]any{"title": title})
 	}
 
 	turnCtx, cancelTurn := context.WithCancel(parent)
