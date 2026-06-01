@@ -51,6 +51,10 @@ type Env struct {
 	// TaskList holds the per-session task list store. Typed as any to avoid
 	// import cycles; the TodoWrite tool type-asserts this to *tasklist.Store.
 	TaskList any
+	// InstructionResolver handles proximity injection for the Read tool.
+	// Typed as any to avoid import cycles; the Read tool type-asserts this
+	// to *instructions.Resolver.
+	InstructionResolver any
 }
 
 // Result is the outcome of one tool call. Output is the canonical string the

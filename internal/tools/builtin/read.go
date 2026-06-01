@@ -11,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
+	"github.com/wallfacers/workhorse-agent/internal/instructions"
 	"github.com/wallfacers/workhorse-agent/internal/tools"
 	"github.com/wallfacers/workhorse-agent/internal/tools/pathguard"
 )
@@ -114,7 +116,19 @@ func (r Read) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*to
 			return errorResult("scan: " + err.Error()), nil
 		}
 	}
-	return &tools.Result{Output: string(buf)}, nil
+	output := string(buf)
+	if resolver, _ := env.InstructionResolver.(*instructions.Resolver); resolver != nil {
+		if injections := resolver.Resolve(resolved, env.Workdir); len(injections) > 0 {
+			var b strings.Builder
+			b.WriteString(output)
+			for _, inj := range injections {
+				b.WriteString("\n\n")
+				b.WriteString(instructions.FormatInjection(inj))
+			}
+			output = b.String()
+		}
+	}
+	return &tools.Result{Output: output}, nil
 }
 
 func fmtAppend(dst []byte, line int, content []byte) []byte {

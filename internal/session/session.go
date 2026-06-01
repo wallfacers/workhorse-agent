@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/wallfacers/workhorse-agent/internal/idgen"
+	"github.com/wallfacers/workhorse-agent/internal/instructions"
 	"github.com/wallfacers/workhorse-agent/internal/memory"
 	"github.com/wallfacers/workhorse-agent/internal/provider"
 	"github.com/wallfacers/workhorse-agent/internal/store"
@@ -262,6 +263,14 @@ type Session struct {
 	// EnvSnapshot holds the frozen <environment> block rendered at session start.
 	// Immutable for the session lifetime. Empty when no tools or agents detected.
 	EnvSnapshot string
+
+	// InstructionSnapshot holds the frozen instruction files (AGENTS.md) loaded
+	// at session start. Immutable for the session lifetime.
+	InstructionSnapshot *instructions.Snapshot
+
+	// InstructionResolver tracks proximity-injected instruction files for the
+	// Read tool. Thread-safe; each path is injected at most once per session.
+	InstructionResolver *instructions.Resolver
 
 	mu        sync.Mutex
 	state     State

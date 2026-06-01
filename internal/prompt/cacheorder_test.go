@@ -101,8 +101,70 @@ func TestSystemPrompt_MemoryBlockByteStable(t *testing.T) {
 	}
 }
 
+// --- Instructions segment tests (add-agents-md-support) ---
+
+const instrBlock = "<instructions>\nInstructions from: /project/AGENTS.md\nuse Go\n</instructions>"
+
+// Scenario: Full assembly order B → Cancel → Env → Instructions → Memory.
+func TestSystemPrompt_FullOrderWithInstructions(t *testing.T) {
+	got := prompt.BuildSystemPrompt(prompt.SystemPromptInput{
+		Base:         "BASE PROMPT",
+		Environment:  envBlock,
+		Instructions: instrBlock,
+		Memory:       memBlock,
+	})
+	want := baseSeg("BASE PROMPT") + "\n\n" + envBlock + "\n\n" + instrBlock + "\n\n" + memBlock
+	if got != want {
+		t.Errorf("full order mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+// Scenario: Instructions only (no environment, no memory).
+func TestSystemPrompt_InstructionsOnly(t *testing.T) {
+	got := prompt.BuildSystemPrompt(prompt.SystemPromptInput{
+		Instructions: instrBlock,
+	})
+	want := prompt.CancelledNote + "\n\n" + instrBlock
+	if got != want {
+		t.Errorf("instructions-only mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+// Scenario: Instructions positioned between environment and memory.
+func TestSystemPrompt_InstructionsBetweenEnvAndMemory(t *testing.T) {
+	got := prompt.BuildSystemPrompt(prompt.SystemPromptInput{
+		Base:         "BASE",
+		Environment:  envBlock,
+		Instructions: instrBlock,
+		Memory:       memBlock,
+	})
+	envIdx := strings.Index(got, envBlock)
+	instrIdx := strings.Index(got, instrBlock)
+	memIdx := strings.Index(got, memBlock)
+	if !(envIdx < instrIdx && instrIdx < memIdx) {
+		t.Errorf("order must be env < instructions < memory, got env@%d instr@%d mem@%d", envIdx, instrIdx, memIdx)
+	}
+}
+
+// Scenario: Empty instructions produce no framing.
+func TestSystemPrompt_EmptyInstructionsNoSection(t *testing.T) {
+	got := prompt.BuildSystemPrompt(prompt.SystemPromptInput{
+		Base:         "BASE PROMPT",
+		Environment:  envBlock,
+		Instructions: "",
+		Memory:       memBlock,
+	})
+	if strings.Contains(got, "<instructions>") {
+		t.Error("empty instructions must produce no instructions section")
+	}
+	want := baseSeg("BASE PROMPT") + "\n\n" + envBlock + "\n\n" + memBlock
+	if got != want {
+		t.Errorf("empty-instructions mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
 // Scenario: 顺序变更不改变内容集合 — the set of "\n\n"-joined segments equals the
-// fixed multiset {base, CancelledNote, environment, memory} regardless of order.
+// fixed multiset {base, CancelledNote, environment, instructions, memory} regardless of order.
 func TestSystemPrompt_SameContentSet(t *testing.T) {
 	got := prompt.BuildSystemPrompt(prompt.SystemPromptInput{
 		Base:        "BASE PROMPT",

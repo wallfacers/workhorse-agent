@@ -12,6 +12,7 @@ import (
 
 	"github.com/wallfacers/workhorse-agent/internal/api/protocol"
 	"github.com/wallfacers/workhorse-agent/internal/idgen"
+	"github.com/wallfacers/workhorse-agent/internal/instructions"
 	"github.com/wallfacers/workhorse-agent/internal/memory"
 	"github.com/wallfacers/workhorse-agent/internal/permission"
 	"github.com/wallfacers/workhorse-agent/internal/prompt"
@@ -400,17 +401,19 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 			}
 		}
 
-		// Composition order: base → environment → memory, joined by "\n\n" only
-		// between non-empty pieces. The static base段 leads so it forms the
-		// Anthropic prompt-cache prefix; the dynamic environment and memory
-		// blocks follow (optimize-prompt-cache-order). The prompt package owns
-		// the ordering and delimiters — this is the single assembly path.
+		// Composition order: base → environment → instructions → memory,
+		// joined by "\n\n" only between non-empty pieces. The static base段
+		// leads so it forms the Anthropic prompt-cache prefix; the dynamic
+		// environment, instructions, and memory blocks follow
+		// (optimize-prompt-cache-order). The prompt package owns the ordering
+		// and delimiters — this is the single assembly path.
 		req := provider.Request{
 			Model: l.Config.Model,
 			System: prompt.BuildSystemPrompt(prompt.SystemPromptInput{
-				Base:        l.SystemPromptBase,
-				Environment: l.Session.EnvSnapshot,
-				Memory:      memory.Block(l.Session.MemorySnapshot),
+				Base:         l.SystemPromptBase,
+				Environment:  l.Session.EnvSnapshot,
+				Instructions: instructions.Block(l.Session.InstructionSnapshot),
+				Memory:       memory.Block(l.Session.MemorySnapshot),
 			}),
 			Messages:             l.Session.History(),
 			Tools:                l.buildToolSchemas(),
