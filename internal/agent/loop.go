@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -215,6 +216,13 @@ func (l *Loop) runTurnSafe(parent context.Context, msg session.ClientMessage) {
 		Role:    provider.RoleUser,
 		Content: []provider.ContentBlock{{Type: provider.BlockText, Text: u.Content}},
 	})
+
+	// Derive title from the first user message if empty.
+	if l.Session.Title() == "" && u.Content != "" {
+		title := deriveTitle(u.Content)
+		l.Session.SetTitle(title)
+		l.Session.PersistTitle(parent)
+	}
 
 	turnCtx, cancelTurn := context.WithCancel(parent)
 	defer cancelTurn()
@@ -969,4 +977,22 @@ func (l *Loop) ensureClonedRegistry() error {
 		MaxResultBytes:  l.Orchestrator.MaxResultBytes,
 	}
 	return nil
+}
+
+// deriveTitle produces a single-line, length-capped title from the first user
+// message (add-project-sessions §5). Leading/trailing whitespace is trimmed;
+// newlines collapse to spaces; the result is capped at 80 runes.
+func deriveTitle(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if i := strings.IndexByte(s, '\r'); i >= 0 {
+		s = s[:i]
+	}
+	r := []rune(s)
+	if len(r) > 80 {
+		return string(r[:77]) + "..."
+	}
+	return s
 }

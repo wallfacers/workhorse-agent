@@ -11,6 +11,7 @@ import (
 
 	"github.com/wallfacers/workhorse-agent/internal/provider"
 	"github.com/wallfacers/workhorse-agent/internal/session"
+	"github.com/wallfacers/workhorse-agent/internal/store"
 )
 
 func newSessionWithState(t *testing.T, s *Server, state session.State) *session.Session {
@@ -52,6 +53,37 @@ func TestStreamPost_404_NotFound(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("want 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestStreamPost_HydratesPersistedSession(t *testing.T) {
+	st := newSQLiteStore(t)
+	mgr := session.NewManager(session.ManagerOptions{Store: st})
+	s := NewServer(Config{
+		Host: "127.0.0.1", Port: 0, MaxRequestBodyBytes: 1 << 20, Version: "test",
+	}, mgr, st, newDiscardLogger())
+	ts := httptestServer(t, s)
+
+	id := "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+	now := time.Now().UTC()
+	if err := st.CreateSession(context.Background(), &store.Session{
+		ID: id, State: store.SessionStateIdle, Workdir: "/tmp", EnvJSON: "{}",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	if _, err := mgr.GetSession(id); err == nil {
+		t.Fatal("precondition: session must not be live before POST")
+	}
+
+	resp := postStream(t, ts.URL+"/v1/sessions/"+id+"/stream",
+		`{"type":"user_message","content":"hi"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST to persisted session should hydrate (want 202), got %d", resp.StatusCode)
+	}
+	if _, err := mgr.GetSession(id); err != nil {
+		t.Fatalf("session should be live after hydration: %v", err)
 	}
 }
 

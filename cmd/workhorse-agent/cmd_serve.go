@@ -517,7 +517,23 @@ func newRunnerFactory(
 		}
 		_, modelID := provider.SplitProviderModel(model)
 		_, fastModelID := provider.SplitProviderModel(defaultFastModel)
-		loop := agent.NewLoop(loopCfg)
+		// Copy loopCfg so per-session thinking override does not
+		// mutate the shared template for other sessions.
+		sessLoopCfg := loopCfg
+		// If only_models is set, disable thinking for models not in the list.
+		if sessLoopCfg.ThinkingEnabled && len(cfg.Agent.Thinking.OnlyModels) > 0 {
+			matched := false
+			for _, m := range cfg.Agent.Thinking.OnlyModels {
+				if m == modelID {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				sessLoopCfg.ThinkingEnabled = false
+			}
+		}
+		loop := agent.NewLoop(sessLoopCfg)
 		loop.Session = sess
 		loop.Provider = prov
 		loop.Orchestrator = orch

@@ -22,12 +22,9 @@ func (s *Server) handleStreamPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	sess, err := s.manager.GetSession(id)
+	sess, err := s.manager.GetOrHydrate(r.Context(), id)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{
-			"code":    "session_not_found",
-			"message": "no such session",
-		})
+		writeSessionLookupError(w, err)
 		return
 	}
 

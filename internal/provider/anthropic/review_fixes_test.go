@@ -3,7 +3,6 @@ package anthropic_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
@@ -26,35 +25,6 @@ func TestEncode_ThinkingBudgetExceedsMaxTokens(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "greater than thinking") {
 		t.Errorf("error should explain the constraint, got %q", err.Error())
-	}
-}
-
-// #6: a dated snapshot id of a listed base model is accepted for thinking
-// without the allowlist enumerating every dated build.
-func TestEncode_DatedThinkingModelSupported(t *testing.T) {
-	_, err := anthropic.EncodeRequestForTest(provider.Request{
-		Model:                "claude-sonnet-4-6-20250514",
-		Messages:             []provider.Message{{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "hi"}}}},
-		MaxTokens:            24000,
-		ThinkingEnabled:      true,
-		ThinkingBudgetTokens: 16000,
-	})
-	if err != nil {
-		t.Fatalf("dated variant of a listed model should support thinking, got %v", err)
-	}
-}
-
-// #6: a genuinely unknown model still hard-fails thinking, fast.
-func TestEncode_UnknownThinkingModelRejected(t *testing.T) {
-	_, err := anthropic.EncodeRequestForTest(provider.Request{
-		Model:                "totally-made-up-model",
-		Messages:             []provider.Message{{Role: provider.RoleUser, Content: []provider.ContentBlock{{Type: provider.BlockText, Text: "hi"}}}},
-		MaxTokens:            24000,
-		ThinkingEnabled:      true,
-		ThinkingBudgetTokens: 16000,
-	})
-	if !errors.Is(err, anthropic.ErrThinkingNotSupported) {
-		t.Fatalf("expected ErrThinkingNotSupported, got %v", err)
 	}
 }
 

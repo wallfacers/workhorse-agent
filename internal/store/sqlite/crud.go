@@ -50,10 +50,10 @@ func fromNullableMicros(n sql.NullInt64) *time.Time {
 func (s *Store) CreateSession(ctx context.Context, sess *store.Session) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO sessions(id, parent_id, state, workdir, env_json,
-			agent_type, model, ephemeral, created_at, updated_at, deleted_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+			agent_type, model, title, ephemeral, created_at, updated_at, deleted_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		sess.ID, sess.ParentID, string(sess.State), sess.Workdir, sess.EnvJSON,
-		sess.AgentType, sess.Model, boolToInt(sess.Ephemeral),
+		sess.AgentType, sess.Model, sess.Title, boolToInt(sess.Ephemeral),
 		toMicros(sess.CreatedAt), toMicros(sess.UpdatedAt), nullableMicros(sess.DeletedAt))
 	if err != nil {
 		return fmt.Errorf("sqlite: CreateSession: %w", err)
@@ -63,14 +63,14 @@ func (s *Store) CreateSession(ctx context.Context, sess *store.Session) error {
 
 func (s *Store) GetSession(ctx context.Context, id string) (*store.Session, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, parent_id, state, workdir, env_json, agent_type, model,
+		`SELECT id, parent_id, state, workdir, env_json, agent_type, model, title,
 			ephemeral, created_at, updated_at, deleted_at
 		 FROM sessions WHERE id = ?`, id)
 	return scanSession(row)
 }
 
 func (s *Store) ListSessions(ctx context.Context, includeDeleted bool) ([]*store.Session, error) {
-	q := `SELECT id, parent_id, state, workdir, env_json, agent_type, model,
+	q := `SELECT id, parent_id, state, workdir, env_json, agent_type, model, title,
 			ephemeral, created_at, updated_at, deleted_at
 		  FROM sessions`
 	if !includeDeleted {
@@ -94,13 +94,79 @@ func (s *Store) ListSessions(ctx context.Context, includeDeleted bool) ([]*store
 	return out, rows.Err()
 }
 
+// ListSessionsByWorkdir returns the project-scoped listing. MessageCount and
+// LastMessagePreview are computed via correlated subqueries; the preview reuses
+// the extract_text() function (the same one the FTS trigger uses) on the latest
+// message's content_json.
+func (s *Store) ListSessionsByWorkdir(ctx context.Context, workdir string) ([]*store.SessionSummary, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT s.id, s.parent_id, s.state, s.workdir, s.env_json, s.agent_type,
+			s.model, s.title, s.ephemeral, s.created_at, s.updated_at, s.deleted_at,
+			(SELECT count(*) FROM messages m WHERE m.session_id = s.id) AS msg_count,
+			coalesce((SELECT extract_text(m.content_json) FROM messages m
+				WHERE m.session_id = s.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1), '') AS last_preview
+		 FROM sessions s
+		 WHERE s.workdir = ? AND s.deleted_at IS NULL
+		 ORDER BY s.updated_at DESC, s.id`, workdir)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: ListSessionsByWorkdir: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	var out []*store.SessionSummary
+	for rows.Next() {
+		var sum store.SessionSummary
+		var state string
+		var ephemeral int
+		var createdAt, updatedAt int64
+		var deletedAt sql.NullInt64
+		if err := rows.Scan(&sum.ID, &sum.ParentID, &state, &sum.Workdir,
+			&sum.EnvJSON, &sum.AgentType, &sum.Model, &sum.Title, &ephemeral,
+			&createdAt, &updatedAt, &deletedAt,
+			&sum.MessageCount, &sum.LastMessagePreview); err != nil {
+			return nil, fmt.Errorf("sqlite: scan session summary: %w", err)
+		}
+		sum.State = store.SessionState(state)
+		sum.Ephemeral = ephemeral != 0
+		sum.CreatedAt = fromMicros(createdAt)
+		sum.UpdatedAt = fromMicros(updatedAt)
+		sum.DeletedAt = fromNullableMicros(deletedAt)
+		out = append(out, &sum)
+	}
+	return out, rows.Err()
+}
+
+// ListProjects aggregates non-deleted sessions by workdir.
+func (s *Store) ListProjects(ctx context.Context) ([]*store.Project, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT workdir, count(*) AS cnt, max(updated_at) AS upd
+		 FROM sessions WHERE deleted_at IS NULL
+		 GROUP BY workdir ORDER BY upd DESC, workdir`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: ListProjects: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	var out []*store.Project
+	for rows.Next() {
+		var p store.Project
+		var upd int64
+		if err := rows.Scan(&p.Path, &p.SessionCount, &upd); err != nil {
+			return nil, fmt.Errorf("sqlite: scan project: %w", err)
+		}
+		p.UpdatedAt = fromMicros(upd)
+		out = append(out, &p)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) UpdateSession(ctx context.Context, sess *store.Session) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET parent_id=?, state=?, workdir=?, env_json=?,
-			agent_type=?, model=?, ephemeral=?, updated_at=?, deleted_at=?
+			agent_type=?, model=?, title=?, ephemeral=?, updated_at=?, deleted_at=?
 		 WHERE id=?`,
 		sess.ParentID, string(sess.State), sess.Workdir, sess.EnvJSON,
-		sess.AgentType, sess.Model, boolToInt(sess.Ephemeral),
+		sess.AgentType, sess.Model, sess.Title, boolToInt(sess.Ephemeral),
 		toMicros(sess.UpdatedAt), nullableMicros(sess.DeletedAt), sess.ID)
 	if err != nil {
 		return fmt.Errorf("sqlite: UpdateSession: %w", err)
@@ -129,6 +195,33 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	return nil
 }
 
+// PurgeSession hard-deletes the session row. messages/events/tool_calls are
+// removed via ON DELETE CASCADE; messages are deleted first so their AFTER
+// DELETE trigger keeps messages_fts in sync (FK cascade deletes do not reliably
+// fire row triggers).
+func (s *Store) PurgeSession(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: PurgeSession begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE session_id = ?`, id); err != nil {
+		return fmt.Errorf("sqlite: PurgeSession messages: %w", err)
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("sqlite: PurgeSession: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return store.ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: PurgeSession commit: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) CountActiveSessions(ctx context.Context) (int, error) {
 	var n int
 	if err := s.db.QueryRowContext(ctx,
@@ -151,7 +244,7 @@ func scanSession(sc scanner) (*store.Session, error) {
 	var createdAt, updatedAt int64
 	var deletedAt sql.NullInt64
 	if err := sc.Scan(&sess.ID, &sess.ParentID, &state, &sess.Workdir,
-		&sess.EnvJSON, &sess.AgentType, &sess.Model, &ephemeral,
+		&sess.EnvJSON, &sess.AgentType, &sess.Model, &sess.Title, &ephemeral,
 		&createdAt, &updatedAt, &deletedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
@@ -175,6 +268,33 @@ func (s *Store) AppendMessage(ctx context.Context, m *store.Message) error {
 		m.ID, m.SessionID, m.Role, m.ContentJSON, m.TokenCount, toMicros(m.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("sqlite: AppendMessage: %w", err)
+	}
+	return nil
+}
+
+// ReplaceMessages atomically swaps a session's entire transcript for msgs.
+// Used by the compaction rewrite path so the persisted messages stay equal to
+// the in-memory context the model actually sees (add-project-sessions D9).
+func (s *Store) ReplaceMessages(ctx context.Context, sessionID string, msgs []*store.Message) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("sqlite: ReplaceMessages begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once committed
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE session_id = ?`, sessionID); err != nil {
+		return fmt.Errorf("sqlite: ReplaceMessages delete: %w", err)
+	}
+	for _, m := range msgs {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO messages(id, session_id, role, content_json, token_count, created_at)
+			 VALUES (?,?,?,?,?,?)`,
+			m.ID, m.SessionID, m.Role, m.ContentJSON, m.TokenCount, toMicros(m.CreatedAt)); err != nil {
+			return fmt.Errorf("sqlite: ReplaceMessages insert: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("sqlite: ReplaceMessages commit: %w", err)
 	}
 	return nil
 }

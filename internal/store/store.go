@@ -17,8 +17,18 @@ type Store interface {
 	CreateSession(ctx context.Context, s *Session) error
 	GetSession(ctx context.Context, id string) (*Session, error)
 	ListSessions(ctx context.Context, includeDeleted bool) ([]*Session, error)
+	// ListSessionsByWorkdir returns non-deleted sessions for one project path,
+	// each with its message-count and last-message preview, newest-updated first.
+	ListSessionsByWorkdir(ctx context.Context, workdir string) ([]*SessionSummary, error)
+	// ListProjects returns the distinct workdirs that have at least one
+	// non-deleted session, with per-project session counts.
+	ListProjects(ctx context.Context) ([]*Project, error)
 	UpdateSession(ctx context.Context, s *Session) error
 	DeleteSession(ctx context.Context, id string) error
+	// PurgeSession hard-deletes a session and cascades to its messages, events,
+	// and tool_calls (the "delete also removes the transcript" contract).
+	// Returns ErrNotFound if no such row exists.
+	PurgeSession(ctx context.Context, id string) error
 	// CountActiveSessions returns the count of sessions whose DeletedAt is
 	// NULL. Used to enforce sessions.max_concurrent.
 	CountActiveSessions(ctx context.Context) (int, error)
@@ -26,6 +36,9 @@ type Store interface {
 	// --- Message CRUD ---
 	AppendMessage(ctx context.Context, m *Message) error
 	ListMessages(ctx context.Context, sessionID string) ([]*Message, error)
+	// ReplaceMessages atomically swaps a session's whole transcript (compaction
+	// rewrite). Passing an empty slice clears the transcript.
+	ReplaceMessages(ctx context.Context, sessionID string, msgs []*Message) error
 
 	// --- Event append + incremental query ---
 	// AppendEvent assigns the next idx and returns it. Callers should treat

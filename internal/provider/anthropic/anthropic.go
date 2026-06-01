@@ -239,52 +239,13 @@ func parseRetryAfter(v string) time.Duration {
 // thinking. TODO: remove when promoted from beta.
 const BetaHeaderInterleavedThinking = "interleaved-thinking-2025-05-14"
 
-// knownThinkingModels is the set of Anthropic model IDs that support extended
-// thinking. This set must be updated when Anthropic adds support to new models.
-var knownThinkingModels = map[string]bool{
-	"claude-sonnet-4-6":          true,
-	"claude-opus-4-8":            true,
-	"claude-sonnet-4-5-20250514": true,
-	"claude-sonnet-4-20250514":   true,
-	"claude-opus-4-20250115":     true,
-}
-
-// ErrThinkingNotSupported is returned when thinking is requested for a model
-// that does not support extended thinking.
-var ErrThinkingNotSupported = fmt.Errorf("extended thinking not supported by model")
-
-// supportsThinking reports whether model can run extended thinking. It matches
-// knownThinkingModels exactly, then retries after stripping a trailing
-// "-YYYYMMDD" snapshot suffix so a dated pin of a listed base model (e.g.
-// "claude-sonnet-4-6-20250514") is accepted without the allowlist having to
-// enumerate every dated build.
-func supportsThinking(model string) bool {
-	if knownThinkingModels[model] {
-		return true
-	}
-	if i := strings.LastIndex(model, "-"); i >= 0 {
-		if suffix := model[i+1:]; len(suffix) == 8 && isAllDigits(suffix) {
-			return knownThinkingModels[model[:i]]
-		}
-	}
-	return false
-}
-
-func isAllDigits(s string) bool {
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return s != ""
-}
+// knownThinkingModels is removed. Whether a model supports extended thinking
+// is now determined by the upstream API itself — if the model doesn't support
+// thinking, the API will return an error. This avoids maintaining a hard-coded
+// whitelist that becomes stale every time a new model or provider is added.
 
 // encodeRequest turns our internal Request into Anthropic's JSON shape.
 func encodeRequest(r provider.Request, defaultMax int) ([]byte, error) {
-	if r.ThinkingEnabled && !supportsThinking(r.Model) {
-		return nil, ErrThinkingNotSupported
-	}
-
 	max := r.MaxTokens
 	if max <= 0 {
 		max = defaultMax

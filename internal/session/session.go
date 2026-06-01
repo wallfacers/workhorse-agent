@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -192,7 +193,7 @@ type PendingToolUse struct {
 // Fields fall into three categories:
 //
 //   - Immutable after construction: ID, ParentID, Workdir, Env, Ephemeral,
-//     Model, ProviderName, AgentType, CreatedAt, Inbox, Outbox.
+//     Model, ProviderName, AgentType, CreatedAt, Title, Inbox, Outbox.
 //   - Guarded by mu: state, history, idx, pending, allowed, updatedAt.
 //   - Goroutine-owned: ctx / cancel (created in Start, closed in Stop).
 type Session struct {
@@ -268,6 +269,7 @@ type Session struct {
 	idx       int64
 	pending   map[string]PendingToolUse
 	allowed   []string
+	title     string
 	updatedAt time.Time
 
 	// adapterSetupDedup tracks per-session adapter-generation state for the
@@ -452,18 +454,138 @@ func (s *Session) History() []provider.Message {
 // AppendMessage appends one message to the history under the session mutex.
 func (s *Session) AppendMessage(m provider.Message) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.history = append(s.history, m)
-	s.updatedAt = time.Now().UTC()
+	now := time.Now().UTC()
+	s.updatedAt = now
+	s.mu.Unlock()
+
+	// Persist non-ephemeral transcript so it survives restart and feeds history
+	// rehydration (add-project-sessions D9). Failure is logged, never blocks the
+	// turn — the in-memory history is already authoritative for the live loop.
+	if s.store == nil || s.Ephemeral {
+		return
+	}
+	content, err := marshalContent(m.Content)
+	if err != nil {
+		slog.Error("session: marshal message content", "session", s.ID, "err", err)
+		return
+	}
+	row := &store.Message{
+		ID:          idgen.NewULID(),
+		SessionID:   s.ID,
+		Role:        string(m.Role),
+		ContentJSON: content,
+		CreatedAt:   now,
+	}
+	if err := s.store.AppendMessage(context.Background(), row); err != nil {
+		slog.Error("session: persist message", "session", s.ID, "err", err)
+	}
 }
 
 // ReplaceHistory swaps the entire history slice. Used by the compactor after a
 // summarising pass.
 func (s *Session) ReplaceHistory(msgs []provider.Message) {
 	s.mu.Lock()
+	s.history = append([]provider.Message(nil), msgs...)
+	now := time.Now().UTC()
+	s.updatedAt = now
+	s.mu.Unlock()
+
+	// Keep the persisted transcript equal to the in-memory context the model
+	// sees, so a hydrated session resumes from the compacted history (D9). The
+	// per-index microsecond offset preserves order under ListMessages'
+	// (created_at, id) sort.
+	if s.store == nil || s.Ephemeral {
+		return
+	}
+	rows := make([]*store.Message, 0, len(msgs))
+	for i, m := range msgs {
+		content, err := marshalContent(m.Content)
+		if err != nil {
+			slog.Error("session: marshal message content", "session", s.ID, "err", err)
+			return
+		}
+		rows = append(rows, &store.Message{
+			ID:          idgen.NewULID(),
+			SessionID:   s.ID,
+			Role:        string(m.Role),
+			ContentJSON: content,
+			CreatedAt:   now.Add(time.Duration(i) * time.Microsecond),
+		})
+	}
+	if err := s.store.ReplaceMessages(context.Background(), s.ID, rows); err != nil {
+		slog.Error("session: replace messages", "session", s.ID, "err", err)
+	}
+}
+
+// Status projects the six-state machine onto the binary idle|running the wire
+// SessionMeta exposes (add-project-sessions D2): Idle and Cancelled read as
+// "idle"; any in-flight state reads as "running".
+func (s *Session) Status() string {
+	switch s.State() {
+	case StateIdle, StateCancelled:
+		return "idle"
+	default:
+		return "running"
+	}
+}
+
+// Title returns the session's display title (may be empty until derived from
+// the first user message).
+func (s *Session) Title() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.title
+}
+
+// SetTitle updates the in-memory display title. Persistence is the caller's
+// responsibility (title derivation / rename also write the store).
+func (s *Session) SetTitle(t string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.title = t
+}
+
+// PersistTitle writes the current title to the store. Used by the agent loop
+// after deriving the title from the first user message. No-op for ephemeral
+// or store-less sessions. The full row is rebuilt from the session's own state
+// because UpdateSession overwrites every column — a partial row would blank
+// workdir/model/env and break the project listing.
+func (s *Session) PersistTitle(ctx context.Context) {
+	s.mu.Lock()
+	t := s.title
+	s.mu.Unlock()
+	if s.store == nil || s.Ephemeral {
+		return
+	}
+	env, err := json.Marshal(s.Env)
+	if err != nil {
+		env = []byte("{}")
+	}
+	if err := s.store.UpdateSession(ctx, &store.Session{
+		ID:        s.ID,
+		ParentID:  s.ParentID,
+		State:     store.SessionState(s.State()),
+		Workdir:   s.Workdir,
+		EnvJSON:   string(env),
+		AgentType: s.AgentType,
+		Model:     s.Model,
+		Title:     t,
+		CreatedAt: s.CreatedAt,
+		UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		slog.Error("session: persist title", "session", s.ID, "err", err)
+	}
+}
+
+// RestoreHistory sets the in-memory history from a persisted transcript
+// WITHOUT writing back to the store. Used by Manager hydration to rebuild the
+// model context of a reopened session; using ReplaceHistory here would churn
+// the messages table (new ids/timestamps) on every reopen.
+func (s *Session) RestoreHistory(msgs []provider.Message) {
+	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.history = append([]provider.Message(nil), msgs...)
-	s.updatedAt = time.Now().UTC()
 }
 
 // AllowedTools returns a copy of the per-session AllowedTools filter, or nil

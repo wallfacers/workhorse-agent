@@ -304,6 +304,36 @@ func TestStreamGet_SingleFlowSupersede(t *testing.T) {
 	}
 }
 
+func TestStreamGet_HydratesPersistedSession(t *testing.T) {
+	st := newSQLiteStore(t)
+	mgr := session.NewManager(session.ManagerOptions{Store: st})
+	s := NewServer(Config{
+		Host: "127.0.0.1", Port: 0, MaxRequestBodyBytes: 1 << 20, Version: "test",
+	}, mgr, st, newDiscardLogger())
+	ts := httptestServer(t, s)
+
+	id := "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+	now := time.Now().UTC()
+	if err := st.CreateSession(context.Background(), &store.Session{
+		ID: id, State: store.SessionStateIdle, Workdir: "/tmp", EnvJSON: "{}",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	if _, err := mgr.GetSession(id); err == nil {
+		t.Fatal("precondition: session must not be live before GET")
+	}
+
+	// openSSE fatals unless the response is 200 — reaching it proves the GET
+	// hydrated the persisted-but-unloaded session instead of 404ing.
+	resp, _ := openSSE(t, ts.URL, id, "")
+	defer resp.Body.Close()
+
+	if _, err := mgr.GetSession(id); err != nil {
+		t.Fatalf("session should be live after GET hydration: %v", err)
+	}
+}
+
 // --- helpers ---
 
 func newSQLiteStore(t *testing.T) store.Store {

@@ -31,10 +31,28 @@ type Session struct {
 	EnvJSON   string
 	AgentType string
 	Model     string
+	Title     string
 	Ephemeral bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt *time.Time
+}
+
+// SessionSummary is a session plus the two aggregates the project-scoped
+// listing needs (add-project-sessions SessionMeta). MessageCount and
+// LastMessagePreview are derived from the messages table; the live idle|running
+// status is overlaid by the manager, not stored here.
+type SessionSummary struct {
+	Session
+	MessageCount       int
+	LastMessagePreview string
+}
+
+// Project is a distinct workdir that has at least one non-deleted session.
+type Project struct {
+	Path         string
+	SessionCount int
+	UpdatedAt    time.Time
 }
 
 // Message represents one turn in a session's conversation. Content is the

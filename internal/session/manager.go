@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/wallfacers/workhorse-agent/internal/provider"
 	"github.com/wallfacers/workhorse-agent/internal/store"
 )
 
@@ -151,9 +152,99 @@ func (m *Manager) persistNew(ctx context.Context, s *Session) error {
 	return nil
 }
 
-// GetSession returns the live in-memory session. For sessions that were
-// previously persisted but not loaded yet, the caller must hydrate via the
-// store directly (Group 9 will).
+// GetOrHydrate returns the live session, hydrating it from the store if it was
+// persisted but not currently loaded (e.g. after a restart, or a session the
+// user switched away from). The whole operation is done under m.mu: the store
+// already serialises access via a single connection, so holding the lock across
+// the (fast, local) reads keeps hydration race-free without a placeholder slot.
+// Returns ErrNotFound for unknown or soft-deleted sessions.
+func (m *Manager) GetOrHydrate(ctx context.Context, id string) (*Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if a, ok := m.sessions[id]; ok {
+		if a == nil {
+			// A concurrent CreateSession reserved this freshly-minted id; an
+			// existing session's id never collides with it.
+			return nil, ErrNotFound
+		}
+		return a.sess, nil
+	}
+	if m.store == nil {
+		return nil, ErrNotFound
+	}
+
+	row, err := m.store.GetSession(ctx, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if row.DeletedAt != nil {
+		return nil, ErrNotFound
+	}
+
+	sess, err := m.buildHydrated(ctx, row)
+	if err != nil {
+		return nil, err
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	m.sessions[id] = &activeSession{sess: sess, cancel: cancel, done: done}
+	if m.runnerFactory != nil {
+		runner := m.runnerFactory(sess)
+		go func() {
+			defer close(done)
+			runner.Run(runCtx)
+		}()
+	} else {
+		close(done)
+	}
+	return sess, nil
+}
+
+// buildHydrated reconstructs an idle Session from its persisted row and
+// transcript. Provider name is not persisted, so the runner factory's default
+// provider applies; the stored model is preserved.
+func (m *Manager) buildHydrated(ctx context.Context, row *store.Session) (*Session, error) {
+	env := map[string]string{}
+	if row.EnvJSON != "" {
+		_ = json.Unmarshal([]byte(row.EnvJSON), &env)
+	}
+	sess := New(Options{
+		Workdir:   row.Workdir,
+		Env:       env,
+		Model:     row.Model,
+		AgentType: row.AgentType,
+		ParentID:  row.ParentID,
+		Store:     m.store,
+	})
+	sess.ID = row.ID
+	sess.CreatedAt = row.CreatedAt
+	sess.SetTitle(row.Title)
+
+	msgs, err := m.store.ListMessages(ctx, row.ID)
+	if err != nil {
+		return nil, fmt.Errorf("session: hydrate transcript: %w", err)
+	}
+	hist := make([]provider.Message, 0, len(msgs))
+	for _, mm := range msgs {
+		blocks, err := unmarshalContent(mm.ContentJSON)
+		if err != nil {
+			return nil, fmt.Errorf("session: hydrate decode message %s: %w", mm.ID, err)
+		}
+		hist = append(hist, provider.Message{Role: provider.Role(mm.Role), Content: blocks})
+	}
+	sess.RestoreHistory(hist)
+	return sess, nil
+}
+
+// GetSession returns the live in-memory session. Sessions that were persisted
+// but not yet loaded are hydrated on demand via GetOrHydrate (used by the
+// stream handlers); GetSession itself stays live-only so read paths don't spin
+// up a runner.
 func (m *Manager) GetSession(id string) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -224,58 +315,51 @@ func (m *Manager) Cancel(id string) error {
 	return nil
 }
 
-// DeleteSession cancels the agent loop, waits up to drainTimeout for it to
-// exit, then removes the entry from the manager and (for non-ephemeral)
-// marks deleted_at in the store.
+// DeleteSession removes a session and its transcript. For a live session it
+// cancels the agent loop and waits up to drainTimeout for the goroutine to
+// exit; then (for any persisted session, live or not) it hard-deletes the row
+// and cascades to messages/events/tool_calls. Returns ErrNotFound only when the
+// session is neither live nor persisted.
 func (m *Manager) DeleteSession(ctx context.Context, id string, drainTimeout time.Duration) error {
 	m.mu.Lock()
 	active, ok := m.sessions[id]
-	if !ok || active == nil {
-		m.mu.Unlock()
-		return ErrNotFound
+	wasLive := ok && active != nil
+	if wasLive {
+		delete(m.sessions, id)
 	}
-	delete(m.sessions, id)
 	m.mu.Unlock()
 
-	active.cancel()
-	if drainTimeout <= 0 {
-		drainTimeout = 5 * time.Second
-	}
-	select {
-	case <-active.done:
-	case <-time.After(drainTimeout):
-		// Goroutine wedged past timeout. We've already removed the entry; let
-		// the goroutine leak — callers (e.g. graceful shutdown) get a clean
-		// state from the manager's perspective.
-	}
-
-	if !active.sess.Ephemeral && m.store != nil {
-		row := &store.Session{
-			ID:        active.sess.ID,
-			ParentID:  active.sess.ParentID,
-			State:     store.SessionState(active.sess.State()),
-			Workdir:   active.sess.Workdir,
-			EnvJSON:   "{}",
-			AgentType: active.sess.AgentType,
-			Model:     active.sess.Model,
-			Ephemeral: false,
-			CreatedAt: active.sess.CreatedAt,
-			UpdatedAt: time.Now().UTC(),
+	if wasLive {
+		active.cancel()
+		if drainTimeout <= 0 {
+			drainTimeout = 5 * time.Second
 		}
-		// Best-effort: re-marshal env in case it changed.
-		if env, err := json.Marshal(active.sess.Env); err == nil {
-			row.EnvJSON = string(env)
+		select {
+		case <-active.done:
+		case <-time.After(drainTimeout):
+			// Goroutine wedged past timeout. We've already removed the entry;
+			// let it leak so the manager state stays clean.
 		}
-		if err := m.store.DeleteSession(ctx, id); err != nil && !errors.Is(err, store.ErrNotFound) {
-			return fmt.Errorf("session: store delete: %w", err)
-		}
-		// Update final state before the soft delete already wrote deleted_at.
-		_ = m.store.UpdateSession(ctx, row)
 	}
 
-	// Drain the channels so any pending goroutine that races a final send
-	// doesn't block on a closed-but-buffered channel. We don't close them —
-	// the goroutine that owns them already exited.
+	if m.store == nil {
+		if !wasLive {
+			return ErrNotFound
+		}
+		return nil
+	}
+
+	// Hard delete + cascade (add-project-sessions D6). An ephemeral live session
+	// was never persisted, so a missing row there is expected, not an error.
+	if err := m.store.PurgeSession(ctx, id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			if wasLive {
+				return nil
+			}
+			return ErrNotFound
+		}
+		return fmt.Errorf("session: store purge: %w", err)
+	}
 	return nil
 }
 
