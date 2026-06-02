@@ -118,10 +118,14 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 
 	// 2. Providers — build all known providers so per-session ProviderName can
 	// pick one (multi-agent spec: child may override parent's provider).
-	providers, fastProviders, err := buildProviderRegistry(cfg)
+	providers, fastProviders, degraded, err := buildProviderRegistry(cfg)
 	if err != nil {
 		_ = st.Close()
 		return err
+	}
+	if degraded != "" {
+		logger.Warn("serve: starting in degraded mode — provider unavailable until configured",
+			"reason", degraded, "default_provider", cfg.Providers.Default)
 	}
 	// Extended thinking is Anthropic-only; the OpenAI adapter silently ignores
 	// the flag. Warn so a thinking.enabled config against an OpenAI default
@@ -253,6 +257,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 
 	// 7. API server.
 	apiCfg := apiConfigFrom(cfg)
+	apiCfg.DegradedReason = degraded
 	srv := api.NewServer(apiCfg, sessMgr, st, logger)
 	srv.SetApprovalManager(approvalMgr)
 	if extReg != nil {
@@ -323,11 +328,13 @@ func buildLogger(cfg config.LoggingConfig, w io.Writer) *slog.Logger {
 // multi-agent spec's "child overrides parent provider" scenario. The default
 // entry under cfg.Providers.Default is also reachable by that name.
 //
-// Returns (default+fast) maps keyed by provider name. An entry is only
-// included when its API key is configured; missing keys for the default
-// provider is fatal, missing keys for the other provider just means children
-// can't switch to it.
-func buildProviderRegistry(cfg config.Config) (def, fast map[string]provider.Provider, err error) {
+// Returns (default+fast) maps keyed by provider name plus a degraded reason. An
+// entry is only included when its API key is configured. A missing key for the
+// default provider is NOT fatal: serve starts degraded (reason
+// "no_provider_key") so a managed launcher can attach, read /health, and guide
+// the user to configure a key instead of facing a crash-loop. A missing key for
+// the non-default provider just means children can't switch to it.
+func buildProviderRegistry(cfg config.Config) (def, fast map[string]provider.Provider, degraded string, err error) {
 	def = map[string]provider.Provider{}
 	fast = map[string]provider.Provider{}
 
@@ -352,9 +359,9 @@ func buildProviderRegistry(cfg config.Config) (def, fast map[string]provider.Pro
 		})
 	}
 	if _, ok := def[cfg.Providers.Default]; !ok {
-		return nil, nil, fmt.Errorf("serve: providers.default %q has no API key configured", cfg.Providers.Default)
+		return def, fast, "no_provider_key", nil
 	}
-	return def, fast, nil
+	return def, fast, "", nil
 }
 
 func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skills.Catalog, st *sqlite.Store) error {

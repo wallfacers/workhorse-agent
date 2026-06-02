@@ -41,8 +41,12 @@ func (s *Server) defaultWorkdir() string {
 // Returns protocol_version and capabilities so the frontend can verify
 // identity and feature compatibility before attaching.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	// A degraded server is reachable (200) but not fully usable; availability is
+	// carried by `ok`, not the HTTP status, so monitoring probes still see 200.
+	// `reason` is a machine-readable enum, present only when ok is false.
+	degraded := s.cfg.DegradedReason
 	resp := map[string]any{
-		"ok":               true,
+		"ok":               degraded == "",
 		"version":          s.cfg.Version,
 		"protocol_version": ProtocolVersion,
 		"capabilities":     DefaultCapabilities,
@@ -50,6 +54,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"sessions_active":  s.manager.CountActive(),
 		"default_workdir":  s.defaultWorkdir(),
 		"platform":         runtime.GOOS,
+	}
+	if degraded != "" {
+		resp["reason"] = degraded
 	}
 
 	if distro := getDistro(); distro != "" {

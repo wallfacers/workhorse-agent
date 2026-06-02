@@ -42,6 +42,13 @@ type Config struct {
 	MaxConcurrentSessions   int
 	MaxHistoryTokens        int
 	Version                 string
+
+	// DegradedReason is non-empty when the server is reachable but not fully
+	// usable (e.g. "no_provider_key" — started without a usable provider key).
+	// It surfaces via GET /health as {ok:false, reason:...} and blocks session
+	// creation, so a managed launcher can attach and guide the user instead of
+	// facing a crash-loop. Empty means fully healthy.
+	DegradedReason string
 }
 
 // Server is the long-lived HTTP server bound by serve. Construct via

@@ -124,6 +124,16 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// Degraded (e.g. no provider key): the server is reachable for /health and
+	// read-only endpoints, but a session would be un-runnable. Reject creation
+	// with the machine-readable reason so the launcher can guide configuration.
+	if s.cfg.DegradedReason != "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"code":    s.cfg.DegradedReason,
+			"message": "agent is not fully configured; no usable provider is available",
+		})
+		return
+	}
 	if !requireJSONBody(w, r) {
 		return
 	}
