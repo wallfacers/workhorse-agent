@@ -616,8 +616,6 @@ func (s *Session) SetAllowedTools(tools []string) {
 	s.updatedAt = time.Now().UTC()
 }
 
-// SetFrontendToolNames records the names of the currently registered frontend
-// tools so a subsequent publish can unregister them first.
 // SetFrontend stores the frontend tool bridge. Guarded by mu.
 func (s *Session) SetFrontend(b FrontendResolver) {
 	s.mu.Lock()
