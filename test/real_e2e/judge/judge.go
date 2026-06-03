@@ -43,9 +43,28 @@ type Judge interface {
 
 func judgeCacheKey(trace *Trace, rubric Rubric) string {
 	h := sha256.New()
-	json.NewEncoder(h).Encode(trace)
+	json.NewEncoder(h).Encode(normalizeTrace(trace))
 	json.NewEncoder(h).Encode(rubric)
 	return fmt.Sprintf("%x", h.Sum(nil))[:16]
+}
+
+// normalizeTrace returns a copy of the trace with non-deterministic fields
+// zeroed so the cache key is stable across record and replay runs. Per-turn
+// Duration is wall-clock (time.Since) and varies every run; including it in the
+// hash meant the judge cache never hit cross-run, forcing a live API call (and
+// a skip without a key). Everything that actually affects the verdict —
+// model output, tool calls, tool results — is preserved.
+func normalizeTrace(trace *Trace) *Trace {
+	if trace == nil {
+		return nil
+	}
+	out := *trace
+	out.Turns = make([]Turn, len(trace.Turns))
+	for i, turn := range trace.Turns {
+		turn.Duration = 0
+		out.Turns[i] = turn
+	}
+	return &out
 }
 
 func loadCachedJudge(dir, key string) (*JudgeResult, error) {
