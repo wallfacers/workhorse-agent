@@ -52,6 +52,8 @@ endpoint receives `400 Bad Request` with
 | POST   | `/v1/sessions/{id}/compact`                | Trigger context compaction.                                   |
 | POST   | `/v1/sessions/{id}/stream`                 | Submit one ClientEvent.                                       |
 | GET    | `/v1/sessions/{id}/stream`                 | Subscribe to the SSE event stream.                            |
+| GET    | `/v1/projects`                             | List known projects (distinct workdirs with ≥1 session).      |
+| DELETE | `/v1/projects?workdir=<path>`              | Delete a project record: hard-delete all sessions under the workdir (directory untouched). Returns `{deleted}`; missing `workdir` → 400. |
 | GET    | `/debug/sessions/{id}/events?since=N`      | NDJSON replay of events with `idx > N`. Requires `debug.enabled`. |
 | GET    | `/health`                                  | Liveness probe. Returns `{ok, version, uptime_sec, sessions_active}`. |
 | GET    | `/ui`                                      | Embedded reference web UI (static asset).                     |

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -269,5 +270,78 @@ func mustAppend(t *testing.T, st store.Store, sessionID, msgID, role, contentJSO
 		ID: msgID, SessionID: sessionID, Role: role, ContentJSON: contentJSON, CreatedAt: at,
 	}); err != nil {
 		t.Fatalf("append %s: %v", msgID, err)
+	}
+}
+
+// deleteProject issues DELETE /v1/projects?workdir= and returns status + body.
+func deleteProject(t *testing.T, baseURL, workdir string) (int, map[string]any) {
+	t.Helper()
+	u := baseURL + "/v1/projects"
+	if workdir != "" {
+		u += "?workdir=" + url.QueryEscape(workdir)
+	}
+	req, _ := http.NewRequest(http.MethodDelete, u, nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE %s: %v", u, err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	return resp.StatusCode, body
+}
+
+// A project is a derived view (distinct workdir with >=1 non-deleted session), so
+// deleting it hard-purges every session under that workdir and leaves siblings.
+func TestDeleteProject_PurgesAllSessionsForWorkdir(t *testing.T) {
+	st, _, url := newProjectServer(t)
+	seedSession(t, st, "01ARZ3NDEKTSV4RRFFQ69G5FB1", "/proj/del", "one")
+	seedSession(t, st, "01ARZ3NDEKTSV4RRFFQ69G5FB2", "/proj/del", "two")
+	mustAppend(t, st, "01ARZ3NDEKTSV4RRFFQ69G5FB1", "m1", "user", `[{"type":"text","text":"hi"}]`, time.Now().UTC())
+	seedSession(t, st, "01ARZ3NDEKTSV4RRFFQ69G5FB3", "/proj/keep", "other")
+
+	status, body := deleteProject(t, url, "/proj/del")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if got := body["deleted"]; got != float64(2) {
+		t.Fatalf("deleted = %v, want 2", got)
+	}
+
+	// Rows + transcripts gone; the workdir vanishes from /v1/projects; sibling stays.
+	if _, err := st.GetSession(context.Background(), "01ARZ3NDEKTSV4RRFFQ69G5FB1"); err == nil {
+		t.Error("session row should be hard-deleted")
+	}
+	if msgs, _ := st.ListMessages(context.Background(), "01ARZ3NDEKTSV4RRFFQ69G5FB1"); len(msgs) != 0 {
+		t.Errorf("transcript should be purged, got %d messages", len(msgs))
+	}
+	for _, p := range getJSON(t, url+"/v1/projects")["projects"].([]any) {
+		if p.(map[string]any)["path"] == "/proj/del" {
+			t.Fatalf("/proj/del still listed after delete")
+		}
+	}
+	if sessions, _ := getJSON(t, url+"/v1/sessions?workdir=/proj/del")["sessions"].([]any); len(sessions) != 0 {
+		t.Errorf("want 0 sessions for /proj/del, got %v", sessions)
+	}
+	if sessions, _ := getJSON(t, url+"/v1/sessions?workdir=/proj/keep")["sessions"].([]any); len(sessions) != 1 {
+		t.Errorf("sibling project /proj/keep should be untouched, got %v", sessions)
+	}
+}
+
+func TestDeleteProject_MissingWorkdirIs400(t *testing.T) {
+	_, _, url := newProjectServer(t)
+	if status, _ := deleteProject(t, url, ""); status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", status)
+	}
+}
+
+func TestDeleteProject_EmptyWorkdirIsIdempotent(t *testing.T) {
+	_, _, url := newProjectServer(t)
+	status, body := deleteProject(t, url, "/proj/never-existed")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if got := body["deleted"]; got != float64(0) {
+		t.Fatalf("deleted = %v, want 0", got)
 	}
 }

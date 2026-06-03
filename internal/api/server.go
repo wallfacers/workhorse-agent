@@ -137,6 +137,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/sessions/{id}/approvals/{aid}", s.handleAdapterApproval)
 	mux.HandleFunc("/v1/sessions/{id}/stream", s.handleStream)
 	mux.HandleFunc("GET /v1/projects", s.handleListProjects)
+	mux.HandleFunc("DELETE /v1/projects", s.handleDeleteProject)
 
 	mux.HandleFunc("GET /v1/permissions", s.handleListPermissions)
 	mux.HandleFunc("POST /v1/permissions", s.handleCreatePermission)
