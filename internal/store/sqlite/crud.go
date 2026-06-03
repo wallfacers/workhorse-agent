@@ -109,11 +109,11 @@ func (s *Store) ListSessionsByWorkdir(ctx context.Context, workdir string) ([]*s
 }
 
 // ListAllSessions is ListSessionsByWorkdir without the workdir filter: every
-// non-deleted session across all projects, newest-updated first.
+// non-deleted session across all projects, newest-updated first, capped at 100.
 func (s *Store) ListAllSessions(ctx context.Context) ([]*store.SessionSummary, error) {
 	rows, err := s.db.QueryContext(ctx, sessionSummarySelect+
 		` WHERE s.deleted_at IS NULL
-		 ORDER BY s.updated_at DESC, s.id`)
+		 ORDER BY s.updated_at DESC, s.id LIMIT 100`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: ListAllSessions: %w", err)
 	}

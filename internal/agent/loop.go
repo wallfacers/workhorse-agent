@@ -274,7 +274,7 @@ func (l *Loop) runTurnSafe(parent context.Context, msg session.ClientMessage) {
 	}
 
 	if turnCtx.Err() != nil {
-		l.finishCancelledTurn()
+		l.finishCancelledTurn(parent)
 	}
 
 	// Always end the turn in Idle. ForceTransition skips the from-check
@@ -290,7 +290,10 @@ func (l *Loop) runTurnSafe(parent context.Context, msg session.ClientMessage) {
 // The wait-for-tools step (checklist item 3 in the spec) lives in runTurnSafe
 // via the drain-budget select; this function only handles the synchronous
 // bookkeeping that should never block.
-func (l *Loop) finishCancelledTurn() {
+func (l *Loop) finishCancelledTurn(parent context.Context) {
+	cleanupCtx, cleanupCancel := context.WithTimeout(parent, 10*time.Second)
+	defer cleanupCancel()
+
 	pending := l.Session.DrainPendingToolUses()
 	if len(pending) > 0 {
 		blocks := make([]provider.ContentBlock, 0, len(pending))
@@ -302,29 +305,29 @@ func (l *Loop) finishCancelledTurn() {
 				IsError:   true,
 			})
 		}
-		l.Session.AppendMessage(context.Background(), provider.Message{
+		l.Session.AppendMessage(cleanupCtx, provider.Message{
 			Role:    provider.RoleUser,
 			Content: blocks,
 		})
 	}
-		// Persist the interrupted flag on the last assistant message so the
-		// marker survives session rehydration (persist-interrupted-message-flag D8).
-		if err := l.Session.MarkMessageInterrupted(context.Background()); err != nil {
-			l.logger().Warn("agent: mark message interrupted failed", "err", err)
-		}
-		if l.Session.State() != session.StateCancelled {
-			_ = l.Session.ForceTransition(session.StateCancelled)
-		}
-		// Include the store message ID in the interrupted event payload so SSE
-		// consumers can correlate the event with a specific message (D9).
-		payload := map[string]any{}
-		if msgID := l.Session.LastAssistantMessageID(); msgID != "" {
-			payload["message_id"] = msgID
-		}
-		if !l.Session.EmitNow("interrupted", payload) {
-			l.logger().Warn("agent: interrupted event dropped (outbox full)")
-		}
+	// Persist the interrupted flag on the last assistant message so the
+	// marker survives session rehydration (persist-interrupted-message-flag D8).
+	if err := l.Session.MarkMessageInterrupted(cleanupCtx); err != nil {
+		l.logger().Warn("agent: mark message interrupted failed", "err", err)
 	}
+	if l.Session.State() != session.StateCancelled {
+		_ = l.Session.ForceTransition(session.StateCancelled)
+	}
+	// Include the store message ID in the interrupted event payload so SSE
+	// consumers can correlate the event with a specific message (D9).
+	payload := map[string]any{}
+	if msgID := l.Session.LastAssistantMessageID(); msgID != "" {
+		payload["message_id"] = msgID
+	}
+	if !l.Session.EmitNow("interrupted", payload) {
+		l.logger().Warn("agent: interrupted event dropped (outbox full)")
+	}
+}
 
 // drainOrphanedPending drains pending tool uses that were registered before a
 // provider fatal error. Unlike finishCancelledTurn it does not emit "interrupted"

@@ -64,12 +64,6 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		resp["reason"] = degraded
 	}
 
-	// Omit default_workdir when it cannot be resolved (no override, no home) so
-	// the client falls back to its project picker rather than a launch cwd.
-	if wd := s.defaultWorkdir(); wd != "" {
-		resp["default_workdir"] = wd
-	}
-
 	if distro := getDistro(); distro != "" {
 		resp["distro"] = distro
 	}

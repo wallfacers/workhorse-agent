@@ -249,12 +249,17 @@ func (s *Server) listSessionsByWorkdir(w http.ResponseWriter, r *http.Request, w
 
 // summariesToMeta projects persisted summaries to wire metas, overlaying live
 // status: a session currently running a turn reports "running"; everything
-// persisted-but-idle reports "idle".
+// persisted-but-idle reports "idle". Uses a single ListSessions call to build a
+// lookup map instead of N individual GetSession calls.
 func (s *Server) summariesToMeta(rows []*store.SessionSummary) []sessionMeta {
+	liveByID := make(map[string]*session.Session)
+	for _, sess := range s.manager.ListSessions() {
+		liveByID[sess.ID] = sess
+	}
 	out := make([]sessionMeta, 0, len(rows))
 	for _, row := range rows {
 		status := "idle"
-		if live, err := s.manager.GetSession(row.ID); err == nil {
+		if live, ok := liveByID[row.ID]; ok {
 			status = live.Status()
 		}
 		out = append(out, metaFromSummary(row, status))
@@ -508,18 +513,24 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deleted := 0
+	var failures []string
 	for _, sum := range sessions {
-		// manager.DeleteSession cancels any running turn then hard-purges with
-		// cascade. ErrNotFound means a concurrent delete already removed it —
-		// treat as benign so the operation stays idempotent.
 		derr := s.manager.DeleteSession(r.Context(), sum.ID, s.cfg.GracefulShutdownTimeout)
-		if derr != nil && !errors.Is(derr, session.ErrNotFound) {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{
-				"code": "internal", "message": derr.Error(),
-			})
-			return
+		if derr != nil {
+			if errors.Is(derr, session.ErrNotFound) {
+				continue
+			}
+			failures = append(failures, sum.ID)
+			continue
 		}
 		deleted++
+	}
+	if len(failures) > 0 {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"code": "internal", "message": "some sessions failed to delete",
+			"deleted": deleted, "failed": failures,
+		})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
 }
@@ -537,12 +548,12 @@ type historyPart struct {
 	Output   json.RawMessage `json:"output,omitempty"`
 }
 
-	type historyMessage struct {
-		ID          string        `json:"id"`
-		Role        string        `json:"role"`
-		Parts       []historyPart `json:"parts"`
-		Interrupted bool          `json:"interrupted,omitempty"`
-	}
+type historyMessage struct {
+	ID          string        `json:"id"`
+	Role        string        `json:"role"`
+	Parts       []historyPart `json:"parts"`
+	Interrupted bool          `json:"interrupted,omitempty"`
+}
 
 // buildHistory converts stored messages into wire HistoryMessage slices.
 func buildHistory(msgs []*store.Message) []historyMessage {
@@ -606,7 +617,7 @@ func buildHistory(msgs []*store.Message) []historyMessage {
 		if len(allParts[i]) == 0 {
 			continue
 		}
-			result = append(result, historyMessage{ID: pm.id, Role: pm.role, Parts: allParts[i], Interrupted: msgs[i].Interrupted})
+		result = append(result, historyMessage{ID: pm.id, Role: pm.role, Parts: allParts[i], Interrupted: msgs[i].Interrupted})
 	}
 	return result
 }

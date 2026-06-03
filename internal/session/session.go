@@ -556,18 +556,26 @@ func (s *Session) ReplaceHistory(ctx context.Context, msgs []provider.Message) {
 	}
 
 	rows := make([]*store.Message, 0, len(pre))
+	var lastAssistantRowID string
 	for i, sm := range pre {
+		rowID := idgen.NewULID()
 		rows = append(rows, &store.Message{
-			ID:          idgen.NewULID(),
+			ID:          rowID,
 			SessionID:   s.ID,
 			Role:        sm.role,
 			ContentJSON: sm.content,
 			StopReason:  sm.reason,
 			CreatedAt:   now.Add(time.Duration(i) * time.Microsecond),
 		})
+		if sm.role == string(provider.RoleAssistant) {
+			lastAssistantRowID = rowID
+		}
 	}
 	if err := s.store.ReplaceMessages(ctx, s.ID, rows); err != nil {
 		slog.Error("session: replace messages", "session", s.ID, "err", err)
+	}
+	if lastAssistantRowID != "" {
+		s.lastAssistantMsgID = lastAssistantRowID
 	}
 	s.mu.Unlock()
 }
