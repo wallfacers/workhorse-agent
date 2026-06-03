@@ -188,19 +188,38 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListSessions serves GET /v1/sessions. With ?workdir=<path> it returns
-// the project-scoped, persistence-backed listing (survives restart); without it
-// it lists the currently-live sessions.
+// the project-scoped, persistence-backed listing (the in-app switcher); without
+// it, the full persisted set across ALL projects (the cross-project
+// session-management view). Both survive restart and overlay live status.
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	if workdir := r.URL.Query().Get("workdir"); workdir != "" {
 		s.listSessionsByWorkdir(w, r, workdir)
 		return
 	}
-	all := s.manager.ListSessions()
-	out := make([]sessionMeta, 0, len(all))
-	for _, sess := range all {
-		out = append(out, metaFromLive(sess))
+	s.listAllSessions(w, r)
+}
+
+// listAllSessions backs GET /v1/sessions with no workdir: every non-deleted
+// persisted session across all projects, live status overlaid. Falls back to the
+// live-only set when no persistent store is configured.
+func (s *Server) listAllSessions(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		all := s.manager.ListSessions()
+		out := make([]sessionMeta, 0, len(all))
+		for _, sess := range all {
+			out = append(out, metaFromLive(sess))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
+		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
+	rows, err := s.store.ListAllSessions(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"code": "internal", "message": "list sessions failed",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": s.summariesToMeta(rows)})
 }
 
 func (s *Server) listSessionsByWorkdir(w http.ResponseWriter, r *http.Request, workdir string) {
@@ -215,17 +234,22 @@ func (s *Server) listSessionsByWorkdir(w http.ResponseWriter, r *http.Request, w
 		})
 		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": s.summariesToMeta(rows)})
+}
+
+// summariesToMeta projects persisted summaries to wire metas, overlaying live
+// status: a session currently running a turn reports "running"; everything
+// persisted-but-idle reports "idle".
+func (s *Server) summariesToMeta(rows []*store.SessionSummary) []sessionMeta {
 	out := make([]sessionMeta, 0, len(rows))
 	for _, row := range rows {
-		// Overlay live status: a session currently running a turn reports
-		// "running"; everything persisted-but-idle reports "idle".
 		status := "idle"
 		if live, err := s.manager.GetSession(row.ID); err == nil {
 			status = live.Status()
 		}
 		out = append(out, metaFromSummary(row, status))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
+	return out
 }
 
 func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
