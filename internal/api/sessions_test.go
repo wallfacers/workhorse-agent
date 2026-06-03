@@ -300,3 +300,58 @@ func TestIsJSONContentType(t *testing.T) {
 		}
 	}
 }
+
+func TestListSessions_AllPersistedAcrossWorkdirs(t *testing.T) {
+	st := newSQLiteStore(t)
+	mgr := session.NewManager(session.ManagerOptions{Store: st})
+	s := NewServer(Config{
+		Host:                    "127.0.0.1",
+		Port:                    0,
+		MaxRequestBodyBytes:     1 << 20,
+		GracefulShutdownTimeout: 5 * time.Second,
+		Version:                 "test",
+	}, mgr, st, newDiscardLogger())
+	ts := httptestServer(t, s)
+
+	// Create sessions across two different workdirs.
+	for _, wd := range []string{"/tmp/projA", "/tmp/projB"} {
+		_, err := mgr.CreateSession(context.Background(), session.Options{
+			Workdir: wd, Ephemeral: false, Model: "m", ProviderName: "anthropic",
+		})
+		if err != nil {
+			t.Fatalf("create session: %v", err)
+		}
+	}
+
+	resp, err := http.Get(ts.URL + "/v1/sessions")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: %d: %s", resp.StatusCode, raw)
+	}
+
+	var body struct {
+		Sessions []sessionMeta `json:"sessions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Sessions) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(body.Sessions))
+	}
+
+	// Each session should carry its own workdir.
+	workdirs := map[string]bool{}
+	for _, sm := range body.Sessions {
+		workdirs[sm.Workdir] = true
+		if sm.Status != "idle" {
+			t.Fatalf("session %s status: %q, want idle", sm.ID, sm.Status)
+		}
+	}
+	if !workdirs["/tmp/projA"] || !workdirs["/tmp/projB"] {
+		t.Fatalf("expected both workdirs, got: %v", workdirs)
+	}
+}

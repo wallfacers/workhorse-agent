@@ -63,7 +63,12 @@ func NewRecordingProvider(inner provider.Provider, mode RecordMode, dir, testID 
 	}
 }
 
-func (rp *RecordingProvider) Name() string { return rp.inner.Name() }
+func (rp *RecordingProvider) Name() string {
+	if rp.inner != nil {
+		return rp.inner.Name()
+	}
+	return "recording-provider"
+}
 
 func (rp *RecordingProvider) Stream(ctx context.Context, req provider.Request) (<-chan provider.ProviderEvent, error) {
 	switch rp.mode {

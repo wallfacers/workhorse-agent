@@ -24,16 +24,18 @@ var DefaultCapabilities = []string{
 }
 
 // defaultWorkdir resolves the sidecar's default project directory:
-// config override (server.default_workdir) > os.Getwd().
+// config override (server.default_workdir) > os.UserHomeDir().
+// Returns empty string when neither is available, signalling the
+// assistant to route to the project picker.
 func (s *Server) defaultWorkdir() string {
 	if s.cfg.DefaultWorkdir != "" {
 		return s.cfg.DefaultWorkdir
 	}
-	wd, _ := os.Getwd()
-	if wd == "" {
-		wd = "/"
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
 	}
-	return wd
+	return home
 }
 
 // handleHealth answers GET /health. The endpoint is intentionally exempt from
@@ -52,8 +54,10 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"capabilities":     DefaultCapabilities,
 		"uptime_sec":       int(time.Since(s.startedAt).Seconds()),
 		"sessions_active":  s.manager.CountActive(),
-		"default_workdir":  s.defaultWorkdir(),
 		"platform":         runtime.GOOS,
+	}
+	if wd := s.defaultWorkdir(); wd != "" {
+		resp["default_workdir"] = wd
 	}
 	if degraded != "" {
 		resp["reason"] = degraded

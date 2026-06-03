@@ -245,6 +245,9 @@ func runScenario(t *testing.T, cfg scenarioConfig) (*judge.Trace, *judge.JudgeRe
 	}
 
 	judgeMode := os.Getenv("WORKHORSE_JUDGE_MODE")
+	if judgeMode == "" {
+		judgeMode = "cached"
+	}
 	if judgeMode == "off" {
 		return trace, nil
 	}

@@ -28,8 +28,11 @@ type fsListResponse struct {
 	Entries []fsEntry `json:"entries"`
 }
 
-// handleFSList answers GET /v1/fs/list?path=<dir>. It enumerates a single
-// directory within the sidecar filesystem, respecting a virtual-FS blacklist.
+// handleFSList answers GET /v1/fs/list?path=<dir>&root=<confinement>.
+// It enumerates a single directory within the sidecar filesystem, respecting
+// a virtual-FS blacklist and optional workdir confinement. When ?root= is
+// provided, confinement follows that root instead of the server's global
+// DefaultWorkdir, enabling the frontend to browse arbitrary directories.
 func (s *Server) handleFSList(w http.ResponseWriter, r *http.Request) {
 	dir := r.URL.Query().Get("path")
 	if dir == "" {
@@ -55,7 +58,13 @@ func (s *Server) handleFSList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !isWithinWorkdir(clean, s.cfg.DefaultWorkdir) {
+	// Determine confinement root: explicit ?root= wins, else DefaultWorkdir.
+	confinementRoot := s.cfg.DefaultWorkdir
+	if root := r.URL.Query().Get("root"); root != "" {
+		confinementRoot = root
+	}
+
+	if !isWithinWorkdir(clean, confinementRoot) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden"})
 		return
 	}

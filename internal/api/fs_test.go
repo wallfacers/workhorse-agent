@@ -205,3 +205,50 @@ func TestFSList_SymlinkResolved(t *testing.T) {
 		t.Fatalf("path: %q want %q", body.Path, target)
 	}
 }
+
+func TestFSList_RootParamOverridesConfinement(t *testing.T) {
+	// DefaultWorkdir is set to projectDir, but we browse browseDir via ?root=.
+	projectDir := t.TempDir()
+	browseDir := t.TempDir()
+	os.WriteFile(filepath.Join(browseDir, "inside.txt"), []byte("x"), 0o644)
+
+	_, ts := newTestServer(t, func(c *Config) {
+		c.DefaultWorkdir = projectDir
+	})
+
+	resp, err := http.Get(ts.URL + "/v1/fs/list?path=" + browseDir + "&root=" + browseDir)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: %d want 200 (root= should override confinement)", resp.StatusCode)
+	}
+
+	var body fsListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Entries) != 1 || body.Entries[0].Name != "inside.txt" {
+		t.Fatalf("entries: %v", body.Entries)
+	}
+}
+
+func TestFSList_RootParamEscapeStill403(t *testing.T) {
+	rootDir := t.TempDir()
+	os.Mkdir(filepath.Join(rootDir, "allowed"), 0o755)
+
+	_, ts := newTestServer(t, func(c *Config) {
+		c.DefaultWorkdir = rootDir
+	})
+
+	// Browse /etc with root= set to rootDir — /etc is outside root, should 403.
+	resp, err := http.Get(ts.URL + "/v1/fs/list?path=/etc&root=" + rootDir)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: %d want 403 (path outside root)", resp.StatusCode)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -69,17 +70,19 @@ func TestHealth_DefaultWorkdirAndPlatform(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 
+	// Without explicit config, default_workdir should resolve to home directory.
 	wd, ok := body["default_workdir"].(string)
 	if !ok || wd == "" {
 		t.Fatalf("default_workdir missing or empty: %v", body["default_workdir"])
+	}
+	home, _ := os.UserHomeDir()
+	if home != "" && wd != home {
+		t.Fatalf("default_workdir: %q, want home %q", wd, home)
 	}
 
 	plat, ok := body["platform"].(string)
 	if !ok || plat == "" {
 		t.Fatalf("platform missing or empty: %v", body["platform"])
-	}
-	if plat == "" {
-		t.Fatalf("platform should not be empty")
 	}
 }
 

@@ -199,16 +199,42 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 // handleListSessions serves GET /v1/sessions. With ?workdir=<path> it returns
 // the project-scoped, persistence-backed listing (survives restart); without it
-// it lists the currently-live sessions.
+// it returns the full persisted session list across all projects with live-status
+// overlay, falling back to in-memory live sessions when no store is configured.
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 	if workdir := r.URL.Query().Get("workdir"); workdir != "" {
 		s.listSessionsByWorkdir(w, r, workdir)
 		return
 	}
-	all := s.manager.ListSessions()
-	out := make([]sessionMeta, 0, len(all))
-	for _, sess := range all {
-		out = append(out, metaFromLive(sess))
+	// No store configured (e.g. in-memory tests): return live-only listing.
+	if s.store == nil {
+		all := s.manager.ListSessions()
+		out := make([]sessionMeta, 0, len(all))
+		for _, sess := range all {
+			out = append(out, metaFromLive(sess))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
+		return
+	}
+	// Full persisted listing across all projects with live-status overlay.
+	rows, err := s.store.ListSessions(r.Context(), false)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"code": "internal", "message": "list sessions failed",
+		})
+		return
+	}
+	out := make([]sessionMeta, 0, len(rows))
+	for _, row := range rows {
+		status := "idle"
+		if live, lerr := s.manager.GetSession(row.ID); lerr == nil {
+			status = live.Status()
+		}
+		msgCount, _ := s.store.CountMessages(r.Context(), row.ID)
+		out = append(out, metaFromSummary(&store.SessionSummary{
+			Session:      *row,
+			MessageCount: msgCount,
+		}, status))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": out})
 }

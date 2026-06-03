@@ -6,14 +6,14 @@ import (
 	"testing"
 )
 
-func TestValidateWorkdir_EmptyFallsBackToCwd(t *testing.T) {
+func TestValidateWorkdir_EmptyFallsBackToHome(t *testing.T) {
 	got, err := ValidateWorkdir("")
 	if err != nil {
 		t.Fatalf("empty workdir: %v", err)
 	}
-	want, _ := os.Getwd()
-	if got != want {
-		t.Fatalf("expected cwd %q, got %q", want, got)
+	want, _ := os.UserHomeDir()
+	if want != "" && got != want {
+		t.Fatalf("expected home %q, got %q", want, got)
 	}
 }
 

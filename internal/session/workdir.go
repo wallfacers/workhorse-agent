@@ -12,7 +12,7 @@ import (
 var ErrInvalidWorkdir = errors.New("session: invalid workdir")
 
 // ValidateWorkdir normalises and validates a workdir value.
-//   - empty string → os.Getwd()
+//   - empty string → os.UserHomeDir()
 //   - must be an absolute path
 //   - symlinks are resolved (as far as possible)
 //   - resolved path must not be "/"
@@ -20,11 +20,11 @@ var ErrInvalidWorkdir = errors.New("session: invalid workdir")
 // Returns the cleaned, resolved path on success.
 func ValidateWorkdir(workdir string) (string, error) {
 	if workdir == "" {
-		wd, err := os.Getwd()
+		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", fmt.Errorf("%w: resolve cwd: %w", ErrInvalidWorkdir, err)
+			return "", fmt.Errorf("%w: resolve home: %w", ErrInvalidWorkdir, err)
 		}
-		workdir = wd
+		workdir = home
 	}
 	if !filepath.IsAbs(workdir) {
 		return "", fmt.Errorf("%w: must be absolute: %q", ErrInvalidWorkdir, workdir)
