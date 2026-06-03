@@ -32,6 +32,10 @@ TBD - created by archiving change init-workhorse-agent-mvp. Update Purpose after
   已存在、可能 idle(非刚创建)的会话工作
 - `GET /v1/fs/list` — 列出目录内容；接受 `?path=<dir>` 和可选 `?root=<project_root>` 参数；`root` 限定可浏览范围
 - `GET /v1/projects` — 列出已知项目(`{ "projects": [ProjectMeta] }`)
+- `DELETE /v1/projects?workdir=<path>` — 删除某项目记录:硬删该 `workdir` 下全部会话
+  (每个会话先取消在跑 turn 再级联硬删 transcript),不触碰磁盘目录;返回
+  `{ "deleted": <int> }`。缺省/空 `workdir` SHALL 返回 `400`;无匹配会话时为
+  幂等成功(`deleted: 0`)
 - `GET /debug/sessions/{id}/events?since=N` — 事件回放（DEBUG 模式）
 - `GET /health` — 健康检查，返回 `ok`、`version`、`protocol_version`、`capabilities`、`uptime_sec`、`sessions_active`、`default_workdir`、`platform`
 - `GET /ui` — 内嵌参考 Web UI
@@ -53,6 +57,19 @@ TBD - created by archiving change init-workhorse-agent-mvp. Update Purpose after
 
 - **WHEN** 客户端 DELETE `/v1/sessions/<不存在的 id>`
 - **THEN** 服务返回 `404 Not Found`
+
+#### Scenario: 删除项目记录
+
+- **WHEN** 客户端 DELETE `/v1/projects?workdir=/tmp/proj`,该 workdir 下有 N 个会话
+- **THEN** 服务硬删这 N 个会话(先取消在跑 turn,级联清 transcript),返回 `200` 与
+  `{ "deleted": N }`
+- **AND** 随后 `GET /v1/projects` 不再包含该 workdir,`GET /v1/sessions?workdir=/tmp/proj` 为空
+- **AND** 磁盘上的 `/tmp/proj` 目录不被改动或删除
+
+#### Scenario: 删除项目缺省 workdir
+
+- **WHEN** 客户端 DELETE `/v1/projects`(未携带 `workdir`)或 `workdir` 为空
+- **THEN** 服务返回 `400 Bad Request`
 
 #### Scenario: 健康检查
 
@@ -595,6 +612,53 @@ ordering and Last-Event-ID replay behave like every other event.
 
 - **WHEN** 客户端 GET `/v1/projects`
 - **THEN** 服务返回 `{ "projects": [ProjectMeta] }`,每项至少含 `path`
+
+### Requirement: HistoryMessage 含 interrupted 标志
+
+`HistoryMessage` SHALL 含 `id`、`role`(`'user'|'assistant'`)与有序的 `parts[]`;
+`parts[].type` ∈ { `text`、`reasoning`、`tool_call` },字段名 SHALL 与下游 SSE 事件
+词汇及前端消费侧逐字一致(消费侧对 history 不做字段重映射):
+
+- `text`:`content`
+- `reasoning`:`text`、`status`(SHALL 物理出现且为 `"done"`)、`redacted?`
+- `tool_call`:`id`、`name`、`input`、`status` ∈ `'done'|'error'`、`output?`
+
+`tool_call` 的 `id`/`name` SHALL 是工具调用的对外标识与工具名(即下游事件里的
+`id`/`name`),而非内部存储字段名。`status`(SessionMeta)SHALL 严格 ∈
+`{ 'idle', 'running' }`;`title`(SessionMeta)SHALL 始终出现(可为空串,不得省略)。
+
+`HistoryMessage` SHALL 包含可选的 `interrupted` 字段（`boolean`）。该字段 SHALL
+在消息级出现（非 `parts[]` 内），仅对 `role: "assistant"` 的消息有意义。消费者
+SHALL 容忍该字段缺失（`undefined` 视为 `false`）。
+
+#### Scenario: 会话投影为 camelCase
+
+- **WHEN** 客户端 GET `/v1/sessions/{id}`
+- **THEN** 服务返回 camelCase 的 `SessionMeta`(如 `createdAt`、`messageCount`),
+  含 `status` ∈ `{ "idle", "running" }`、始终存在的 `title`
+
+#### Scenario: history 的 reasoning part 携带 done 状态
+
+- **WHEN** 客户端 GET `/v1/sessions/{id}/history`,某助手消息含一个 thinking 块
+- **THEN** 对应 `parts[]` 元素为 `{ "type":"reasoning", "text":..., "status":"done", "redacted":<bool> }`,
+  其中 `status` 字段物理存在
+
+#### Scenario: history 的 tool_call 用对外字段名
+
+- **WHEN** 客户端 GET `/v1/sessions/{id}/history`,某消息含一次工具调用及其结果
+- **THEN** 对应 `parts[]` 元素为 `{ "type":"tool_call", "id":..., "name":..., "input":..., "status":"done"|"error", "output":... }`,
+  使用 `id`/`name`/`input`/`output` 而非内部存储字段名
+
+#### Scenario: 中断消息的 history 含 interrupted 标志
+
+- **WHEN** 客户端 GET `/v1/sessions/{id}/history`,某助手消息在中断回合中被标记为 interrupted
+- **THEN** 该消息的 JSON 对象 SHALL 包含 `"interrupted": true` 字段
+- **AND** 客户端重建消息列表时该消息 SHALL 显示中断标记
+
+#### Scenario: 未中断消息不含 interrupted 字段
+
+- **WHEN** 客户端 GET `/v1/sessions/{id}/history`,某消息未被中断
+- **THEN** 该消息的 JSON 对象 SHALL NOT 包含 `"interrupted": true`（可为 `false` 或缺省）
 
 ### Requirement: /health 降级原因字段
 

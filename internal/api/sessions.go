@@ -484,6 +484,48 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"projects": out})
 }
 
+// handleDeleteProject serves DELETE /v1/projects?workdir=<path>. A project is a
+// derived view (a distinct workdir with at least one non-deleted session), so
+// deleting a project record hard-deletes every session under that workdir,
+// reusing the same graceful-stop + purge path as DELETE /v1/sessions/{id}. The
+// on-disk directory is never touched. Missing/empty workdir → 400; a workdir with
+// no sessions is an idempotent no-op (deleted: 0).
+func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
+	workdir := r.URL.Query().Get("workdir")
+	if workdir == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"code": "validation", "message": "workdir query parameter is required",
+		})
+		return
+	}
+	if s.store == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": 0})
+		return
+	}
+	sessions, err := s.store.ListSessionsByWorkdir(r.Context(), workdir)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"code": "internal", "message": err.Error(),
+		})
+		return
+	}
+	deleted := 0
+	for _, sum := range sessions {
+		// manager.DeleteSession cancels any running turn then hard-purges with
+		// cascade. ErrNotFound means a concurrent delete already removed it —
+		// treat as benign so the operation stays idempotent.
+		derr := s.manager.DeleteSession(r.Context(), sum.ID, s.cfg.GracefulShutdownTimeout)
+		if derr != nil && !errors.Is(derr, session.ErrNotFound) {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"code": "internal", "message": derr.Error(),
+			})
+			return
+		}
+		deleted++
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
+}
+
 // historyPart is one content block in a HistoryMessage (add-project-sessions D4).
 type historyPart struct {
 	Type     string          `json:"type"`
@@ -497,11 +539,12 @@ type historyPart struct {
 	Output   json.RawMessage `json:"output,omitempty"`
 }
 
-type historyMessage struct {
-	ID    string        `json:"id"`
-	Role  string        `json:"role"`
-	Parts []historyPart `json:"parts"`
-}
+	type historyMessage struct {
+		ID          string        `json:"id"`
+		Role        string        `json:"role"`
+		Parts       []historyPart `json:"parts"`
+		Interrupted bool          `json:"interrupted,omitempty"`
+	}
 
 // buildHistory converts stored messages into wire HistoryMessage slices.
 func buildHistory(msgs []*store.Message) []historyMessage {
@@ -565,7 +608,7 @@ func buildHistory(msgs []*store.Message) []historyMessage {
 		if len(allParts[i]) == 0 {
 			continue
 		}
-		result = append(result, historyMessage{ID: pm.id, Role: pm.role, Parts: allParts[i]})
+			result = append(result, historyMessage{ID: pm.id, Role: pm.role, Parts: allParts[i], Interrupted: msgs[i].Interrupted})
 	}
 	return result
 }

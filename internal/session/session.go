@@ -281,6 +281,12 @@ type Session struct {
 	title     string
 	updatedAt time.Time
 
+	// lastAssistantMsgID is the ULID of the most recent assistant message
+	// appended via AppendMessage. Set inside the mu-locked section; read via
+	// LastAssistantMessageID(). Used by finishCancelledTurn to target the
+	// MarkMessageInterrupted UPDATE.
+	lastAssistantMsgID string
+
 	// adapterSetupDedup tracks per-session adapter-generation state for the
 	// implicit-trigger Plan A flow (add-llm-adapter-generator §10.2). The
 	// map survives across turns within a session and is discarded with the
@@ -485,10 +491,35 @@ func (s *Session) AppendMessage(ctx context.Context, m provider.Message) {
 		StopReason:  string(m.StopReason),
 		CreatedAt:   now,
 	}
+	if m.Role == provider.RoleAssistant {
+		s.lastAssistantMsgID = row.ID
+	}
 	if err := s.store.AppendMessage(ctx, row); err != nil {
 		slog.Error("session: persist message", "session", s.ID, "err", err)
 	}
 	s.mu.Unlock()
+}
+
+// LastAssistantMessageID returns the ULID of the most recent assistant message
+// appended via AppendMessage. Returns an empty string when no assistant message
+// has been appended yet or when the session is ephemeral.
+func (s *Session) LastAssistantMessageID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastAssistantMsgID
+}
+
+// MarkMessageInterrupted persists the interrupted flag on the last assistant
+// message. No-op when the session is ephemeral, store-less, or has no assistant
+// message yet.
+func (s *Session) MarkMessageInterrupted(ctx context.Context) error {
+	s.mu.Lock()
+	msgID := s.lastAssistantMsgID
+	s.mu.Unlock()
+	if s.store == nil || s.Ephemeral || msgID == "" {
+		return nil
+	}
+	return s.store.MarkMessageInterrupted(ctx, msgID)
 }
 
 // ReplaceHistory swaps the entire history slice. Used by the compactor after a

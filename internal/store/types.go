@@ -65,6 +65,7 @@ type Message struct {
 	ContentJSON string
 	TokenCount  int
 	StopReason  string
+	Interrupted bool
 	CreatedAt   time.Time
 }
 

@@ -307,13 +307,24 @@ func (l *Loop) finishCancelledTurn() {
 			Content: blocks,
 		})
 	}
-	if l.Session.State() != session.StateCancelled {
-		_ = l.Session.ForceTransition(session.StateCancelled)
+		// Persist the interrupted flag on the last assistant message so the
+		// marker survives session rehydration (persist-interrupted-message-flag D8).
+		if err := l.Session.MarkMessageInterrupted(context.Background()); err != nil {
+			l.logger().Warn("agent: mark message interrupted failed", "err", err)
+		}
+		if l.Session.State() != session.StateCancelled {
+			_ = l.Session.ForceTransition(session.StateCancelled)
+		}
+		// Include the store message ID in the interrupted event payload so SSE
+		// consumers can correlate the event with a specific message (D9).
+		payload := map[string]any{}
+		if msgID := l.Session.LastAssistantMessageID(); msgID != "" {
+			payload["message_id"] = msgID
+		}
+		if !l.Session.EmitNow("interrupted", payload) {
+			l.logger().Warn("agent: interrupted event dropped (outbox full)")
+		}
 	}
-	if !l.Session.EmitNow("interrupted", map[string]any{}) {
-		l.logger().Warn("agent: interrupted event dropped (outbox full)")
-	}
-}
 
 // drainOrphanedPending drains pending tool uses that were registered before a
 // provider fatal error. Unlike finishCancelledTurn it does not emit "interrupted"

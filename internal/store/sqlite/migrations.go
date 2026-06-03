@@ -146,6 +146,13 @@ var v4ProviderAndStopReason = []string{
 	`ALTER TABLE messages ADD COLUMN stop_reason TEXT NOT NULL DEFAULT ''`,
 }
 
+// v5InterruptedFlag persists the interrupted state on assistant messages so that
+// rehydrated chat history preserves the "(已中断)" marker across session switches
+// and server restarts.
+var v5InterruptedFlag = []string{
+	`ALTER TABLE messages ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0`,
+}
+
 // migrationsByVersion is the ordered list of all migrations. Each entry is
 // applied inside its own transaction; schema_version is bumped per step.
 var migrationsByVersion = []Migration{
@@ -153,6 +160,7 @@ var migrationsByVersion = []Migration{
 	{Version: 2, Up: append(v2MemoryFTS, v2Backfill...), Down: v2MemoryFTSDown},
 	{Version: 3, Up: v3SessionTitle, Down: v3SessionTitleDown},
 	{Version: 4, Up: v4ProviderAndStopReason, Down: nil},
+	{Version: 5, Up: v5InterruptedFlag, Down: nil},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

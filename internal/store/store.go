@@ -45,6 +45,9 @@ type Store interface {
 	ReplaceMessages(ctx context.Context, sessionID string, msgs []*Message) error
 	// CountMessages returns the number of messages for a session.
 	CountMessages(ctx context.Context, sessionID string) (int, error)
+	// MarkMessageInterrupted sets interrupted=1 on a message by its ULID
+	// primary key. No-op (no error) when the row does not exist.
+	MarkMessageInterrupted(ctx context.Context, messageID string) error
 
 	// --- Event append + incremental query ---
 	// AppendEvent assigns the next idx and returns it. Callers should treat

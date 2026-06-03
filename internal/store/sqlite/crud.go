@@ -282,9 +282,9 @@ func scanSession(sc scanner) (*store.Session, error) {
 
 func (s *Store) AppendMessage(ctx context.Context, m *store.Message) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO messages(id, session_id, role, content_json, stop_reason, token_count, created_at)
-		 VALUES (?,?,?,?,?,?,?)`,
-		m.ID, m.SessionID, m.Role, m.ContentJSON, m.StopReason, m.TokenCount, toMicros(m.CreatedAt))
+		`INSERT INTO messages(id, session_id, role, content_json, stop_reason, token_count, interrupted, created_at)
+		 VALUES (?,?,?,?,?,?,?,?)`,
+		m.ID, m.SessionID, m.Role, m.ContentJSON, m.StopReason, m.TokenCount, boolToInt(m.Interrupted), toMicros(m.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("sqlite: AppendMessage: %w", err)
 	}
@@ -306,9 +306,9 @@ func (s *Store) ReplaceMessages(ctx context.Context, sessionID string, msgs []*s
 	}
 	for _, m := range msgs {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO messages(id, session_id, role, content_json, stop_reason, token_count, created_at)
-			 VALUES (?,?,?,?,?,?,?)`,
-			m.ID, m.SessionID, m.Role, m.ContentJSON, m.StopReason, m.TokenCount, toMicros(m.CreatedAt)); err != nil {
+			`INSERT INTO messages(id, session_id, role, content_json, stop_reason, token_count, interrupted, created_at)
+			 VALUES (?,?,?,?,?,?,?,?)`,
+			m.ID, m.SessionID, m.Role, m.ContentJSON, m.StopReason, m.TokenCount, boolToInt(m.Interrupted), toMicros(m.CreatedAt)); err != nil {
 			return fmt.Errorf("sqlite: ReplaceMessages insert: %w", err)
 		}
 	}
@@ -320,7 +320,7 @@ func (s *Store) ReplaceMessages(ctx context.Context, sessionID string, msgs []*s
 
 func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]*store.Message, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, session_id, role, content_json, stop_reason, token_count, created_at
+		`SELECT id, session_id, role, content_json, stop_reason, token_count, interrupted, created_at
 		 FROM messages WHERE session_id = ? ORDER BY created_at, id`, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: ListMessages: %w", err)
@@ -331,14 +331,29 @@ func (s *Store) ListMessages(ctx context.Context, sessionID string) ([]*store.Me
 	for rows.Next() {
 		var m store.Message
 		var createdAt int64
+		var interrupted int64
 		if err := rows.Scan(&m.ID, &m.SessionID, &m.Role, &m.ContentJSON,
-			&m.StopReason, &m.TokenCount, &createdAt); err != nil {
+			&m.StopReason, &m.TokenCount, &interrupted, &createdAt); err != nil {
 			return nil, fmt.Errorf("sqlite: scan message: %w", err)
 		}
 		m.CreatedAt = fromMicros(createdAt)
+		m.Interrupted = interrupted != 0
 		out = append(out, &m)
 	}
 	return out, rows.Err()
+}
+
+// MarkMessageInterrupted sets the interrupted flag on a specific message by
+// its ULID primary key. The UPDATE is a no-op (succeeds with 0 rows affected)
+// when the message does not exist, since we always have the ID in hand from
+// the Session's lastAssistantMsgID tracker.
+func (s *Store) MarkMessageInterrupted(ctx context.Context, messageID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE messages SET interrupted = 1 WHERE id = ?`, messageID)
+	if err != nil {
+		return fmt.Errorf("sqlite: MarkMessageInterrupted: %w", err)
+	}
+	return nil
 }
 
 // ---- Event append + incremental query ----

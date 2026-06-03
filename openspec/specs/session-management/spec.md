@@ -164,8 +164,9 @@ panic SHALL **不**使整个服务进程崩溃；SHALL **不**让其他 session 
 3. 等待所有正在跑的工具 Run 返回（含 Bash 进程组 SIGTERM → SIGKILL 兜底；含 MCP `notifications/cancelled` 转发；含子 session 级联取消）
 4. 合成 cancelled tool_result 并追加 history（同步）
 5. 持久化最终 history（如非 ephemeral）
-6. emit `interrupted` 事件
-7. 清空 outbox 中属于被中断那一轮的事件（见 api-protocol "中断到达时清空 SSE 积压"）
+6. 持久化 interrupted 标志：通过 `Session.LastAssistantMessageID()` 获取最后一条 `role='assistant'` 消息的 ULID，调用 `store.MarkMessageInterrupted(ctx, messageID)` 将 `interrupted` 列设为 `1`；非 ephemeral 且 store 非 nil 且 messageID 非空时执行
+7. emit `interrupted` 事件，payload SHALL 包含 `message_id` 字段
+8. 清空 outbox 中属于被中断那一轮的事件（见 api-protocol "中断到达时清空 SSE 积压"）
 
 若整个 checklist 在超时内完成 SHALL 正常转入 `Idle`。
 
@@ -179,7 +180,13 @@ panic SHALL **不**使整个服务进程崩溃；SHALL **不**让其他 session 
 #### Scenario: 正常收尾在超时内完成
 
 - **WHEN** session 处于 Executing，Bash 工具跑 `sleep 60` 时被 cancel
-- **THEN** ctx 取消 → SIGTERM Bash 进程组 → 1.5s 后 SIGKILL → 合成 cancelled tool_result → emit interrupted → 状态转 Idle；整个过程 < 5s
+- **THEN** ctx 取消 → SIGTERM Bash 进程组 → 1.5s 后 SIGKILL → 合成 cancelled tool_result → 持久化 interrupted 标志 → emit interrupted → 状态转 Idle；整个过程 < 5s；最后一条 assistant 消息的 `interrupted` 列 SHALL 为 `1`
+
+#### Scenario: 中断消息持久化后 rehydration 保留标志
+
+- **WHEN** 某会话在中断后从 history 端点重建（如项目切换后重新打开）
+- **THEN** `GET /v1/sessions/{id}/history` 返回的最后一条 assistant 消息 SHALL 包含 `"interrupted": true`
+- **AND** 客户端 UI SHALL 显示中断标记（如"（已中断）"）
 
 #### Scenario: 超时强制 Idle
 
@@ -346,4 +353,35 @@ SHALL 能为一个已存在、可能处于 idle(非刚创建)的会话工作,重
 
 - **WHEN** 客户端 `GET /v1/sessions?workdir=/a`
 - **THEN** 仅返回 workdir 为 `/a` 的会话（现有行为保持不变）
+
+### Requirement: 项目级删除(按 workdir 级联硬删会话)
+
+服务 SHALL 支持按 `workdir` 删除一个"项目记录"。由于项目是会话的派生视图(distinct
+`workdir` 且有未删除会话),删除项目 SHALL 等价于硬删该 `workdir` 下的**全部**会话:
+对每个会话先取消任何在跑 turn(级联到工具、子进程、子 session),再从内存与持久化
+中移除该会话并级联删除其 transcript(messages / events / tool_calls),复用与
+`DELETE /v1/sessions/{id}` 相同的优雅停 + 硬删路径。该操作 SHALL NOT 改动或删除磁盘
+上的 `workdir` 目录。删除后该 `workdir` 不再出现在 `GET /v1/projects`。
+
+#### Scenario: 删除项目级联硬删其全部会话
+
+- **WHEN** `workdir` `P` 下有若干已落盘会话,客户端 DELETE `/v1/projects?workdir=P`
+- **THEN** 服务逐个取消在跑 turn 并硬删这些会话(级联清 messages / events / tool_calls)
+- **AND** 返回 `{ "deleted": <数量> }`
+- **AND** 之后 `GET /v1/projects` 不含 `P`,`GET /v1/sessions?workdir=P` 为空
+
+#### Scenario: 不触碰磁盘目录
+
+- **WHEN** 删除项目 `P` 完成
+- **THEN** 仅会话记录被移除;`P` 对应的文件系统目录仍存在,可被重新作为新项目打开
+
+#### Scenario: 无会话的 workdir 为幂等成功
+
+- **WHEN** 客户端 DELETE `/v1/projects?workdir=Q`,而 `Q` 没有任何未删除会话
+- **THEN** 服务返回 `200` 与 `{ "deleted": 0 }`,不报错
+
+#### Scenario: 删除运行中项目会话先取消再删
+
+- **WHEN** `P` 下某会话正处于 `Thinking`,客户端 DELETE `/v1/projects?workdir=P`
+- **THEN** 服务先取消该会话的推理(级联收尾),再硬删,行为与单会话删除一致
 
