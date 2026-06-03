@@ -270,18 +270,44 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintf(stdout, "workhorse-agent listening on %s\n", srv.BoundAddr())
 
-	// 8. Signal-driven graceful shutdown.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	select {
-	case sig := <-sigCh:
-		logger.Info("serve: signal received, shutting down", "signal", sig.String())
-	case err := <-exit:
-		if err != nil {
-			return fmt.Errorf("serve: listener exited: %w", err)
-		}
+	// 8. Hot-reload of the permission subset of config.yaml. The store already
+	// has the startup preset rules applied; the reloader diffs future loads
+	// against this snapshot and applies only the permission fields.
+	reloader := newPermReloader(configPath, cfg, st, permMgr, logger)
+	reloader.args = args
+	srv.SetPermissionConfig(configPath, func(ctx context.Context) error { return reloader.Reload(ctx) })
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	defer watchCancel()
+	stopWatch, werr := watchConfigFile(watchCtx, configPath, defaultReloadDebounce, func() {
+		_ = reloader.Reload(watchCtx) // Reload warns on failure and keeps prior config
+	}, logger)
+	if werr != nil {
+		logger.Warn("config watch: disabled (file events unavailable); SIGHUP still reloads", "error", werr)
+		stopWatch = func() {}
 	}
-	signal.Stop(sigCh)
+	defer stopWatch()
+
+	// 9. Signal-driven control. SIGHUP triggers a config reload; SIGTERM/SIGINT
+	// begin graceful shutdown.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	defer signal.Stop(sigCh)
+	for {
+		select {
+		case sig := <-sigCh:
+			if sig == syscall.SIGHUP {
+				logger.Info("serve: SIGHUP received, reloading config")
+				_ = reloader.Reload(watchCtx)
+				continue
+			}
+			logger.Info("serve: signal received, shutting down", "signal", sig.String())
+		case err := <-exit:
+			if err != nil {
+				return fmt.Errorf("serve: listener exited: %w", err)
+			}
+		}
+		break
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(),
 		time.Duration(cfg.Server.GracefulShutdownTimeoutSeconds)*time.Second)

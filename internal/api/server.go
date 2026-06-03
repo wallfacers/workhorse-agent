@@ -80,6 +80,21 @@ type Server struct {
 	// drift is the adapter-drift snapshot surfaced via /v1/diagnostics.
 	// Populated by SetDriftSnapshot during server start.
 	drift *driftSnapshot
+
+	// permConfigPath is the config.yaml path the permission-config endpoints
+	// read/write. reloadPermConfig, when set, is invoked after a successful PUT
+	// so the written rules take effect immediately. Both are wired by cmd/serve
+	// via SetPermissionConfig; when unset the endpoints respond 503.
+	permConfigPath   string
+	reloadPermConfig func(context.Context) error
+}
+
+// SetPermissionConfig wires the config.yaml path and the reload callback used
+// by the GET/PUT /v1/permission-config endpoints. reload may be nil (the PUT
+// then writes the file but does not trigger an in-process reload).
+func (s *Server) SetPermissionConfig(path string, reload func(context.Context) error) {
+	s.permConfigPath = path
+	s.reloadPermConfig = reload
 }
 
 // NewServer builds a Server but does NOT start it. Caller wires routes via
@@ -142,6 +157,9 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/permissions", s.handleListPermissions)
 	mux.HandleFunc("POST /v1/permissions", s.handleCreatePermission)
 	mux.HandleFunc("DELETE /v1/permissions/{id}", s.handleDeletePermission)
+
+	mux.HandleFunc("GET /v1/permission-config", s.handleGetPermissionConfig)
+	mux.HandleFunc("PUT /v1/permission-config", s.handlePutPermissionConfig)
 
 	mux.HandleFunc("GET /v1/fs/list", s.handleFSList)
 	mux.HandleFunc("GET /health", s.handleHealth)

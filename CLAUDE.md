@@ -88,9 +88,24 @@ Session/message/agent IDs are ULIDs.
 
 ## Hot reload
 
-`config.yaml` does NOT hot-reload (requires restart). Only
-`~/.workhorse-agent/agents/*.yaml` and `~/.workhorse-agent/skills/*/skill.yaml` are
-re-scanned dynamically.
+The **permission subset** of `config.yaml` hot-reloads at runtime:
+`tools.preset_rules`, `tools.default_permission`, and
+`agent.permission_request_timeout_seconds`. `serve` watches the
+`~/.workhorse-agent/` directory (debounced) and also reloads on `SIGHUP`. A
+reload re-runs `config.Load()`; on a parse/validation failure the previously
+applied config is kept and a `WARN` is logged (fail-safe). Preset changes are
+reconciled into the store via `applyPresetRules`, so the next `Check()` — even
+in a running session — sees them with no restart. All **other** config fields
+(`store.path`, `server.host`/`port`, providers, …) still require a restart; a
+reload that changes them logs a `WARN` and ignores them.
+
+`GET`/`PUT /v1/permission-config` read/write the permission subset of
+`config.yaml` (PUT preserves comments via `yaml.Node` surgical edits and
+triggers a reload). This is the single source of truth — it does NOT write the
+`perm-*` rows that `POST /v1/permissions` creates.
+
+`~/.workhorse-agent/agents/*.yaml` and `~/.workhorse-agent/skills/*/skill.yaml`
+are also re-scanned dynamically.
 
 ## Memory subsystem
 

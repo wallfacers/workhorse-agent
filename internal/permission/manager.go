@@ -51,17 +51,49 @@ type PromptFunc func(ctx context.Context, req Request) (Decision, bool)
 // prompt — unless DangerousGuard flagged the call, in which case the prompt
 // is *forced* regardless of any existing allow_* rules.
 type Manager struct {
-	store           store.Store
-	prompt          PromptFunc
-	timeout         time.Duration
-	dangerous       func(tool, resource string) (bool, string)
-	defaultDecision Decision
+	store     store.Store
+	prompt    PromptFunc
+	dangerous func(tool, resource string) (bool, string)
 
 	mu sync.Mutex
+	// timeout and defaultDecision are mutable at runtime via SetTimeout /
+	// SetDefaultDecision (config hot-reload) so they live under mu alongside the
+	// session rules; every read goes through a locked getter.
+	timeout         time.Duration
+	defaultDecision Decision
 	// rules cached per session: ScopeSession rules + ScopeOnce rules pending
 	// first match. Permanent rules are read live from the store on every
 	// Check so a manual UPDATE on the DB takes effect immediately.
 	sessionRules map[string][]rule
+}
+
+// SetDefaultDecision replaces the fallback decision applied when no rule
+// matches. Used by config hot-reload so a changed tools.default_permission
+// takes effect on the next Check without restarting the process.
+func (m *Manager) SetDefaultDecision(d Decision) {
+	m.mu.Lock()
+	m.defaultDecision = d
+	m.mu.Unlock()
+}
+
+// SetTimeout replaces the per-prompt deadline. Used by config hot-reload when
+// agent.permission_request_timeout_seconds changes.
+func (m *Manager) SetTimeout(d time.Duration) {
+	m.mu.Lock()
+	m.timeout = d
+	m.mu.Unlock()
+}
+
+func (m *Manager) getDefaultDecision() Decision {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.defaultDecision
+}
+
+func (m *Manager) getTimeout() time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.timeout
 }
 
 type rule struct {
@@ -118,8 +150,8 @@ func (m *Manager) Check(ctx context.Context, sessionID, tool, resource string) (
 	}
 
 	// 4. No cached rule — fall back to configured default if set (unless dangerous).
-	if !dangerous && m.defaultDecision != "" {
-		return m.defaultDecision, nil
+	if def := m.getDefaultDecision(); !dangerous && def != "" {
+		return def, nil
 	}
 
 	// 5. No cached rule and no default configured (or dangerous override). Prompt the user.
@@ -185,9 +217,9 @@ func (m *Manager) promptAndPersist(ctx context.Context, sessionID, tool, resourc
 		return Deny, nil
 	}
 	pctx := ctx
-	if m.timeout > 0 {
+	if to := m.getTimeout(); to > 0 {
 		var cancel context.CancelFunc
-		pctx, cancel = context.WithTimeout(ctx, m.timeout)
+		pctx, cancel = context.WithTimeout(ctx, to)
 		defer cancel()
 	}
 	decision, answered := m.prompt(pctx, Request{
