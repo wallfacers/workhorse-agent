@@ -20,8 +20,7 @@ TBD - created by archiving change init-workhorse-agent-mvp. Update Purpose after
 
 服务 SHALL 在 `127.0.0.1:7821`（默认，可配）暴露以下 HTTP 端点：
 
-- `POST /v1/sessions` — 创建会话，请求体含 `workdir`、`env`、`provider`、`model`、`ephemeral?`，返回 `SessionMeta`(camelCase)
-- `GET /v1/sessions` — 列出会话;携带 `?workdir=<path>` 时按项目分桶过滤
+- `GET /v1/sessions` — 列出会话;携带 `?workdir=<path>` 时按项目分桶过滤;不携带 `workdir` 时返回全量持久化会话列表并叠加 live status
 - `GET /v1/sessions/{id}` — 会话详情(`SessionMeta`)
 - `GET /v1/sessions/{id}/history` — 拉取 transcript(`{ "messages": [HistoryMessage] }`)
 - `PATCH /v1/sessions/{id}` — 重命名(`{ "title" }`)
@@ -31,9 +30,10 @@ TBD - created by archiving change init-workhorse-agent-mvp. Update Purpose after
 - `POST /v1/sessions/{id}/stream` — Streamable HTTP 客户端消息提交端点
 - `GET /v1/sessions/{id}/stream` — Streamable HTTP 服务端事件流（SSE）;SHALL 能为
   已存在、可能 idle(非刚创建)的会话工作
+- `GET /v1/fs/list` — 列出目录内容；接受 `?path=<dir>` 和可选 `?root=<project_root>` 参数；`root` 限定可浏览范围
 - `GET /v1/projects` — 列出已知项目(`{ "projects": [ProjectMeta] }`)
 - `GET /debug/sessions/{id}/events?since=N` — 事件回放（DEBUG 模式）
-- `GET /health` — 健康检查
+- `GET /health` — 健康检查，返回 `ok`、`version`、`protocol_version`、`capabilities`、`uptime_sec`、`sessions_active`、`default_workdir`、`platform`
 - `GET /ui` — 内嵌参考 Web UI
 
 `GET /health` 响应除既有的 `ok`、`version`、`uptime_sec`、`sessions_active`
@@ -619,4 +619,51 @@ ordering and Last-Event-ID replay behave like every other event.
 
 - **WHEN** 服务处于 `no_provider_key` 降级态,补齐 default provider 的 key(env 或 `config.yaml`)后重启 serve(`config.yaml` 不热重载,需重启)
 - **THEN** 重启后的 `GET /health` SHALL 返回 `ok: true` 且不含 `reason`
+
+### Requirement: /v1/fs/list 请求范围限定
+
+`GET /v1/fs/list` SHALL 接受可选 `?root=<project_root>` 参数。当提供 `root` 时，路径限定 SHALL 以 `root` 为边界（而非全局 `server.default_workdir`）。当未提供 `root` 时，回退到全局 `server.default_workdir` 作为限定边界。无论哪种情况，虚拟文件系统路径（`/proc`、`/sys`、`/dev`、`/run`）SHALL 始终被拒绝。
+
+#### Scenario: 使用显式 root 浏览项目目录
+
+- **WHEN** 客户端 `GET /v1/fs/list?path=/src&root=/home/user/myproject`
+- **AND** `/home/user/myproject/src` 存在且在 `root` 范围内
+- **THEN** 服务返回该目录的条目列表
+
+#### Scenario: 路径逃逸显式 root 被拒绝
+
+- **WHEN** 客户端 `GET /v1/fs/list?path=/etc&root=/home/user/myproject`
+- **AND** `/etc` 不在 `/home/user/myproject` 范围内
+- **THEN** 服务返回 `403 forbidden`
+
+#### Scenario: 未提供 root 时回退到全局默认
+
+- **WHEN** 客户端 `GET /v1/fs/list?path=/src` 未携带 `?root=`
+- **THEN** 服务使用全局 `server.default_workdir` 作为限定边界（现有行为）
+
+### Requirement: /health default_workdir 解析
+
+`GET /health` 的 `default_workdir` 字段 SHALL 按以下优先级解析：
+1. `server.default_workdir` 配置覆盖（若设置）
+2. `os.UserHomeDir()`（用户 home 目录）
+3. 若以上均不可解析，省略该字段（或返回空字符串）
+
+`default_workdir` SHALL NOT 回退到 sidecar 进程的启动目录（`os.Getwd()`）。
+
+#### Scenario: 无配置覆盖时回退到 home
+
+- **WHEN** sidecar 未配置 `server.default_workdir`
+- **THEN** `GET /health` 返回 `default_workdir` 为用户 home 目录
+- **AND** 该值 SHALL NOT 为 sidecar 进程的启动目录
+
+#### Scenario: 配置覆盖优先生效
+
+- **WHEN** `server.default_workdir` 设置为 `P`
+- **THEN** `GET /health` 返回 `default_workdir = P`
+
+#### Scenario: 无覆盖且无法解析 home
+
+- **WHEN** sidecar 无配置覆盖且无法解析用户 home 目录
+- **THEN** `GET /health` 省略 `default_workdir`（或返回空字符串）
+- **AND** SHALL NOT 报告 sidecar 进程的启动目录
 
