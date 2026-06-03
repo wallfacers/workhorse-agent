@@ -22,6 +22,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/memory"
 	"github.com/wallfacers/workhorse-agent/internal/provider"
 	"github.com/wallfacers/workhorse-agent/internal/store"
+	"github.com/wallfacers/workhorse-agent/internal/tools/toolsearch"
 )
 
 // State re-exports store.SessionState so callers don't have to import store
@@ -281,6 +282,13 @@ type Session struct {
 	title     string
 	updatedAt time.Time
 
+	// discovered holds the names of deferred tools surfaced via ToolSearch in
+	// this session. Once present, a tool's full schema is included in every
+	// subsequent turn. Lives on the session (not history) so it survives
+	// compaction; rebuilt from history on RestoreHistory so it survives
+	// rehydration. Guarded by mu.
+	discovered map[string]struct{}
+
 	// lastAssistantMsgID is the ULID of the most recent assistant message
 	// appended via AppendMessage. Set inside the mu-locked section; read via
 	// LastAssistantMessageID(). Used by finishCancelledTurn to target the
@@ -376,6 +384,7 @@ func New(opts Options) *Session {
 		history:           nil,
 		pending:           map[string]PendingToolUse{},
 		allowed:           allowed,
+		discovered:        map[string]struct{}{},
 		updatedAt:         now,
 	}
 }
@@ -631,6 +640,15 @@ func (s *Session) RestoreHistory(msgs []provider.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.history = append([]provider.Message(nil), msgs...)
+	// Rebuild the ToolSearch discovered set so pending calls to
+	// already-surfaced deferred tools still resolve to a loaded schema after
+	// rehydration.
+	if s.discovered == nil {
+		s.discovered = map[string]struct{}{}
+	}
+	for _, n := range toolsearch.ReconstructDiscovered(s.history) {
+		s.discovered[n] = struct{}{}
+	}
 }
 
 // AllowedTools returns a copy of the per-session AllowedTools filter, or nil
@@ -653,6 +671,40 @@ func (s *Session) SetAllowedTools(tools []string) {
 	defer s.mu.Unlock()
 	s.allowed = append([]string(nil), tools...)
 	s.updatedAt = time.Now().UTC()
+}
+
+// MarkToolsDiscovered implements tools.ModifierTarget so the ToolSearch tool
+// can record which deferred tools it surfaced. Idempotent and additive.
+func (s *Session) MarkToolsDiscovered(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.discovered == nil {
+		s.discovered = map[string]struct{}{}
+	}
+	for _, n := range names {
+		if n != "" {
+			s.discovered[n] = struct{}{}
+		}
+	}
+	s.updatedAt = time.Now().UTC()
+}
+
+// DiscoveredTools returns a copy of the names of deferred tools surfaced via
+// ToolSearch in this session.
+func (s *Session) DiscoveredTools() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.discovered) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(s.discovered))
+	for n := range s.discovered {
+		out = append(out, n)
+	}
+	return out
 }
 
 // SetFrontend stores the frontend tool bridge. Guarded by mu.

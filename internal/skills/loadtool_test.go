@@ -14,7 +14,8 @@ type allowedToolsRecorder struct {
 	tools []string
 }
 
-func (r *allowedToolsRecorder) SetAllowedTools(t []string) { r.tools = t }
+func (r *allowedToolsRecorder) SetAllowedTools(t []string)     { r.tools = t }
+func (r *allowedToolsRecorder) MarkToolsDiscovered(_ []string) {}
 
 func catalogWithSkills() *skills.Catalog {
 	return &skills.Catalog{

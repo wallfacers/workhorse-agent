@@ -59,7 +59,7 @@ func (f *fakeStore) AppendMessage(_ context.Context, m *store.Message) error {
 	return nil
 }
 func (f *fakeStore) ListMessages(context.Context, string) ([]*store.Message, error) { return nil, nil }
-func (f *fakeStore) MarkMessageInterrupted(context.Context, string) error { return nil }
+func (f *fakeStore) MarkMessageInterrupted(context.Context, string) error           { return nil }
 func (f *fakeStore) ReplaceMessages(_ context.Context, _ string, msgs []*store.Message) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

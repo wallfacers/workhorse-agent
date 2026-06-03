@@ -171,6 +171,10 @@ func validateTools(t ToolsConfig) error {
 			return fmt.Errorf("invalid config: tools.grep.default_excludes[%d] is not a valid glob: %v (pattern: %q)", i, err, pat)
 		}
 	}
+	// Validate tool_search
+	if _, _, ok := ParseToolSearch(t.ToolSearch); !ok {
+		return fmt.Errorf("invalid config: tools.tool_search must be one of tst, auto, auto:N (0-100), standard, got %q", t.ToolSearch)
+	}
 	// Validate default_permission
 	if t.DefaultPermission != "" {
 		switch t.DefaultPermission {

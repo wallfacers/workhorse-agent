@@ -52,6 +52,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/tools/memorytool"
 	"github.com/wallfacers/workhorse-agent/internal/tools/sessionsearch"
 	"github.com/wallfacers/workhorse-agent/internal/tools/tasklist"
+	"github.com/wallfacers/workhorse-agent/internal/tools/toolsearch"
 )
 
 // adapterPermGate bridges permission.Manager to extagenttool.PermissionGate.
@@ -420,6 +421,7 @@ func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skill
 		},
 		&sessionsearch.Tool{DB: st.DB()},
 		tasklist.TodoWrite{},
+		toolsearch.Tool{},
 	} {
 		if err := reg.Register(t); err != nil {
 			return err
@@ -529,6 +531,11 @@ func newRunnerFactory(
 		},
 		ThinkingEnabled:      cfg.Agent.Thinking.Enabled,
 		ThinkingBudgetTokens: cfg.Agent.Thinking.BudgetTokens,
+	}
+	{
+		mode, pct, _ := config.ParseToolSearch(cfg.Tools.ToolSearch)
+		loopCfg.ToolSearchMode = mode
+		loopCfg.ToolSearchPercent = pct
 	}
 	loopCfg.ApplyDefaults()
 	defaultProvName := cfg.Providers.Default

@@ -76,8 +76,8 @@ type AgentConfig struct {
 }
 
 type ThinkingConfig struct {
-	Enabled      bool     `yaml:"enabled"`
-	BudgetTokens int      `yaml:"budget_tokens"`
+	Enabled      bool `yaml:"enabled"`
+	BudgetTokens int  `yaml:"budget_tokens"`
 	// OnlyModels, when non-empty, restricts thinking to these model IDs.
 	// An empty list means thinking is sent to every model (the upstream
 	// API returns an error if the model doesn't support it). Use this to
@@ -86,14 +86,19 @@ type ThinkingConfig struct {
 }
 
 type ToolsConfig struct {
-	DefaultTimeoutSeconds int         `yaml:"default_timeout_seconds"`
-	ToolResultMaxBytes    int         `yaml:"tool_result_max_bytes"`
-	Bash                  ToolTimeout `yaml:"bash"`
-	Read                  ToolTimeout `yaml:"read"`
-	Grep                  ToolsGrep   `yaml:"grep"`
-	DefaultAllowedTools   []string    `yaml:"default_allowed_tools"`
-	DefaultPermission     string      `yaml:"default_permission"`
+	DefaultTimeoutSeconds int          `yaml:"default_timeout_seconds"`
+	ToolResultMaxBytes    int          `yaml:"tool_result_max_bytes"`
+	Bash                  ToolTimeout  `yaml:"bash"`
+	Read                  ToolTimeout  `yaml:"read"`
+	Grep                  ToolsGrep    `yaml:"grep"`
+	DefaultAllowedTools   []string     `yaml:"default_allowed_tools"`
+	DefaultPermission     string       `yaml:"default_permission"`
 	PresetRules           []PresetRule `yaml:"preset_rules"`
+	// ToolSearch controls deferral of deferrable tools (MCP and any tool that
+	// implements Deferrable). Values: "tst" (default — always defer), "auto"
+	// (defer only when deferred tools exceed the context threshold), "auto:N"
+	// (custom percentage 0-100), "standard" (never defer). Empty == "tst".
+	ToolSearch string `yaml:"tool_search"`
 }
 
 // PresetRule is a permission rule declared in config and injected at startup.
@@ -237,6 +242,7 @@ func Default() Config {
 			},
 			DefaultPermission: "",
 			PresetRules:       nil,
+			ToolSearch:        "tst",
 		},
 		Store:    StoreConfig{Path: "~/.workhorse-agent/state.db", BusyTimeoutMs: 5000},
 		Sessions: SessionsConfig{MaxConcurrent: 50},

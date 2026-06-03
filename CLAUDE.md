@@ -107,6 +107,43 @@ triggers a reload). This is the single source of truth — it does NOT write the
 `~/.workhorse-agent/agents/*.yaml` and `~/.workhorse-agent/skills/*/skill.yaml`
 are also re-scanned dynamically.
 
+## Tool search
+
+To keep large tool surfaces (e.g. many MCP tools) out of the model's context,
+**deferrable** tools are withheld from the initial tool list — only their names
+are announced — and surfaced on demand via the built-in `ToolSearch` tool. This
+is a provider-agnostic, client-side emulation of Claude Code's tool search; it
+does **not** depend on the Anthropic `tool_reference` beta.
+
+- **Deferral eligibility** is metadata, not a name prefix: a tool is deferrable
+  iff it implements `tools.Deferrable` and `ShouldDefer()` returns true (and it
+  is not `ToolSearch` itself). The MCP `Adapter` implements it (default true;
+  a server with `always_load: true` in `mcp.json` opts out). Built-in local
+  tools are never deferred.
+- **Mode** is set by `tools.tool_search`: `tst` (default — always defer
+  deferrable tools), `auto` (defer only when deferrable tools exceed the
+  context threshold), `auto:N` (custom percentage 0-100; `auto:0`==`tst`,
+  `auto:100`==`standard`), `standard` (never defer, identical to pre-feature
+  behavior). Threshold is N% of `agent.max_history_tokens`, estimated chars/4.
+- **Discovery**: `ToolSearch` (keyword scoring + `select:A,B` + `+required`
+  forms, ported from Claude Code's `ToolSearchTool`) returns matched tools'
+  full schemas in a `<functions>` block and marks them discovered via a
+  `Result.Modifier`. The discovered set lives on the `Session` (survives
+  compaction) and is rebuilt from history on rehydration
+  (`toolsearch.ReconstructDiscovered`, correlating ToolSearch tool_use →
+  tool_result by id).
+- **Assembly**: `loop.buildToolSchemas` withholds deferred-and-undiscovered
+  tools, always includes `ToolSearch` when deferral is active, exposes the
+  deferred catalog via `Env.ToolCatalog`, and the loop injects the
+  `<available-deferred-tools>` announcement at the **message tail** (never the
+  cached system-prompt prefix).
+- **Constraint**: local (non-MCP, statically-described) tool `Description()`
+  must be English (Latin letters; typographic punctuation OK). A test in
+  `cmd/workhorse-agent` (`TestLocalToolDescriptionsAreEnglish`) guards this.
+
+MCP host wiring into the registry is out of scope here; the `Adapter` is
+pre-wired so tool search applies automatically once MCP servers are connected.
+
 ## Memory subsystem
 
 Two memory layers ship with the current version:

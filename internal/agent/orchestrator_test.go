@@ -192,9 +192,15 @@ func TestRunOne_PanicBecomesError(t *testing.T) {
 
 // ---- modifier deferral ----
 
-type allowedToolsRecorder struct{ allowed []string }
+type allowedToolsRecorder struct {
+	allowed    []string
+	discovered []string
+}
 
 func (r *allowedToolsRecorder) SetAllowedTools(t []string) { r.allowed = t }
+func (r *allowedToolsRecorder) MarkToolsDiscovered(names []string) {
+	r.discovered = append(r.discovered, names...)
+}
 
 type setAllowedModifier struct{ list []string }
 

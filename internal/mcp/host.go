@@ -20,6 +20,9 @@ type ServerConfig struct {
 	Env        map[string]string `json:"env,omitempty"`
 	URL        string            `json:"url,omitempty"`
 	AuthHeader string            `json:"auth_header,omitempty"`
+	// AlwaysLoad, when true, exempts this server's tools from tool-search
+	// deferral — they always appear with full schema in the model's tool list.
+	AlwaysLoad bool `json:"always_load,omitempty"`
 }
 
 // HostConfig is the top-level structure of mcp.json.
@@ -142,6 +145,12 @@ type ServerTool struct {
 // CallTool invokes the tool on the server that owns it.
 func (st ServerTool) CallTool(ctx context.Context, args json.RawMessage) (*CallToolResult, error) {
 	return st.inst.client.CallTool(ctx, st.Def.Name, args)
+}
+
+// AlwaysLoad reports whether the owning server is configured to exempt its
+// tools from tool-search deferral.
+func (st ServerTool) AlwaysLoad() bool {
+	return st.inst != nil && st.inst.config.AlwaysLoad
 }
 
 // ---------- internal ----------

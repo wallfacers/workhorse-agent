@@ -38,6 +38,12 @@ type LoopConfig struct {
 
 	ThinkingEnabled      bool
 	ThinkingBudgetTokens int
+
+	// ToolSearchMode is the canonical tool-search mode ("tst" | "auto" |
+	// "standard"); empty defaults to "tst". ToolSearchPercent is the context
+	// threshold percentage used in "auto" mode.
+	ToolSearchMode    string
+	ToolSearchPercent int
 }
 
 // ApplyDefaults fills zero-valued fields with the configuration spec defaults.
@@ -56,6 +62,9 @@ func (c *LoopConfig) ApplyDefaults() {
 	}
 	if c.Retry.Attempts == 0 && len(c.Retry.Backoff) == 0 {
 		c.Retry = DefaultRetryConfig()
+	}
+	if c.ToolSearchMode == "" {
+		c.ToolSearchMode = "tst"
 	}
 }
 
@@ -424,6 +433,13 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 		// environment, instructions, and memory blocks follow
 		// (optimize-prompt-cache-order). The prompt package owns the ordering
 		// and delimiters — this is the single assembly path.
+		toolSchemas, deferredNames := l.buildToolSchemas()
+		messages := l.Session.History()
+		// Announce deferred-but-undiscovered tools at the message tail so the
+		// volatile list never enters the cached system-prompt prefix.
+		if ann := deferredAnnouncement(deferredNames); ann != nil {
+			messages = append(messages, *ann)
+		}
 		req := provider.Request{
 			Model: l.Config.Model,
 			System: prompt.BuildSystemPrompt(prompt.SystemPromptInput{
@@ -432,8 +448,8 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 				Instructions: instructions.Block(l.Session.InstructionSnapshot),
 				Memory:       memory.Block(l.Session.MemorySnapshot),
 			}),
-			Messages:             l.Session.History(),
-			Tools:                l.buildToolSchemas(),
+			Messages:             messages,
+			Tools:                toolSchemas,
 			MaxTokens:            l.Config.MaxTokens,
 			ThinkingEnabled:      l.Config.ThinkingEnabled,
 			ThinkingBudgetTokens: l.Config.ThinkingBudgetTokens,
@@ -784,21 +800,63 @@ func extractResource(toolName string, input json.RawMessage) string {
 // buildToolSchemas rebuilds the LLM-facing tool list from the registry filtered
 // by the session's current AllowedTools set. Called before each provider request
 // so that LoadSkill's AllowedToolsModifier takes effect on the next turn.
-func (l *Loop) buildToolSchemas() []provider.ToolSchema {
+//
+// When tool search is active, deferrable tools the model has not yet discovered
+// are withheld from the schema list (only their names are returned, for the
+// <available-deferred-tools> announcement) and ToolSearch is guaranteed
+// present. Otherwise ToolSearch is excluded and every allowed tool is exposed
+// with full schema (identical to pre-tool-search behavior).
+func (l *Loop) buildToolSchemas() (schemas []provider.ToolSchema, deferredNames []string) {
 	if l.Registry == nil {
-		return l.Tools
+		return l.Tools, nil
 	}
 	allowed := l.Session.AllowedTools()
-	tools := l.Registry.Filtered(allowed)
-	out := make([]provider.ToolSchema, 0, len(tools))
-	for _, t := range tools {
-		out = append(out, provider.ToolSchema{
-			Name:        t.Name(),
-			Description: t.Description(),
-			InputSchema: t.InputSchema(),
-		})
+	all := l.Registry.Filtered(allowed)
+
+	// Partition deferrable candidates so "auto" can size them.
+	var deferrable []tools.Tool
+	for _, t := range all {
+		if isDeferrable(t) {
+			deferrable = append(deferrable, t)
+		}
 	}
-	return out
+	active := l.deferActive(deferrable)
+
+	discovered := map[string]struct{}{}
+	for _, n := range l.Session.DiscoveredTools() {
+		discovered[n] = struct{}{}
+	}
+
+	out := make([]provider.ToolSchema, 0, len(all))
+	var catalog []tools.ToolInfo
+	for _, t := range all {
+		name := t.Name()
+		if name == tools.ToolSearchName {
+			// Include ToolSearch only when deferral is active.
+			if active {
+				out = append(out, provider.ToolSchema{Name: name, Description: t.Description(), InputSchema: t.InputSchema()})
+			}
+			continue
+		}
+		if active && isDeferrable(t) {
+			if _, ok := discovered[name]; !ok {
+				deferredNames = append(deferredNames, name)
+				catalog = append(catalog, toolInfo(t))
+				continue
+			}
+		}
+		out = append(out, provider.ToolSchema{Name: name, Description: t.Description(), InputSchema: t.InputSchema()})
+	}
+
+	// Expose the deferred catalog to the ToolSearch tool for this turn.
+	if l.ToolEnv != nil {
+		if active {
+			l.ToolEnv.ToolCatalog = deferCatalog{infos: catalog}
+		} else {
+			l.ToolEnv.ToolCatalog = nil
+		}
+	}
+	return out, deferredNames
 }
 
 // shouldCompact returns true when the current history is above the configured

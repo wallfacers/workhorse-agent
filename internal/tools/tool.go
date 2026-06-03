@@ -12,6 +12,37 @@ import (
 	"time"
 )
 
+// ToolSearchName is the canonical name of the built-in ToolSearch tool. It is
+// referenced from several packages (the tool itself, the agent loop's
+// deferral filter, and the session's discovered-set reconstruction) so the
+// constant lives here to avoid an import cycle.
+const ToolSearchName = "ToolSearch"
+
+// Deferrable is an optional interface a Tool may implement to participate in
+// tool search. A tool whose ShouldDefer() returns true is "deferred": its full
+// schema is withheld from the model's tool list until ToolSearch surfaces it.
+// Tools that do not implement Deferrable are never deferred (always loaded
+// upfront).
+type Deferrable interface {
+	ShouldDefer() bool
+}
+
+// ToolInfo is the minimal description of a deferred tool exposed to ToolSearch
+// for keyword scoring and schema rendering.
+type ToolInfo struct {
+	Name        string
+	Description string
+	InputSchema json.RawMessage
+}
+
+// ToolCatalog is the read-only view the agent loop hands to ToolSearch (via
+// Env.ToolCatalog) so it can score and render the session's currently
+// deferred-and-allowed tools. The set it returns MUST match what the loop
+// withheld from the model's tool list this turn.
+type ToolCatalog interface {
+	DeferredTools() []ToolInfo
+}
+
 // Tool is the interface the orchestrator drives. Methods are read at
 // registration time (Name / Description / InputSchema / IsReadOnly /
 // CanRunInParallel / DefaultTimeout) and per-call (Run).
@@ -55,6 +86,10 @@ type Env struct {
 	// Typed as any to avoid import cycles; the Read tool type-asserts this
 	// to *instructions.Resolver.
 	InstructionResolver any
+	// ToolCatalog exposes the session's currently deferred tools to the
+	// ToolSearch tool. Typed as any to avoid import cycles; ToolSearch
+	// type-asserts this to ToolCatalog. nil when tool search is inactive.
+	ToolCatalog any
 }
 
 // Result is the outcome of one tool call. Output is the canonical string the
@@ -89,4 +124,8 @@ type ContextModifier interface {
 // ContextModifier implementations.
 type ModifierTarget interface {
 	SetAllowedTools(tools []string)
+	// MarkToolsDiscovered records that the named deferred tools have been
+	// surfaced via ToolSearch and should appear with full schema in every
+	// subsequent turn of this session.
+	MarkToolsDiscovered(names []string)
 }

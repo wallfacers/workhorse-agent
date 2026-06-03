@@ -20,6 +20,7 @@ type Adapter struct {
 	schema      json.RawMessage
 	readOnly    bool
 	parallel    bool
+	alwaysLoad  bool
 }
 
 // NewAdapter creates an Adapter for the given ServerTool.
@@ -40,6 +41,7 @@ func NewAdapter(st ServerTool) *Adapter {
 		schema:      st.Def.InputSchema,
 		readOnly:    readOnly,
 		parallel:    readOnly, // read-only tools can run in parallel
+		alwaysLoad:  st.AlwaysLoad(),
 	}
 }
 
@@ -54,6 +56,11 @@ func (a *Adapter) InputSchema() json.RawMessage  { return a.schema }
 func (a *Adapter) IsReadOnly() bool              { return a.readOnly }
 func (a *Adapter) CanRunInParallel() bool        { return a.parallel }
 func (a *Adapter) DefaultTimeout() time.Duration { return 0 } // inherit config default
+
+// ShouldDefer implements tools.Deferrable. MCP tools default to deferred
+// (workflow-specific, often numerous); a server with always_load: true opts
+// out so its tools always load with full schema.
+func (a *Adapter) ShouldDefer() bool { return !a.alwaysLoad }
 
 // Run calls the MCP tool via the Host and translates the result into a tools.Result.
 func (a *Adapter) Run(ctx context.Context, env *tools.Env, input json.RawMessage) (*tools.Result, error) {
