@@ -42,13 +42,16 @@ func (f *fakeStore) ListSessions(context.Context, bool) ([]*store.Session, error
 func (f *fakeStore) ListSessionsByWorkdir(context.Context, string) ([]*store.SessionSummary, error) {
 	return nil, nil
 }
-func (f *fakeStore) ListProjects(context.Context) ([]*store.Project, error) { return nil, nil }
-func (f *fakeStore) UpdateSession(context.Context, *store.Session) error    { return nil }
+func (f *fakeStore) ListAllSessions(context.Context) ([]*store.SessionSummary, error) {
+	return nil, nil
+}
+func (f *fakeStore) ListProjects(context.Context) ([]*store.Project, error)   { return nil, nil }
+func (f *fakeStore) UpdateSession(context.Context, *store.Session) error      { return nil }
 func (f *fakeStore) UpdateSessionTitle(context.Context, string, string) error { return nil }
-func (f *fakeStore) CountMessages(context.Context, string) (int, error)     { return 0, nil }
-func (f *fakeStore) DeleteSession(context.Context, string) error            { return nil }
-func (f *fakeStore) PurgeSession(context.Context, string) error             { return nil }
-func (f *fakeStore) CountActiveSessions(context.Context) (int, error)       { return 0, nil }
+func (f *fakeStore) CountMessages(context.Context, string) (int, error)       { return 0, nil }
+func (f *fakeStore) DeleteSession(context.Context, string) error              { return nil }
+func (f *fakeStore) PurgeSession(context.Context, string) error               { return nil }
+func (f *fakeStore) CountActiveSessions(context.Context) (int, error)         { return 0, nil }
 func (f *fakeStore) AppendMessage(_ context.Context, m *store.Message) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

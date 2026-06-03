@@ -99,18 +99,40 @@ func (s *Store) ListSessions(ctx context.Context, includeDeleted bool) ([]*store
 // the extract_text() function (the same one the FTS trigger uses) on the latest
 // message's content_json.
 func (s *Store) ListSessionsByWorkdir(ctx context.Context, workdir string) ([]*store.SessionSummary, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT s.id, s.parent_id, s.state, s.workdir, s.env_json, s.agent_type,
-			s.model, s.provider, s.title, s.ephemeral, s.created_at, s.updated_at, s.deleted_at,
-			(SELECT count(*) FROM messages m WHERE m.session_id = s.id) AS msg_count,
-			coalesce((SELECT extract_text(m.content_json) FROM messages m
-				WHERE m.session_id = s.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1), '') AS last_preview
-		 FROM sessions s
-		 WHERE s.workdir = ? AND s.deleted_at IS NULL
+	rows, err := s.db.QueryContext(ctx, sessionSummarySelect+
+		` WHERE s.workdir = ? AND s.deleted_at IS NULL
 		 ORDER BY s.updated_at DESC, s.id`, workdir)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: ListSessionsByWorkdir: %w", err)
 	}
+	return scanSessionSummaries(rows)
+}
+
+// ListAllSessions is ListSessionsByWorkdir without the workdir filter: every
+// non-deleted session across all projects, newest-updated first.
+func (s *Store) ListAllSessions(ctx context.Context) ([]*store.SessionSummary, error) {
+	rows, err := s.db.QueryContext(ctx, sessionSummarySelect+
+		` WHERE s.deleted_at IS NULL
+		 ORDER BY s.updated_at DESC, s.id`)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: ListAllSessions: %w", err)
+	}
+	return scanSessionSummaries(rows)
+}
+
+// sessionSummarySelect is the shared projection for SessionSummary rows:
+// the session columns plus a correlated message-count and last-message preview
+// (the preview reuses extract_text(), the same function the FTS trigger uses).
+const sessionSummarySelect = `SELECT s.id, s.parent_id, s.state, s.workdir, s.env_json, s.agent_type,
+		s.model, s.provider, s.title, s.ephemeral, s.created_at, s.updated_at, s.deleted_at,
+		(SELECT count(*) FROM messages m WHERE m.session_id = s.id) AS msg_count,
+		coalesce((SELECT extract_text(m.content_json) FROM messages m
+			WHERE m.session_id = s.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1), '') AS last_preview
+	 FROM sessions s`
+
+// scanSessionSummaries drains rows from a sessionSummarySelect query and closes
+// them. The column order must match sessionSummarySelect.
+func scanSessionSummaries(rows *sql.Rows) ([]*store.SessionSummary, error) {
 	defer rows.Close() //nolint:errcheck
 
 	var out []*store.SessionSummary

@@ -28,15 +28,20 @@ type fsListResponse struct {
 	Entries []fsEntry `json:"entries"`
 }
 
-// handleFSList answers GET /v1/fs/list?path=<dir>&root=<confinement>.
-// It enumerates a single directory within the sidecar filesystem, respecting
-// a virtual-FS blacklist and optional workdir confinement. When ?root= is
-// provided, confinement follows that root instead of the server's global
-// DefaultWorkdir, enabling the frontend to browse arbitrary directories.
+// handleFSList answers GET /v1/fs/list?path=<dir>&root=<projectRoot>. It
+// enumerates a single directory within the sidecar filesystem, respecting a
+// virtual-FS blacklist. Confinement follows the request's project `root` (the
+// project being browsed) rather than a single global config dir, so any project
+// the user opens elsewhere is browsable; `root` omitted falls back to
+// default_workdir.
 func (s *Server) handleFSList(w http.ResponseWriter, r *http.Request) {
+	root := r.URL.Query().Get("root")
+	if root == "" {
+		root = s.defaultWorkdir()
+	}
 	dir := r.URL.Query().Get("path")
 	if dir == "" {
-		dir = s.defaultWorkdir()
+		dir = root
 	}
 
 	clean, err := resolveDirPath(dir)
@@ -58,13 +63,7 @@ func (s *Server) handleFSList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Determine confinement root: explicit ?root= wins, else DefaultWorkdir.
-	confinementRoot := s.cfg.DefaultWorkdir
-	if root := r.URL.Query().Get("root"); root != "" {
-		confinementRoot = root
-	}
-
-	if !isWithinWorkdir(clean, confinementRoot) {
+	if !isWithinWorkdir(clean, root) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": "forbidden"})
 		return
 	}

@@ -96,6 +96,38 @@ func TestListByWorkdir_SurvivesNoLiveSession(t *testing.T) {
 	}
 }
 
+// TestListAllSessions_CrossProject verifies GET /v1/sessions with no workdir
+// returns the full persisted set across projects (the cross-project
+// session-management view), each row carrying its workdir, sourced from the
+// store rather than the in-memory live set (decouple-project-from-launch-cwd).
+func TestListAllSessions_CrossProject(t *testing.T) {
+	st, mgr, url := newProjectServer(t)
+	seedSession(t, st, "01ARZ3NDEKTSV4RRFFQ69G5FC1", "/proj/p", "in p")
+	seedSession(t, st, "01ARZ3NDEKTSV4RRFFQ69G5FC2", "/proj/q", "in q")
+
+	// Neither is live — proves the no-workdir listing is store-backed.
+	if _, err := mgr.GetSession("01ARZ3NDEKTSV4RRFFQ69G5FC1"); err == nil {
+		t.Fatal("precondition: session must not be live")
+	}
+
+	body := getJSON(t, url+"/v1/sessions")
+	sessions, ok := body["sessions"].([]any)
+	if !ok || len(sessions) != 2 {
+		t.Fatalf("want 2 sessions across all projects, got %v", body["sessions"])
+	}
+	workdirs := map[string]bool{}
+	for _, raw := range sessions {
+		m := raw.(map[string]any)
+		workdirs[m["workdir"].(string)] = true
+		if m["status"] != "idle" {
+			t.Errorf("persisted idle session status = %v, want idle", m["status"])
+		}
+	}
+	if !workdirs["/proj/p"] || !workdirs["/proj/q"] {
+		t.Fatalf("cross-project listing missing a workdir: %v", workdirs)
+	}
+}
+
 func TestHistory_ToolCallJoinAndReasoning(t *testing.T) {
 	st, _, url := newProjectServer(t)
 	id := "01ARZ3NDEKTSV4RRFFQ69G5FC1"

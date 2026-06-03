@@ -20,6 +20,10 @@ type Store interface {
 	// ListSessionsByWorkdir returns non-deleted sessions for one project path,
 	// each with its message-count and last-message preview, newest-updated first.
 	ListSessionsByWorkdir(ctx context.Context, workdir string) ([]*SessionSummary, error)
+	// ListAllSessions returns non-deleted sessions across ALL projects, each with
+	// its message-count and last-message preview, newest-updated first. Backs the
+	// cross-project session-management view (GET /v1/sessions with no workdir).
+	ListAllSessions(ctx context.Context) ([]*SessionSummary, error)
 	// ListProjects returns the distinct workdirs that have at least one
 	// non-deleted session, with per-project session counts.
 	ListProjects(ctx context.Context) ([]*Project, error)

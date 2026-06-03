@@ -104,6 +104,55 @@ func TestHealth_DefaultWorkdirConfigOverride(t *testing.T) {
 	}
 }
 
+// TestHealth_DefaultWorkdirHomeFallback: with no config override, default_workdir
+// is the user's home directory — never the launch cwd
+// (decouple-project-from-launch-cwd D1).
+func TestHealth_DefaultWorkdirHomeFallback(t *testing.T) {
+	home, herr := os.UserHomeDir()
+	if herr != nil || home == "" {
+		t.Skip("no resolvable home in this environment")
+	}
+	_, ts := newTestServer(t) // no DefaultWorkdir override
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["default_workdir"] != home {
+		t.Fatalf("default_workdir = %v, want home %q", body["default_workdir"], home)
+	}
+	if wd, _ := os.Getwd(); wd != home && body["default_workdir"] == wd {
+		t.Fatalf("default_workdir must not be the launch cwd %q", wd)
+	}
+}
+
+// TestHealth_DefaultWorkdirOmittedWhenNoHome: with no override and an
+// unresolvable home, the field is omitted so the client routes to its picker —
+// never the launch cwd (decouple-project-from-launch-cwd D1).
+func TestHealth_DefaultWorkdirOmittedWhenNoHome(t *testing.T) {
+	t.Setenv("HOME", "") // make os.UserHomeDir() fail on Linux
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		t.Skip("platform does not derive home from $HOME")
+	}
+	_, ts := newTestServer(t) // no override
+	resp, err := http.Get(ts.URL + "/health")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if v, present := body["default_workdir"]; present {
+		t.Fatalf("default_workdir should be omitted when home is unresolvable, got %v", v)
+	}
+}
+
 func TestHealth_DistroOnlyOnWSL(t *testing.T) {
 	_, ts := newTestServer(t)
 	resp, err := http.Get(ts.URL + "/health")

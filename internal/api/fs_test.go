@@ -95,8 +95,10 @@ func TestFSList_OmitPathUsesDefaultWorkdir(t *testing.T) {
 }
 
 func TestFSList_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "nonexistent_dir_xyz_123")
 	_, ts := newTestServer(t)
-	resp, err := http.Get(ts.URL + "/v1/fs/list?path=/nonexistent_dir_xyz_123")
+	resp, err := http.Get(ts.URL + "/v1/fs/list?root=" + dir + "&path=" + missing)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -107,15 +109,12 @@ func TestFSList_NotFound(t *testing.T) {
 }
 
 func TestFSList_NotDirectory(t *testing.T) {
-	f, err := os.CreateTemp("", "fs_test_file_*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.Close()
-	defer os.Remove(f.Name())
+	dir := t.TempDir()
+	file := filepath.Join(dir, "file.txt")
+	os.WriteFile(file, []byte("x"), 0o644)
 
 	_, ts := newTestServer(t)
-	resp, err := http.Get(ts.URL + "/v1/fs/list?path=" + f.Name())
+	resp, err := http.Get(ts.URL + "/v1/fs/list?root=" + dir + "&path=" + file)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -187,7 +186,7 @@ func TestFSList_SymlinkResolved(t *testing.T) {
 	}
 
 	_, ts := newTestServer(t)
-	resp, err := http.Get(ts.URL + "/v1/fs/list?path=" + link)
+	resp, err := http.Get(ts.URL + "/v1/fs/list?root=" + dir + "&path=" + link)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -206,49 +205,46 @@ func TestFSList_SymlinkResolved(t *testing.T) {
 	}
 }
 
-func TestFSList_RootParamOverridesConfinement(t *testing.T) {
-	// DefaultWorkdir is set to projectDir, but we browse browseDir via ?root=.
-	projectDir := t.TempDir()
-	browseDir := t.TempDir()
-	os.WriteFile(filepath.Join(browseDir, "inside.txt"), []byte("x"), 0o644)
+// TestFSList_RootOverridesGlobalDefault verifies confinement follows the
+// request's root, not the global config default: a project opened outside the
+// configured DefaultWorkdir is still browsable (decouple-project-from-launch-cwd).
+func TestFSList_RootOverridesGlobalDefault(t *testing.T) {
+	globalDir := t.TempDir()
+	projectDir := t.TempDir() // a different project, outside globalDir
+	os.WriteFile(filepath.Join(projectDir, "in_project.txt"), []byte("x"), 0o644)
 
 	_, ts := newTestServer(t, func(c *Config) {
-		c.DefaultWorkdir = projectDir
+		c.DefaultWorkdir = globalDir
 	})
 
-	resp, err := http.Get(ts.URL + "/v1/fs/list?path=" + browseDir + "&root=" + browseDir)
+	resp, err := http.Get(ts.URL + "/v1/fs/list?root=" + projectDir + "&path=" + projectDir)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status: %d want 200 (root= should override confinement)", resp.StatusCode)
+		t.Fatalf("status: %d want 200 (root overrides global default)", resp.StatusCode)
 	}
-
 	var body fsListResponse
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(body.Entries) != 1 || body.Entries[0].Name != "inside.txt" {
+	if len(body.Entries) != 1 || body.Entries[0].Name != "in_project.txt" {
 		t.Fatalf("entries: %v", body.Entries)
 	}
 }
 
-func TestFSList_RootParamEscapeStill403(t *testing.T) {
-	rootDir := t.TempDir()
-	os.Mkdir(filepath.Join(rootDir, "allowed"), 0o755)
-
-	_, ts := newTestServer(t, func(c *Config) {
-		c.DefaultWorkdir = rootDir
-	})
-
-	// Browse /etc with root= set to rootDir — /etc is outside root, should 403.
-	resp, err := http.Get(ts.URL + "/v1/fs/list?path=/etc&root=" + rootDir)
+// TestFSList_EscapeRootForbidden verifies a path escaping the request's root is
+// rejected even when no global default is configured.
+func TestFSList_EscapeRootForbidden(t *testing.T) {
+	dir := t.TempDir()
+	_, ts := newTestServer(t)
+	resp, err := http.Get(ts.URL + "/v1/fs/list?root=" + dir + "&path=/etc")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("status: %d want 403 (path outside root)", resp.StatusCode)
+		t.Fatalf("status: %d want 403 (path escapes root)", resp.StatusCode)
 	}
 }
