@@ -22,7 +22,6 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/agent"
 	"github.com/wallfacers/workhorse-agent/internal/api"
 	"github.com/wallfacers/workhorse-agent/internal/memory"
-	"github.com/wallfacers/workhorse-agent/internal/tools/memorytool"
 	"github.com/wallfacers/workhorse-agent/internal/provider"
 	"github.com/wallfacers/workhorse-agent/internal/provider/anthropic"
 	"github.com/wallfacers/workhorse-agent/internal/session"
@@ -31,8 +30,10 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/tools"
 	"github.com/wallfacers/workhorse-agent/internal/tools/bash"
 	"github.com/wallfacers/workhorse-agent/internal/tools/builtin"
+	"github.com/wallfacers/workhorse-agent/internal/tools/memorytool"
 	"github.com/wallfacers/workhorse-agent/internal/tools/sessionsearch"
 	"github.com/wallfacers/workhorse-agent/internal/tools/tasklist"
+	"github.com/wallfacers/workhorse-agent/internal/tools/toolsearch"
 	"github.com/wallfacers/workhorse-agent/test/real_e2e/judge"
 )
 
@@ -60,7 +61,7 @@ type realStack struct {
 	workdir string
 }
 
-func newRealStack(t *testing.T) *realStack {
+func newRealStack(t *testing.T, sc scenarioConfig) *realStack {
 	t.Helper()
 
 	mode := judge.ModeFromEnv()
@@ -104,7 +105,7 @@ func newRealStack(t *testing.T) *realStack {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	reg := tools.NewRegistry()
-	registerTestTools(t, reg, st.DB(), workdir)
+	registerTestTools(t, reg, st.DB(), workdir, sc.ExtraTools)
 	orch := &agent.Orchestrator{Registry: reg, MaxParallel: 4, DefaultTimeout: 30 * time.Second}
 	memLoader := &memory.Loader{ProfileDir: workdir}
 
@@ -120,6 +121,7 @@ func newRealStack(t *testing.T) *realStack {
 				Model:              defaultTestModel,
 				MaxTokens:          4096,
 				CancelDrainTimeout: 5 * time.Second,
+				ToolSearchMode:     sc.ToolSearchMode,
 			})
 			loop.Session = sess
 			loop.Provider = prov
@@ -127,11 +129,11 @@ func newRealStack(t *testing.T) *realStack {
 			loop.Orchestrator = orch
 			loop.Permissions = nil // skip permission gate in E2E
 			loop.Logger = logger
-				loop.ToolEnv = &tools.Env{
-					SessionID: sess.ID,
-					Workdir:   workdir,
-					TaskList:  tasklist.NewStore(nil),
-				}
+			loop.ToolEnv = &tools.Env{
+				SessionID: sess.ID,
+				Workdir:   workdir,
+				TaskList:  tasklist.NewStore(nil),
+			}
 			return loop
 		},
 	})
@@ -173,7 +175,9 @@ func (s *realStack) createSession() string {
 		raw, _ := io.ReadAll(resp.Body)
 		s.t.Fatalf("create status %d: %s", resp.StatusCode, raw)
 	}
-	var view struct{ ID string `json:"id"` }
+	var view struct {
+		ID string `json:"id"`
+	}
 	json.NewDecoder(resp.Body).Decode(&view)
 	return view.ID
 }
@@ -214,6 +218,13 @@ type scenarioConfig struct {
 	Rubric      judge.Rubric
 	Timeout     time.Duration
 	Setup       func(workdir string)
+	// ExtraTools are registered into the per-test registry on top of the
+	// builtin set. Used by the tool-search scenario to register deferrable
+	// tools that exercise the ToolSearch discovery path.
+	ExtraTools []tools.Tool
+	// ToolSearchMode overrides tools.tool_search for this scenario
+	// ("tst" | "auto" | "standard"); empty defaults to "tst".
+	ToolSearchMode string
 }
 
 func runScenario(t *testing.T, cfg scenarioConfig) (*judge.Trace, *judge.JudgeResult) {
@@ -222,7 +233,7 @@ func runScenario(t *testing.T, cfg scenarioConfig) (*judge.Trace, *judge.JudgeRe
 		cfg.Timeout = 60 * time.Second
 	}
 
-	s := newRealStack(t)
+	s := newRealStack(t, cfg)
 	if cfg.Setup != nil {
 		cfg.Setup(s.workdir)
 	}
@@ -283,7 +294,7 @@ func assertVerdict(t *testing.T, result *judge.JudgeResult) {
 	t.Logf("Judge: PASS (score %.2f) — %s", result.Score, result.Reasoning)
 }
 
-func registerTestTools(t *testing.T, reg *tools.Registry, db *sql.DB, workdir string) {
+func registerTestTools(t *testing.T, reg *tools.Registry, db *sql.DB, workdir string, extra []tools.Tool) {
 	t.Helper()
 	testTools := []tools.Tool{
 		builtin.Read{Timeout: 10 * time.Second},
@@ -307,7 +318,12 @@ func registerTestTools(t *testing.T, reg *tools.Registry, db *sql.DB, workdir st
 		},
 		&sessionsearch.Tool{DB: db},
 		tasklist.TodoWrite{},
+		// ToolSearch is harmless for tests without deferrable tools: when no
+		// tool defers, buildToolSchemas excludes it from the request, so
+		// existing recordings are unaffected.
+		toolsearch.Tool{},
 	}
+	testTools = append(testTools, extra...)
 	for _, tool := range testTools {
 		if err := reg.Register(tool); err != nil {
 			t.Fatalf("register tool %s: %v", tool.Name(), err)

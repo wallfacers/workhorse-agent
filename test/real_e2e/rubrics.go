@@ -222,6 +222,31 @@ var complexWorkflowRubric = judge.Rubric{
 	},
 }
 
+var toolSearchRubric = judge.Rubric{
+	MinScore:   0.7,
+	MaxRetries: 2,
+	Criteria: []judge.Criterion{
+		{
+			Name:        "discovered_via_search",
+			Description: "The deferred tool's full schema is not provided upfront — its name only appears in an <available-deferred-tools> announcement. Did the model first call the ToolSearch tool to discover/load the relevant deferred tool (e.g. query 'weather' or select:weather__forecast) before being able to use it?",
+			Weight:      0.4,
+			Required:    true,
+		},
+		{
+			Name:        "deferred_tool_called",
+			Description: "After discovering it via ToolSearch, did the model then call the actual deferred tool (e.g. weather__forecast) with appropriate parameters to satisfy the user's request?",
+			Weight:      0.35,
+			Required:    true,
+		},
+		{
+			Name:        "answer_reflects_result",
+			Description: "Does the final answer accurately reflect the deferred tool's output without fabrication?",
+			Weight:      0.25,
+			Required:    true,
+		},
+	},
+}
+
 var extAgentRubric = judge.Rubric{
 	MinScore:   0.7,
 	MaxRetries: 2,
