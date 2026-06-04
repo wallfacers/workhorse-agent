@@ -58,7 +58,9 @@ func (s *Server) handleFSList(w http.ResponseWriter, r *http.Request) {
 		}
 		clean = filepath.Clean(dir)
 		if !filepath.IsAbs(clean) {
-			clean = "/" + clean
+			if abs, aerr := filepath.Abs(clean); aerr == nil {
+				clean = abs
+			}
 		}
 	}
 
@@ -109,7 +111,9 @@ func (s *Server) handleFSList(w http.ResponseWriter, r *http.Request) {
 func resolveDirPath(p string) (string, error) {
 	p = filepath.Clean(p)
 	if !filepath.IsAbs(p) {
-		p = "/" + p
+		if abs, aerr := filepath.Abs(p); aerr == nil {
+			p = abs
+		}
 	}
 	resolved, err := filepath.EvalSymlinks(p)
 	if err != nil {
@@ -130,6 +134,11 @@ func isVirtualFS(p string) bool {
 }
 
 // isWithinWorkdir returns true if path is equal to or a descendant of workdir.
+//
+// Uses filepath.Rel rather than a hardcoded "/" prefix match so the check is
+// correct on every OS: on Windows paths use "\" separators (and different
+// drives), where `HasPrefix(path, workdir+"/")` never matched and the file
+// tree failed to load with a 403.
 func isWithinWorkdir(path, workdir string) bool {
 	if workdir == "" {
 		return false
@@ -138,5 +147,11 @@ func isWithinWorkdir(path, workdir string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.HasPrefix(path, resolvedWorkdir+"/") || path == resolvedWorkdir
+	rel, err := filepath.Rel(resolvedWorkdir, path)
+	if err != nil {
+		// Different volumes on Windows, or otherwise unrelatable paths.
+		return false
+	}
+	// Inside iff the relative path does not climb out of workdir.
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }

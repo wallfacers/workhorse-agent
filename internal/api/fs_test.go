@@ -234,6 +234,46 @@ func TestFSList_RootOverridesGlobalDefault(t *testing.T) {
 	}
 }
 
+// TestIsWithinWorkdir exercises the confinement predicate directly with
+// separator-agnostic paths (filepath.Join uses "\" on Windows, "/" elsewhere),
+// so it guards the regression where a hardcoded "/" prefix match rejected every
+// Windows path and the file tree failed to load.
+func TestIsWithinWorkdir(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Resolve symlinks so macOS /var -> /private/var (and tmp symlinks) match.
+	rootResolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subResolved, err := filepath.EvalSymlinks(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"equal to workdir", rootResolved, true},
+		{"nested descendant", subResolved, true},
+		{"parent escapes", filepath.Dir(rootResolved), false},
+		{"sibling sharing prefix", rootResolved + "_sibling", false},
+	}
+	for _, c := range cases {
+		if got := isWithinWorkdir(c.path, rootResolved); got != c.want {
+			t.Errorf("%s: isWithinWorkdir(%q, %q) = %v, want %v", c.name, c.path, rootResolved, got, c.want)
+		}
+	}
+	if isWithinWorkdir(rootResolved, "") {
+		t.Error("empty workdir must never confine")
+	}
+}
+
 // TestFSList_EscapeRootForbidden verifies a path escaping the request's root is
 // rejected even when no global default is configured.
 func TestFSList_EscapeRootForbidden(t *testing.T) {
