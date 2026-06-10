@@ -1,8 +1,8 @@
-# permission-api Specification
+# permission-preset Specification
 
 ## Purpose
 TBD - created by archiving change add-permission-default-and-api. Update Purpose after archive.
-## ADDED Requirements
+## Requirements
 
 ### Requirement: 启动时注入预设权限规则
 

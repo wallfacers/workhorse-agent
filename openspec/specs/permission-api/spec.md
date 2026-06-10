@@ -2,7 +2,7 @@
 
 ## Purpose
 TBD - created by archiving change add-permission-default-and-api. Update Purpose after archive.
-## ADDED Requirements
+## Requirements
 
 ### Requirement: 列出所有永久权限规则
 

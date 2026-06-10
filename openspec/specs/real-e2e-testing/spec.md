@@ -198,6 +198,11 @@ type Criterion struct {
 | `output_handling` — 是否正确处理和传达代理输出 | 0.3 | 是 |
 | `error_recovery` — 失败时是否给出有用解释 | 0.3 | 否 |
 
+#### Scenario: Required 项失败导致整体 FAIL
+
+- **WHEN** "文件工具" rubric 下 `no_hallucination`（Required）得分为失败，其余项满分
+- **THEN** 即使加权总分超过 MinScore 0.7，Judge 也 SHALL 返回整体 FAIL
+
 ### Requirement: Judge 缓存
 
 Judge 结果 SHALL 缓存到 `test/real_e2e/fixtures/judge_cache/` 目录。
@@ -224,7 +229,7 @@ Judge 结果 SHALL 缓存到 `test/real_e2e/fixtures/judge_cache/` 目录。
 
 ### Requirement: 执行模式控制
 
-三个独立控制轴：
+测试执行 SHALL 由以下三个独立控制轴决定：
 
 **Provider 模式**（`WORKHORSE_TEST_MODE`）：
 
