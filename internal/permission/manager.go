@@ -33,10 +33,34 @@ var ErrTimeout = errors.New("permission: request timed out")
 // callers supply a PromptFunc.
 type Request struct {
 	SessionID string
+	RequestID string // caller's correlation id (the tool_use id)
 	Tool      string
 	Resource  string // file path / command string / etc.
 	Dangerous bool   // true when DangerousCommandGuard hit
 	Reason    string // populated when Dangerous; the matched label
+}
+
+// Source identifies what produced a Decision, for the permission_resolved
+// audit event.
+type Source string
+
+const (
+	SourceRule    Source = "rule"    // a session or permanent rule matched
+	SourceDefault Source = "default" // tools.default_permission applied
+	SourcePrompt  Source = "prompt"  // a live prompt was answered
+	SourceTimeout Source = "timeout" // the prompt timed out → deny
+	SourceNone    Source = "none"    // no prompt callback available → deny
+)
+
+// CheckInput identifies one tool call for permission evaluation. RequestID
+// flows into the prompt callback and the permission_request /
+// permission_resolved events so external approvers can correlate them with
+// the originating tool_use.
+type CheckInput struct {
+	SessionID string
+	RequestID string
+	Tool      string
+	Resource  string
 }
 
 // PromptFunc is the user-facing prompt. It must respect ctx and return
@@ -120,11 +144,12 @@ func New(s store.Store, prompt PromptFunc, dangerous func(tool, resource string)
 	}
 }
 
-// Check returns a final Decision. AllowOnce / AllowSession / AllowPermanent
-// mean the call proceeds; Deny / DenyPermanent mean it does not. Internally
-// the Manager may issue a prompt and persist a decision (when the user picked
-// _permanent or _session) before returning.
-func (m *Manager) Check(ctx context.Context, sessionID, tool, resource string) (Decision, error) {
+// Check returns a final Decision plus the Source that produced it.
+// AllowOnce / AllowSession / AllowPermanent mean the call proceeds; Deny /
+// DenyPermanent mean it does not. Internally the Manager may issue a prompt
+// and persist a decision (when the user picked _permanent or _session)
+// before returning.
+func (m *Manager) Check(ctx context.Context, in CheckInput) (Decision, Source, error) {
 	// 1. DangerousCommandGuard overrides every cached allow. Per spec, even
 	// a prior allow_permanent must yield to the live prompt.
 	var (
@@ -132,30 +157,30 @@ func (m *Manager) Check(ctx context.Context, sessionID, tool, resource string) (
 		reason    string
 	)
 	if m.dangerous != nil {
-		dangerous, reason = m.dangerous(tool, resource)
+		dangerous, reason = m.dangerous(in.Tool, in.Resource)
 	}
 
 	if !dangerous {
 		// 2. Check session-scoped rules first; they're cheaper and reflect
 		// the user's most recent intent.
-		if d, ok := m.matchSessionRule(sessionID, tool, resource); ok {
-			return d, nil
+		if d, ok := m.matchSessionRule(in.SessionID, in.Tool, in.Resource); ok {
+			return d, SourceRule, nil
 		}
 		// 3. Check permanent rules from the store.
-		if d, ok, err := m.matchPermanentRule(ctx, sessionID, tool, resource); err != nil {
-			return Deny, err
+		if d, ok, err := m.matchPermanentRule(ctx, in.SessionID, in.Tool, in.Resource); err != nil {
+			return Deny, SourceNone, err
 		} else if ok {
-			return d, nil
+			return d, SourceRule, nil
 		}
 	}
 
 	// 4. No cached rule — fall back to configured default if set (unless dangerous).
 	if def := m.getDefaultDecision(); !dangerous && def != "" {
-		return def, nil
+		return def, SourceDefault, nil
 	}
 
 	// 5. No cached rule and no default configured (or dangerous override). Prompt the user.
-	return m.promptAndPersist(ctx, sessionID, tool, resource, dangerous, reason)
+	return m.promptAndPersist(ctx, in, dangerous, reason)
 }
 
 func (m *Manager) matchSessionRule(sessionID, tool, resource string) (Decision, bool) {
@@ -210,11 +235,11 @@ func (m *Manager) matchPermanentRule(ctx context.Context, sessionID, tool, resou
 	return "", false, nil
 }
 
-func (m *Manager) promptAndPersist(ctx context.Context, sessionID, tool, resource string, dangerous bool, reason string) (Decision, error) {
+func (m *Manager) promptAndPersist(ctx context.Context, in CheckInput, dangerous bool, reason string) (Decision, Source, error) {
 	if m.prompt == nil {
 		// No prompt callback registered — default to deny so the agent loop
 		// never assumes silent allow.
-		return Deny, nil
+		return Deny, SourceNone, nil
 	}
 	pctx := ctx
 	if to := m.getTimeout(); to > 0 {
@@ -223,14 +248,15 @@ func (m *Manager) promptAndPersist(ctx context.Context, sessionID, tool, resourc
 		defer cancel()
 	}
 	decision, answered := m.prompt(pctx, Request{
-		SessionID: sessionID,
-		Tool:      tool,
-		Resource:  resource,
+		SessionID: in.SessionID,
+		RequestID: in.RequestID,
+		Tool:      in.Tool,
+		Resource:  in.Resource,
 		Dangerous: dangerous,
 		Reason:    reason,
 	})
 	if !answered {
-		return Deny, ErrTimeout
+		return Deny, SourceTimeout, ErrTimeout
 	}
 
 	// Persist according to scope. AllowOnce means "this call only" — no
@@ -240,19 +266,19 @@ func (m *Manager) promptAndPersist(ctx context.Context, sessionID, tool, resourc
 	case AllowOnce:
 		// nothing to store; let the call proceed.
 	case AllowSession:
-		m.addSession(sessionID, rule{tool: tool, pattern: resource, decision: decision, scope: store.ScopeSession})
+		m.addSession(in.SessionID, rule{tool: in.Tool, pattern: in.Resource, decision: decision, scope: store.ScopeSession})
 	case AllowPermanent:
-		if err := m.savePermanent(pctx, tool, resource, AllowPermanent); err != nil {
-			m.addSession(sessionID, rule{tool: tool, pattern: resource, decision: AllowPermanent, scope: store.ScopeSession})
-			return AllowPermanent, err
+		if err := m.savePermanent(pctx, in.Tool, in.Resource, AllowPermanent); err != nil {
+			m.addSession(in.SessionID, rule{tool: in.Tool, pattern: in.Resource, decision: AllowPermanent, scope: store.ScopeSession})
+			return AllowPermanent, SourcePrompt, err
 		}
 	case DenyPermanent:
-		if err := m.savePermanent(pctx, tool, resource, DenyPermanent); err != nil {
-			m.addSession(sessionID, rule{tool: tool, pattern: resource, decision: DenyPermanent, scope: store.ScopeSession})
-			return DenyPermanent, err
+		if err := m.savePermanent(pctx, in.Tool, in.Resource, DenyPermanent); err != nil {
+			m.addSession(in.SessionID, rule{tool: in.Tool, pattern: in.Resource, decision: DenyPermanent, scope: store.ScopeSession})
+			return DenyPermanent, SourcePrompt, err
 		}
 	}
-	return decision, nil
+	return decision, SourcePrompt, nil
 }
 
 func (m *Manager) addSession(sessionID string, r rule) {
@@ -294,9 +320,11 @@ func (m *Manager) savePermanent(ctx context.Context, tool, pattern string, decis
 	})
 }
 
-// matchToolResource enforces "tool exact-match + pattern glob".
+// matchToolResource enforces "tool glob + pattern glob". Tool names never
+// contain `/`, so a metachar-free tool value degenerates to a literal
+// comparison and pre-glob rules keep their exact-match semantics.
 func matchToolResource(r rule, tool, resource string) bool {
-	if r.tool != "" && r.tool != tool {
+	if r.tool != "" && !MatchGlob(r.tool, tool) {
 		return false
 	}
 	if r.pattern == "" {

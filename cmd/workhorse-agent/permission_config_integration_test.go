@@ -23,7 +23,7 @@ func TestIntegration_PutReloadAffectsRunningManager(t *testing.T) {
 	srv.SetPermissionConfig(path, reloader.Reload)
 
 	// Before: no rule, default empty → prompt path returns deny (our stub).
-	if d, _ := perm.Check(context.Background(), "sess", "Bash", "rm tmp"); d != permission.Deny {
+	if d, _, _ := perm.Check(context.Background(), permission.CheckInput{SessionID: "sess", Tool: "Bash", Resource: "rm tmp"}); d != permission.Deny {
 		t.Fatalf("precondition: got %v, want deny via prompt", d)
 	}
 
@@ -37,7 +37,7 @@ func TestIntegration_PutReloadAffectsRunningManager(t *testing.T) {
 	}
 
 	// After: the running manager immediately sees the persisted deny_permanent.
-	d, err := perm.Check(context.Background(), "sess", "Bash", "rm tmp")
+	d, _, err := perm.Check(context.Background(), permission.CheckInput{SessionID: "sess", Tool: "Bash", Resource: "rm tmp"})
 	if err != nil || d != permission.DenyPermanent {
 		t.Fatalf("after reload Check = (%v,%v), want deny_permanent", d, err)
 	}
@@ -68,7 +68,7 @@ func TestIntegration_DefaultPermissionReload(t *testing.T) {
 	}
 
 	before := promptCalls
-	d, err := perm.Check(context.Background(), "sess", "Write", "/some/file")
+	d, _, err := perm.Check(context.Background(), permission.CheckInput{SessionID: "sess", Tool: "Write", Resource: "/some/file"})
 	if err != nil || d != permission.DenyPermanent {
 		t.Fatalf("Check = (%v,%v), want deny_permanent fallback", d, err)
 	}

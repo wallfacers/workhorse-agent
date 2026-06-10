@@ -153,6 +153,13 @@ var v5InterruptedFlag = []string{
 	`ALTER TABLE messages ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0`,
 }
 
+// v6SessionCustomization carries the per-session instructions text and the
+// caller-supplied opaque metadata map (support-dataweave-headless-integration).
+var v6SessionCustomization = []string{
+	`ALTER TABLE sessions ADD COLUMN instructions TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE sessions ADD COLUMN metadata_json TEXT NOT NULL DEFAULT ''`,
+}
+
 // migrationsByVersion is the ordered list of all migrations. Each entry is
 // applied inside its own transaction; schema_version is bumped per step.
 var migrationsByVersion = []Migration{
@@ -161,6 +168,7 @@ var migrationsByVersion = []Migration{
 	{Version: 3, Up: v3SessionTitle, Down: v3SessionTitleDown},
 	{Version: 4, Up: v4ProviderAndStopReason, Down: nil},
 	{Version: 5, Up: v5InterruptedFlag, Down: nil},
+	{Version: 6, Up: v6SessionCustomization, Down: nil},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

@@ -24,6 +24,32 @@ type createSessionRequest struct {
 	Ephemeral    bool              `json:"ephemeral,omitempty"`
 	AllowedTools []string          `json:"allowed_tools,omitempty"`
 	ParentID     string            `json:"parent_id,omitempty"`
+	Instructions string            `json:"instructions,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
+}
+
+// Limits for the session customization fields. Oversized payloads are a 400,
+// not a truncation — the caller (an external bridge) must know its context
+// was rejected rather than silently shortened.
+const (
+	maxInstructionsBytes  = 16384
+	maxMetadataKeys       = 32
+	maxMetadataEntryBytes = 1024
+)
+
+func validateCustomization(req *createSessionRequest) string {
+	if len(req.Instructions) > maxInstructionsBytes {
+		return fmt.Sprintf("instructions exceeds %d bytes", maxInstructionsBytes)
+	}
+	if len(req.Metadata) > maxMetadataKeys {
+		return fmt.Sprintf("metadata exceeds %d keys", maxMetadataKeys)
+	}
+	for k, v := range req.Metadata {
+		if len(k) > maxMetadataEntryBytes || len(v) > maxMetadataEntryBytes {
+			return fmt.Sprintf("metadata key/value exceeds %d bytes", maxMetadataEntryBytes)
+		}
+	}
+	return ""
 }
 
 // isoMillis is the ISO-8601 timestamp format the wire SessionMeta uses.
@@ -34,19 +60,20 @@ const isoMillis = "2006-01-02T15:04:05.000Z"
 // emitted even when empty (the TS interface types it non-optional) and status
 // is strictly "idle"|"running" (add-project-sessions D1/D2).
 type sessionMeta struct {
-	ID                 string `json:"id"`
-	Workdir            string `json:"workdir"`
-	Title              string `json:"title"`
-	Status             string `json:"status"`
-	CreatedAt          string `json:"createdAt,omitempty"`
-	UpdatedAt          string `json:"updatedAt,omitempty"`
-	MessageCount       int    `json:"messageCount"`
-	LastMessagePreview string `json:"lastMessagePreview,omitempty"`
-	ParentID           string `json:"parentId,omitempty"`
-	Provider           string `json:"provider,omitempty"`
-	Model              string `json:"model,omitempty"`
-	AgentType          string `json:"agentType,omitempty"`
-	Ephemeral          bool   `json:"ephemeral,omitempty"`
+	ID                 string            `json:"id"`
+	Workdir            string            `json:"workdir"`
+	Title              string            `json:"title"`
+	Status             string            `json:"status"`
+	CreatedAt          string            `json:"createdAt,omitempty"`
+	UpdatedAt          string            `json:"updatedAt,omitempty"`
+	MessageCount       int               `json:"messageCount"`
+	LastMessagePreview string            `json:"lastMessagePreview,omitempty"`
+	ParentID           string            `json:"parentId,omitempty"`
+	Provider           string            `json:"provider,omitempty"`
+	Model              string            `json:"model,omitempty"`
+	AgentType          string            `json:"agentType,omitempty"`
+	Ephemeral          bool              `json:"ephemeral,omitempty"`
+	Metadata           map[string]string `json:"metadata,omitempty"`
 }
 
 // metaFromLive projects a live in-memory session. MessageCount mirrors the
@@ -65,6 +92,7 @@ func metaFromLive(s *session.Session) sessionMeta {
 		Model:        s.Model,
 		AgentType:    s.AgentType,
 		Ephemeral:    s.Ephemeral,
+		Metadata:     s.Metadata,
 	}
 }
 
@@ -84,7 +112,19 @@ func metaFromSummary(sum *store.SessionSummary, status string) sessionMeta {
 		Model:              sum.Model,
 		AgentType:          sum.AgentType,
 		Ephemeral:          sum.Ephemeral,
+		Metadata:           decodeMetadata(sum.MetadataJSON),
 	}
+}
+
+func decodeMetadata(raw string) map[string]string {
+	if raw == "" {
+		return nil
+	}
+	m := map[string]string{}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil || len(m) == 0 {
+		return nil
+	}
+	return m
 }
 
 // previewLine collapses a last-message preview to a single trimmed line capped
@@ -170,6 +210,21 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if msg := validateCustomization(&req); msg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"code":    "bad_request",
+			"message": msg,
+		})
+		return
+	}
+
+	// tools.default_allowed_tools is the server-level tool profile: it applies
+	// only when the request names no explicit allowlist.
+	allowedTools := req.AllowedTools
+	if len(allowedTools) == 0 {
+		allowedTools = s.cfg.DefaultAllowedTools
+	}
+
 	sess, err := s.manager.CreateSession(r.Context(), session.Options{
 		Workdir:      req.Workdir,
 		Env:          req.Env,
@@ -178,7 +233,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		ProviderName: req.Provider,
 		AgentType:    req.AgentType,
 		ParentID:     req.ParentID,
-		AllowedTools: req.AllowedTools,
+		AllowedTools: allowedTools,
+		Instructions: req.Instructions,
+		Metadata:     req.Metadata,
 	})
 	if err != nil {
 		if errors.Is(err, session.ErrTooManyConcurrent) {

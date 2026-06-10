@@ -13,7 +13,10 @@ import (
 // ProtocolVersion identifies the wire protocol spoken between the frontend
 // and the sidecar (session creation, SSE events, client message types,
 // tool_use/tool_result correlation). A bump indicates breaking changes.
-const ProtocolVersion = "1"
+// v2: permission_request is emitted only when an external decision is
+// required (request_id = tool_use id, + expires_at) and every check emits
+// permission_resolved (support-dataweave-headless-integration).
+const ProtocolVersion = "2"
 
 // DefaultCapabilities lists the named features the sidecar advertises via
 // GET /health. The frontend checks for specific entries before enabling

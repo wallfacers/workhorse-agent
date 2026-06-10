@@ -3,7 +3,9 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"path"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -100,8 +102,13 @@ func (r *Registry) Names() []string {
 	return out
 }
 
-// Filtered returns the subset of registered tools whose name is in allowed.
-// A nil or empty allowed slice means "no filter" — every tool is returned.
+// Filtered returns the subset of registered tools whose name matches an
+// allowed entry. Entries containing glob metacharacters (* ? [) match by
+// path.Match — tool names contain no `/`, so this equals the permission
+// rules' single-segment glob; "dataweave__*" admits every tool of that MCP
+// server, including ones registered later. Metachar-free entries keep the
+// original exact-match semantics. A nil or empty allowed slice means "no
+// filter" — every tool is returned.
 func (r *Registry) Filtered(allowed []string) []Tool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -112,14 +119,26 @@ func (r *Registry) Filtered(allowed []string) []Tool {
 		}
 		return out
 	}
-	want := make(map[string]struct{}, len(allowed))
+	exact := make(map[string]struct{}, len(allowed))
+	var globs []string
 	for _, a := range allowed {
-		want[a] = struct{}{}
+		if strings.ContainsAny(a, "*?[") {
+			globs = append(globs, a)
+		} else {
+			exact[a] = struct{}{}
+		}
 	}
-	out := make([]Tool, 0, len(want))
+	out := make([]Tool, 0, len(allowed))
 	for _, n := range sortedKeys(r.tools) {
-		if _, ok := want[n]; ok {
+		if _, ok := exact[n]; ok {
 			out = append(out, r.tools[n])
+			continue
+		}
+		for _, g := range globs {
+			if ok, err := path.Match(g, n); err == nil && ok {
+				out = append(out, r.tools[n])
+				break
+			}
 		}
 	}
 	return out

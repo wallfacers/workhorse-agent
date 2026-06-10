@@ -134,19 +134,29 @@ func (m *Manager) persistNew(ctx context.Context, s *Session) error {
 	if err != nil {
 		return fmt.Errorf("session: marshal env: %w", err)
 	}
+	metadataJSON := ""
+	if len(s.Metadata) > 0 {
+		raw, err := json.Marshal(s.Metadata)
+		if err != nil {
+			return fmt.Errorf("session: marshal metadata: %w", err)
+		}
+		metadataJSON = string(raw)
+	}
 	row := &store.Session{
-		ID:        s.ID,
-		ParentID:  s.ParentID,
-		State:     store.SessionState(s.State()),
-		Workdir:   s.Workdir,
-		EnvJSON:   string(envJSON),
-		AgentType: s.AgentType,
-		Model:     s.Model,
-		Provider:  s.ProviderName,
-		Title:     s.Title(),
-		Ephemeral: false,
-		CreatedAt: s.CreatedAt,
-		UpdatedAt: s.CreatedAt,
+		ID:           s.ID,
+		ParentID:     s.ParentID,
+		State:        store.SessionState(s.State()),
+		Workdir:      s.Workdir,
+		EnvJSON:      string(envJSON),
+		AgentType:    s.AgentType,
+		Model:        s.Model,
+		Provider:     s.ProviderName,
+		Title:        s.Title(),
+		Instructions: s.Instructions,
+		MetadataJSON: metadataJSON,
+		Ephemeral:    false,
+		CreatedAt:    s.CreatedAt,
+		UpdatedAt:    s.CreatedAt,
 	}
 	if err := m.store.CreateSession(ctx, row); err != nil {
 		return fmt.Errorf("session: persist: %w", err)
@@ -218,6 +228,10 @@ func (m *Manager) buildHydrated(ctx context.Context, row *store.Session) (*Sessi
 	if row.EnvJSON != "" {
 		_ = json.Unmarshal([]byte(row.EnvJSON), &env)
 	}
+	metadata := map[string]string{}
+	if row.MetadataJSON != "" {
+		_ = json.Unmarshal([]byte(row.MetadataJSON), &metadata)
+	}
 	sess := New(Options{
 		Workdir:      row.Workdir,
 		Env:          env,
@@ -225,6 +239,8 @@ func (m *Manager) buildHydrated(ctx context.Context, row *store.Session) (*Sessi
 		ProviderName: row.Provider,
 		AgentType:    row.AgentType,
 		ParentID:     row.ParentID,
+		Instructions: row.Instructions,
+		Metadata:     metadata,
 		Store:        m.store,
 	})
 	sess.ID = row.ID

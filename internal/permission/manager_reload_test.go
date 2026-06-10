@@ -21,7 +21,7 @@ func TestSetDefaultDecision_TakesEffect(t *testing.T) {
 		nil, 0, "")
 
 	// Empty default → unmatched call prompts.
-	if d, err := m.Check(context.Background(), "sess", "Bash", "echo hi"); err != nil || d != permission.Deny {
+	if d, err := check(m, "sess", "Bash", "echo hi"); err != nil || d != permission.Deny {
 		t.Fatalf("before: got (%v,%v), want (deny,nil)", d, err)
 	}
 	if promptCalls != 1 {
@@ -31,7 +31,7 @@ func TestSetDefaultDecision_TakesEffect(t *testing.T) {
 	m.SetDefaultDecision(permission.AllowPermanent)
 
 	// Now the default applies without prompting.
-	if d, err := m.Check(context.Background(), "sess", "Bash", "echo hi"); err != nil || d != permission.AllowPermanent {
+	if d, err := check(m, "sess", "Bash", "echo hi"); err != nil || d != permission.AllowPermanent {
 		t.Fatalf("after: got (%v,%v), want (allow_permanent,nil)", d, err)
 	}
 	if promptCalls != 1 {
@@ -53,7 +53,7 @@ func TestSetTimeout_AppliesToPrompt(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		_, err := m.Check(context.Background(), "sess", "Bash", "sleep")
+		_, err := check(m, "sess", "Bash", "sleep")
 		if err != permission.ErrTimeout {
 			t.Errorf("got err %v, want ErrTimeout", err)
 		}
@@ -85,7 +85,7 @@ func TestSetters_NoDataRace(t *testing.T) {
 					m.SetDefaultDecision(permission.AllowPermanent)
 					m.SetTimeout(time.Duration(j) * time.Millisecond)
 				} else {
-					_, _ = m.Check(context.Background(), "sess", "Bash", "echo")
+					_, _ = check(m, "sess", "Bash", "echo")
 				}
 			}
 		}(i)

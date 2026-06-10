@@ -31,6 +31,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/extagent/smoke"
 	"github.com/wallfacers/workhorse-agent/internal/idgen"
 	"github.com/wallfacers/workhorse-agent/internal/instructions"
+	"github.com/wallfacers/workhorse-agent/internal/mcp"
 	"github.com/wallfacers/workhorse-agent/internal/memory"
 	"github.com/wallfacers/workhorse-agent/internal/permission"
 	"github.com/wallfacers/workhorse-agent/internal/prompt"
@@ -64,7 +65,11 @@ func (g *adapterPermGate) Prompt(ctx context.Context, sessionID, toolName, adapt
 	if g.mgr == nil {
 		return false, fmt.Errorf("permission manager not initialized")
 	}
-	decision, err := g.mgr.Check(ctx, sessionID, toolName, adapterName)
+	decision, _, err := g.mgr.Check(ctx, permission.CheckInput{
+		SessionID: sessionID,
+		Tool:      toolName,
+		Resource:  adapterName,
+	})
 	if err != nil {
 		return false, err
 	}
@@ -142,6 +147,14 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		_ = st.Close()
 		return fmt.Errorf("serve: register tools: %w", err)
 	}
+
+	// 3a. MCP host: load mcp.json (sibling of config.yaml) and register every
+	// healthy server's tools as namespaced adapters (<server>__<tool>). A
+	// missing mcp.json means no MCP; a single failing server is logged inside
+	// LoadAndStart and skipped — serve never blocks on MCP startup.
+	mcpHost := mcp.NewHost(logger)
+	defer mcpHost.Shutdown()
+	loadMCPTools(mcpHost, filepath.Join(filepath.Dir(configPath), "mcp.json"), registry, logger)
 
 	// 3b. External agent adapter loading.
 	var extReg *extagent.Registry
@@ -443,6 +456,51 @@ func profileDir(cfg config.Config) string {
 	return filepath.Dir(dir)
 }
 
+// loadMCPTools starts the MCP host from mcpPath (if the file exists) and
+// registers every healthy server's tools into reg under the namespaced
+// <server>__<tool> name. It never fails serve startup: a missing file is a
+// silent skip, a parse error or failing server is a WARN.
+func loadMCPTools(host *mcp.Host, mcpPath string, reg *tools.Registry, logger *slog.Logger) {
+	if _, err := os.Stat(mcpPath); err != nil {
+		if !os.IsNotExist(err) {
+			logger.Warn("mcp: stat mcp.json", "path", mcpPath, "error", err)
+		}
+		return
+	}
+	if err := host.LoadAndStart(mcpPath); err != nil {
+		logger.Warn("mcp: load failed, proceeding without MCP tools", "path", mcpPath, "error", err)
+	}
+	mcpTools := host.AllTools()
+	for _, srvTool := range mcpTools {
+		if err := reg.Register(mcp.NewAdapter(srvTool)); err != nil {
+			logger.Warn("mcp: register tool", "tool", srvTool.Server+"__"+srvTool.Def.Name, "error", err)
+		}
+	}
+	if len(mcpTools) > 0 {
+		logger.Info("mcp: tools registered", "count", len(mcpTools))
+	}
+}
+
+// allowlistDroppedTools returns the registered tool names a session's
+// allowed_tools filter removes from the model-facing schema. Empty allowed
+// means "no filter" → nothing dropped.
+func allowlistDroppedTools(reg *tools.Registry, allowed []string) []string {
+	if len(allowed) == 0 {
+		return nil
+	}
+	kept := map[string]struct{}{}
+	for _, t := range reg.Filtered(allowed) {
+		kept[t.Name()] = struct{}{}
+	}
+	var dropped []string
+	for _, t := range reg.Filtered(nil) {
+		if _, ok := kept[t.Name()]; !ok {
+			dropped = append(dropped, t.Name())
+		}
+	}
+	return dropped
+}
+
 func dangerousCommandPredicate() func(tool, resource string) (bool, string) {
 	return func(tool, resource string) (bool, string) {
 		if tool != "Bash" {
@@ -468,14 +526,23 @@ func permissionPromptUsingSessions(mgr **session.Manager, logger *slog.Logger) p
 			logger.Warn("permission prompt: session lookup", "err", err, "session", req.SessionID)
 			return permission.Deny, false
 		}
-		requestID := idgen.NewULID()
-		if err := sess.Emit(ctx, "permission_request", map[string]any{
+		// Correlate with the originating tool_use; non-loop callers (e.g. the
+		// extagent adapter gate) pass no RequestID, so mint one.
+		requestID := req.RequestID
+		if requestID == "" {
+			requestID = idgen.NewULID()
+		}
+		payload := map[string]any{
 			"request_id": requestID,
 			"tool":       req.Tool,
 			"resource":   req.Resource,
 			"dangerous":  req.Dangerous,
 			"reason":     req.Reason,
-		}); err != nil {
+		}
+		if deadline, ok := ctx.Deadline(); ok {
+			payload["expires_at"] = deadline.UTC().Format(time.RFC3339)
+		}
+		if err := sess.Emit(ctx, "permission_request", payload); err != nil {
 			return permission.Deny, false
 		}
 		// Loop on the answers channel until we see one with our request_id;
@@ -688,6 +755,12 @@ func newRunnerFactory(
 			loop.Orchestrator = sessOrch
 		}
 		loop.Registry = sessReg
+		// Surface what the allowlist drops, so a tool missing from the model's
+		// schema is diagnosable from the log instead of silently absent.
+		if dropped := allowlistDroppedTools(sessReg, sess.AllowedTools()); len(dropped) > 0 {
+			logger.Debug("session: tools filtered by allowed_tools",
+				"session", sess.ID, "dropped", dropped)
+		}
 		loop.Compactor = &agent.Compactor{
 			Provider:   fast,
 			Model:      fastModelID,
@@ -992,6 +1065,7 @@ func apiConfigFrom(cfg config.Config) api.Config {
 		AllowedOrigins:          cfg.Server.AllowedOrigins,
 		AllowNullOrigin:         cfg.Server.AllowNullOrigin,
 		DebugEnabled:            cfg.Debug.Enabled,
+		DefaultAllowedTools:     cfg.Tools.DefaultAllowedTools,
 		Auth: api.BearerConfig{
 			Enabled: cfg.Auth.Enabled,
 			Token:   cfg.Auth.BearerToken,

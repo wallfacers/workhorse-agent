@@ -74,7 +74,7 @@ func TestReload_AppliesNewPresetRule(t *testing.T) {
 	}
 
 	// And the running manager honors it immediately on the next Check.
-	d, err := perm.Check(context.Background(), "sess", "Bash", "rm tmp")
+	d, _, err := perm.Check(context.Background(), permission.CheckInput{SessionID: "sess", Tool: "Bash", Resource: "rm tmp"})
 	if err != nil || d != permission.DenyPermanent {
 		t.Fatalf("Check after reload = (%v,%v), want deny_permanent", d, err)
 	}

@@ -43,6 +43,11 @@ type Config struct {
 	MaxHistoryTokens        int
 	Version                 string
 
+	// DefaultAllowedTools is the tools.default_allowed_tools config value:
+	// the allowed_tools fallback applied when POST /v1/sessions carries none.
+	// Entries may be glob patterns. Empty means "no filter".
+	DefaultAllowedTools []string
+
 	// DegradedReason is non-empty when the server is reachable but not fully
 	// usable (e.g. "no_provider_key" — started without a usable provider key).
 	// It surfaces via GET /health as {ok:false, reason:...} and blocks session

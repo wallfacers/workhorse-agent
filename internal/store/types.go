@@ -33,10 +33,15 @@ type Session struct {
 	Model     string
 	Provider  string
 	Title     string
-	Ephemeral bool
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	DeletedAt *time.Time
+	// Instructions is the optional per-session extra instruction text the
+	// creator supplied; it joins the system prompt's dynamic Instructions
+	// segment. MetadataJSON is an opaque caller-supplied string→string map.
+	Instructions string
+	MetadataJSON string
+	Ephemeral    bool
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	DeletedAt    *time.Time
 }
 
 // SessionSummary is a session plus the two aggregates the project-scoped

@@ -440,12 +440,24 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 		if ann := deferredAnnouncement(deferredNames); ann != nil {
 			messages = append(messages, *ann)
 		}
+		// Session-level instructions (POST /v1/sessions) join the dynamic
+		// Instructions segment after the AGENTS.md block, so the static base
+		// cache prefix is untouched.
+		instrBlock := instructions.Block(l.Session.InstructionSnapshot)
+		if extra := l.Session.Instructions; extra != "" {
+			sessBlock := "<session-instructions>\n" + extra + "\n</session-instructions>"
+			if instrBlock == "" {
+				instrBlock = sessBlock
+			} else {
+				instrBlock += "\n\n" + sessBlock
+			}
+		}
 		req := provider.Request{
 			Model: l.Config.Model,
 			System: prompt.BuildSystemPrompt(prompt.SystemPromptInput{
 				Base:         l.SystemPromptBase,
 				Environment:  l.Session.EnvSnapshot,
-				Instructions: instructions.Block(l.Session.InstructionSnapshot),
+				Instructions: instrBlock,
 				Memory:       memory.Block(l.Session.MemorySnapshot),
 			}),
 			Messages:             messages,
@@ -743,22 +755,34 @@ func (l *Loop) checkPermissions(ctx context.Context, calls []ToolCall) (cleared 
 			}
 		}
 		resource := extractResource(c.Name, c.Input)
-		// Emit permission_request event (the prompt callback may do the same;
-		// having one here lets tests without a real prompt still observe it).
-		// We emit a single request per call before Check blocks.
-		// Transition to AwaitPerm on first prompted call.
+		// Transition to AwaitPerm before Check so a permission_decision POST
+		// is accepted while the prompt callback (if any) blocks. The
+		// permission_request event is emitted by the prompt callback itself —
+		// only when the check actually needs an external decision.
 		if !awaitEntered && l.Session.State() == session.StateThinking {
 			if err := l.Session.Transition(session.StateThinking, session.StateAwaitPerm); err == nil {
 				awaitEntered = true
 			}
 		}
-		_ = l.Session.Emit(ctx, "permission_request", map[string]any{
+
+		decision, source, err := l.Permissions.Check(ctx, permission.CheckInput{
+			SessionID: l.Session.ID,
+			RequestID: c.ID,
+			Tool:      c.Name,
+			Resource:  resource,
+		})
+		eventDecision := decision
+		if err != nil && decision != permission.Deny && decision != permission.DenyPermanent {
+			// A persist failure after an allow answer still denies the call
+			// below, so the audit event must say deny.
+			eventDecision = permission.Deny
+		}
+		_ = l.Session.Emit(ctx, "permission_resolved", map[string]any{
 			"request_id": c.ID,
 			"tool":       c.Name,
-			"resource":   resource,
+			"decision":   string(eventDecision),
+			"source":     string(source),
 		})
-
-		decision, err := l.Permissions.Check(ctx, l.Session.ID, c.Name, resource)
 		if err != nil || decision == permission.Deny || decision == permission.DenyPermanent {
 			denied = append(denied, ToolCallResult{
 				ID:   c.ID,

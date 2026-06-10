@@ -218,6 +218,13 @@ type Session struct {
 	// system_prompt.
 	SystemPromptBase string
 
+	// Instructions is the caller-supplied per-session extra instruction text
+	// (POST /v1/sessions). It joins the system prompt's dynamic Instructions
+	// segment; immutable for the session lifetime. Metadata is an opaque
+	// caller-supplied map the server stores and returns verbatim.
+	Instructions string
+	Metadata     map[string]string
+
 	// Inbox is the only input path. The HTTP layer pushes ClientMessages here;
 	// the agent loop reads from it. Buffered so HTTP handlers don't block.
 	Inbox chan ClientMessage
@@ -318,6 +325,8 @@ type Options struct {
 	Model        string
 	ProviderName string
 	AgentType    string
+	Instructions string
+	Metadata     map[string]string
 	AllowedTools []string
 	// DenyTools lists tool names to exclude from AllowedTools. Applied as
 	// (AllowedTools - DenyTools) in New(). Used when an agent_type declares
@@ -363,6 +372,10 @@ func New(opts Options) *Session {
 		envCopy[k] = v
 	}
 	allowed := applyDenyFilter(opts.AllowedTools, opts.DenyTools)
+	metaCopy := map[string]string{}
+	for k, v := range opts.Metadata {
+		metaCopy[k] = v
+	}
 	return &Session{
 		ID:                idgen.NewULID(),
 		ParentID:          opts.ParentID,
@@ -374,6 +387,8 @@ func New(opts Options) *Session {
 		AgentType:         opts.AgentType,
 		Depth:             opts.Depth,
 		SystemPromptBase:  opts.SystemPromptBase,
+		Instructions:      opts.Instructions,
+		Metadata:          metaCopy,
 		CreatedAt:         now,
 		Inbox:             make(chan ClientMessage, inb),
 		Outbox:            make(chan Event, out),

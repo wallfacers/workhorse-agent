@@ -50,10 +50,12 @@ func fromNullableMicros(n sql.NullInt64) *time.Time {
 func (s *Store) CreateSession(ctx context.Context, sess *store.Session) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO sessions(id, parent_id, state, workdir, env_json,
-			agent_type, model, provider, title, ephemeral, created_at, updated_at, deleted_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			agent_type, model, provider, title, instructions, metadata_json,
+			ephemeral, created_at, updated_at, deleted_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		sess.ID, sess.ParentID, string(sess.State), sess.Workdir, sess.EnvJSON,
-		sess.AgentType, sess.Model, sess.Provider, sess.Title, boolToInt(sess.Ephemeral),
+		sess.AgentType, sess.Model, sess.Provider, sess.Title,
+		sess.Instructions, sess.MetadataJSON, boolToInt(sess.Ephemeral),
 		toMicros(sess.CreatedAt), toMicros(sess.UpdatedAt), nullableMicros(sess.DeletedAt))
 	if err != nil {
 		return fmt.Errorf("sqlite: CreateSession: %w", err)
@@ -64,14 +66,14 @@ func (s *Store) CreateSession(ctx context.Context, sess *store.Session) error {
 func (s *Store) GetSession(ctx context.Context, id string) (*store.Session, error) {
 	row := s.db.QueryRowContext(ctx,
 		`SELECT id, parent_id, state, workdir, env_json, agent_type, model, provider, title,
-			ephemeral, created_at, updated_at, deleted_at
+			instructions, metadata_json, ephemeral, created_at, updated_at, deleted_at
 		 FROM sessions WHERE id = ?`, id)
 	return scanSession(row)
 }
 
 func (s *Store) ListSessions(ctx context.Context, includeDeleted bool) ([]*store.Session, error) {
 	q := `SELECT id, parent_id, state, workdir, env_json, agent_type, model, provider, title,
-			ephemeral, created_at, updated_at, deleted_at
+			instructions, metadata_json, ephemeral, created_at, updated_at, deleted_at
 		  FROM sessions`
 	if !includeDeleted {
 		q += ` WHERE deleted_at IS NULL`
@@ -124,7 +126,8 @@ func (s *Store) ListAllSessions(ctx context.Context) ([]*store.SessionSummary, e
 // the session columns plus a correlated message-count and last-message preview
 // (the preview reuses extract_text(), the same function the FTS trigger uses).
 const sessionSummarySelect = `SELECT s.id, s.parent_id, s.state, s.workdir, s.env_json, s.agent_type,
-		s.model, s.provider, s.title, s.ephemeral, s.created_at, s.updated_at, s.deleted_at,
+		s.model, s.provider, s.title, s.instructions, s.metadata_json,
+		s.ephemeral, s.created_at, s.updated_at, s.deleted_at,
 		(SELECT count(*) FROM messages m WHERE m.session_id = s.id) AS msg_count,
 		coalesce((SELECT extract_text(m.content_json) FROM messages m
 			WHERE m.session_id = s.id ORDER BY m.created_at DESC, m.id DESC LIMIT 1), '') AS last_preview
@@ -143,7 +146,8 @@ func scanSessionSummaries(rows *sql.Rows) ([]*store.SessionSummary, error) {
 		var createdAt, updatedAt int64
 		var deletedAt sql.NullInt64
 		if err := rows.Scan(&sum.ID, &sum.ParentID, &state, &sum.Workdir,
-			&sum.EnvJSON, &sum.AgentType, &sum.Model, &sum.Provider, &sum.Title, &ephemeral,
+			&sum.EnvJSON, &sum.AgentType, &sum.Model, &sum.Provider, &sum.Title,
+			&sum.Instructions, &sum.MetadataJSON, &ephemeral,
 			&createdAt, &updatedAt, &deletedAt,
 			&sum.MessageCount, &sum.LastMessagePreview); err != nil {
 			return nil, fmt.Errorf("sqlite: scan session summary: %w", err)
@@ -185,10 +189,12 @@ func (s *Store) ListProjects(ctx context.Context) ([]*store.Project, error) {
 func (s *Store) UpdateSession(ctx context.Context, sess *store.Session) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET parent_id=?, state=?, workdir=?, env_json=?,
-			agent_type=?, model=?, provider=?, title=?, ephemeral=?, updated_at=?, deleted_at=?
+			agent_type=?, model=?, provider=?, title=?, instructions=?, metadata_json=?,
+			ephemeral=?, updated_at=?, deleted_at=?
 		 WHERE id=?`,
 		sess.ParentID, string(sess.State), sess.Workdir, sess.EnvJSON,
-		sess.AgentType, sess.Model, sess.Provider, sess.Title, boolToInt(sess.Ephemeral),
+		sess.AgentType, sess.Model, sess.Provider, sess.Title,
+		sess.Instructions, sess.MetadataJSON, boolToInt(sess.Ephemeral),
 		toMicros(sess.UpdatedAt), nullableMicros(sess.DeletedAt), sess.ID)
 	if err != nil {
 		return fmt.Errorf("sqlite: UpdateSession: %w", err)
@@ -285,7 +291,8 @@ func scanSession(sc scanner) (*store.Session, error) {
 	var createdAt, updatedAt int64
 	var deletedAt sql.NullInt64
 	if err := sc.Scan(&sess.ID, &sess.ParentID, &state, &sess.Workdir,
-		&sess.EnvJSON, &sess.AgentType, &sess.Model, &sess.Provider, &sess.Title, &ephemeral,
+		&sess.EnvJSON, &sess.AgentType, &sess.Model, &sess.Provider, &sess.Title,
+		&sess.Instructions, &sess.MetadataJSON, &ephemeral,
 		&createdAt, &updatedAt, &deletedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound

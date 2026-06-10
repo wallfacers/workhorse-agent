@@ -103,7 +103,7 @@
     $("last-id").textContent = "0";
     sysLine("connected to session " + id);
     evtSource = new EventSource("/v1/sessions/" + id + "/stream");
-    for (const t of ["assistant_text_delta", "assistant_text_done", "tool_call_start", "tool_call_done", "permission_request", "subagent_event", "compaction", "provider_retry", "error", "interrupted", "pong"]) {
+    for (const t of ["assistant_text_delta", "assistant_text_done", "tool_call_start", "tool_call_done", "permission_request", "permission_resolved", "subagent_event", "compaction", "provider_retry", "error", "interrupted", "pong"]) {
       evtSource.addEventListener(t, (e) => handleEvent(t, e));
     }
     evtSource.onerror = () => sysLine("[stream interrupted, will auto-reconnect with Last-Event-ID=" + lastEventID + "]");
@@ -145,6 +145,13 @@
         $("perm-summary").textContent = (payload.tool_name || "tool") + " requests permission";
         $("perm-detail").textContent = JSON.stringify(payload, null, 2);
         $("perm-modal").classList.add("show");
+        break;
+      case "permission_resolved":
+        if (pendingPerm && payload.request_id === pendingPerm.request_id) {
+          pendingPerm = null;
+          $("perm-modal").classList.remove("show");
+        }
+        sysLine("[permission " + (payload.tool || "?") + ": " + (payload.decision || "?") + " via " + (payload.source || "?") + "]");
         break;
       case "subagent_event": {
         const inner = payload.event || {};

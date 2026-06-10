@@ -141,8 +141,38 @@ does **not** depend on the Anthropic `tool_reference` beta.
   must be English (Latin letters; typographic punctuation OK). A test in
   `cmd/workhorse-agent` (`TestLocalToolDescriptionsAreEnglish`) guards this.
 
-MCP host wiring into the registry is out of scope here; the `Adapter` is
-pre-wired so tool search applies automatically once MCP servers are connected.
+The MCP host **is wired into serve**: startup loads `mcp.json` (sibling of
+`config.yaml`) via `loadMCPTools` (`cmd/workhorse-agent/cmd_serve.go`),
+registering every healthy server's tools as `<server>__<tool>` adapters in the
+global registry. Missing mcp.json = silent skip; a failing server is a WARN
+and never blocks startup. Tool search deferral applies automatically.
+
+## Headless integration (permissions, sessions, tool profile)
+
+Added by `support-dataweave-headless-integration` for external platforms that
+bridge the SSE stream (e.g. DataWeave):
+
+- **Permission rule `tool` field is a glob** (same `MatchGlob` as `pattern`;
+  metachar-free values stay exact). `dataweave__query_*` whitelists an MCP
+  server's read-only tools in one preset rule; `deny_permanent` still beats
+  any matching allow.
+- **Permission event lifecycle (protocol_version 2)**: `permission_request`
+  is emitted ONLY when a check actually needs an external decision —
+  request_id equals the tool_use id, payload carries `expires_at`. Every
+  check emits `permission_resolved { request_id, tool, decision, source }`
+  with `source ∈ rule|default|prompt|timeout|none` (timeout deny is therefore
+  observable). The agent loop no longer pre-emits `permission_request` per
+  tool call. `Manager.Check` takes a `CheckInput` and returns
+  `(Decision, Source, error)`.
+- **Session customization**: `POST /v1/sessions` accepts `instructions`
+  (≤16 KiB, joins the system prompt's dynamic Instructions segment — never
+  the cache prefix) and `metadata` (≤32 string pairs, opaque, returned in
+  `SessionMeta.metadata`). Both persist (sessions v6 columns) and survive
+  hydration.
+- **Tool profile**: `tools.default_allowed_tools` is the `allowed_tools`
+  fallback when a create request names none. Allowlist entries (request-level
+  and default) support globs via `Registry.Filtered` (`path.Match` per entry);
+  tools dropped by the allowlist are logged at session creation.
 
 ## Memory subsystem
 
