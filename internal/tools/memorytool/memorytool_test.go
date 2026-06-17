@@ -2,206 +2,434 @@ package memorytool_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/wallfacers/workhorse-agent/internal/memory"
+	"github.com/wallfacers/workhorse-agent/internal/store/sqlite"
 	"github.com/wallfacers/workhorse-agent/internal/tools"
 	"github.com/wallfacers/workhorse-agent/internal/tools/memorytool"
 )
 
-func testEnv() *tools.Env {
-	return &tools.Env{SessionID: "test", Workdir: "/tmp"}
+func testStore(t *testing.T) (*memory.EntryStore, *sql.DB) {
+	t.Helper()
+	s, err := sqlite.Open(context.Background(), sqlite.Options{DSN: ":memory:"})
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return memory.NewEntryStore(s.DB()), s.DB()
 }
 
-func TestRead_InvalidKind(t *testing.T) {
-	r := &memorytool.Read{ProfileDir: t.TempDir()}
-	res, err := r.Run(context.Background(), testEnv(), []byte(`{"kind":"bad"}`))
+func testEnv() *tools.Env { return &tools.Env{SessionID: "sess-1", Workdir: "/tmp"} }
+
+func budgets() memory.Budgets { return memory.DefaultBudgets() }
+
+func run(t *testing.T, tool tools.Tool, in string) map[string]any {
+	t.Helper()
+	res, err := tool.Run(context.Background(), testEnv(), json.RawMessage(in))
 	if err != nil {
-		t.Fatalf("run: %v", err)
+		t.Fatalf("%s run: %v", tool.Name(), err)
 	}
-	if !res.IsError {
-		t.Error("expected error result")
-	}
-	if !contains(res.Output, "invalid_kind") {
-		t.Errorf("expected invalid_kind in output, got %q", res.Output)
-	}
-}
-
-func TestWrite_InvalidKind(t *testing.T) {
-	w := &memorytool.Write{ProfileDir: t.TempDir(), MemoryLimit: 100, UserLimit: 100}
-	res, err := w.Run(context.Background(), testEnv(), []byte(`{"kind":"bad","content":"x"}`))
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if !res.IsError {
-		t.Error("expected error result")
-	}
-	if !contains(res.Output, "invalid_kind") {
-		t.Errorf("expected invalid_kind, got %q", res.Output)
-	}
-}
-
-func TestWrite_OverLimit(t *testing.T) {
-	w := &memorytool.Write{ProfileDir: t.TempDir(), MemoryLimit: 5, UserLimit: 5}
-	res, err := w.Run(context.Background(), testEnv(), []byte(`{"kind":"memory","content":"too long"}`))
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	if !res.IsError {
-		t.Error("expected error result for over-limit")
-	}
-	if !contains(res.Output, "memory_too_large") {
-		t.Errorf("expected memory_too_large, got %q", res.Output)
-	}
-}
-
-func TestWriteAndRead_RoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	w := &memorytool.Write{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
-	r := &memorytool.Read{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
-
-	// Write
-	res, err := w.Run(context.Background(), testEnv(), []byte(`{"kind":"memory","content":"test data"}`))
-	if err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if res.IsError {
-		t.Fatalf("write failed: %s", res.Output)
-	}
-
-	// Read
-	res, err = r.Run(context.Background(), testEnv(), []byte(`{"kind":"memory"}`))
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if res.IsError {
-		t.Fatalf("read failed: %s", res.Output)
-	}
-
 	var out map[string]any
-	json.Unmarshal([]byte(res.Output), &out)
-	if out["content"] != "test data" {
-		t.Errorf("content: got %v, want 'test data'", out["content"])
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		// Non-JSON output (e.g. LoadMemory returns raw content).
+		return map[string]any{"__raw": res.Output, "__is_error": res.IsError}
 	}
+	out["__is_error"] = res.IsError
+	return out
 }
 
-func TestWrite_AppendThenRead(t *testing.T) {
-	dir := t.TempDir()
-	w := &memorytool.Write{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
-	r := &memorytool.Read{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
+// ---- memory_write -----------------------------------------------------------
 
-	w.Run(context.Background(), testEnv(), []byte(`{"kind":"memory","content":"line1"}`))
-	w.Run(context.Background(), testEnv(), []byte(`{"kind":"memory","content":"line2","mode":"append"}`))
+func TestWrite_UpsertSingle(t *testing.T) {
+	es, _ := testStore(t)
+	w := &memorytool.Write{Store: es, Budgets: budgets()}
 
-	res, _ := r.Run(context.Background(), testEnv(), []byte(`{"kind":"memory"}`))
-	var out map[string]any
-	json.Unmarshal([]byte(res.Output), &out)
-	if out["content"] != "line1\nline2" {
-		t.Errorf("append: got %v", out["content"])
+	out := run(t, w, `{"name":"alpha","trigger":"when greeting","content":"hello"}`)
+	if out["__is_error"] == true {
+		t.Fatalf("unexpected error: %v", out)
 	}
-}
-
-func TestWrite_DoesNotAffectSessionSnapshot(t *testing.T) {
-	dir := t.TempDir()
-
-	// A session-start snapshot is an immutable value captured before any write.
-	// (Loading now comes from the entry store; here we only need a held value to
-	// assert mid-session writes do not mutate it.)
-	snap := &memory.Snapshot{Pinned: "original"}
-
-	w := &memorytool.Write{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
-	r := &memorytool.Read{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
-
-	w.Run(context.Background(), testEnv(), []byte(`{"kind":"memory","content":"updated"}`))
-
-	// memory_read reads from disk, so it sees the new content
-	res, _ := r.Run(context.Background(), testEnv(), []byte(`{"kind":"memory"}`))
-	var out map[string]any
-	json.Unmarshal([]byte(res.Output), &out)
-	if out["content"] != "updated" {
-		t.Errorf("read after write: got %v", out["content"])
+	if out["accepted"] != true || out["next_session_effective"] != true {
+		t.Fatalf("unexpected response: %v", out)
+	}
+	if out["char_count"].(float64) != 5 {
+		t.Fatalf("char_count = %v, want 5", out["char_count"])
 	}
 
-	// The loaded snapshot value should remain unchanged by the mid-session write.
-	if snap.Pinned != "original" {
-		t.Errorf("snapshot should be unchanged, got %q", snap.Pinned)
-	}
-}
-
-func TestWriteAndRead_UserKind(t *testing.T) {
-	dir := t.TempDir()
-	w := &memorytool.Write{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
-	r := &memorytool.Read{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
-
-	res, err := w.Run(context.Background(), testEnv(), []byte(`{"kind":"user","content":"I am a developer"}`))
+	e, err := es.GetByName(context.Background(), "alpha")
 	if err != nil {
-		t.Fatalf("write user: %v", err)
+		t.Fatalf("get: %v", err)
 	}
-	if res.IsError {
-		t.Fatalf("write user failed: %s", res.Output)
-	}
-
-	res, err = r.Run(context.Background(), testEnv(), []byte(`{"kind":"user"}`))
-	if err != nil {
-		t.Fatalf("read user: %v", err)
-	}
-	if res.IsError {
-		t.Fatalf("read user failed: %s", res.Output)
-	}
-
-	var out map[string]any
-	json.Unmarshal([]byte(res.Output), &out)
-	if out["content"] != "I am a developer" {
-		t.Errorf("user content: got %v, want 'I am a developer'", out["content"])
+	if e.Content != "hello" || e.Trigger != "when greeting" || e.Durability != "volatile" {
+		t.Fatalf("stored entry mismatch: %+v", e)
 	}
 }
 
-func TestWrite_ModeDefaultsToReplace(t *testing.T) {
-	dir := t.TempDir()
-	w := &memorytool.Write{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
-	r := &memorytool.Read{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
+func TestWrite_RejectsArrayInput(t *testing.T) {
+	es, _ := testStore(t)
+	w := &memorytool.Write{Store: es, Budgets: budgets()}
 
-	w.Run(context.Background(), testEnv(), []byte(`{"kind":"memory","content":"first"}`))
-	// No mode field → defaults to replace, not append
-	w.Run(context.Background(), testEnv(), []byte(`{"kind":"memory","content":"second"}`))
-
-	res, _ := r.Run(context.Background(), testEnv(), []byte(`{"kind":"memory"}`))
-	var out map[string]any
-	json.Unmarshal([]byte(res.Output), &out)
-	if out["content"] != "second" {
-		t.Errorf("default mode should be replace, got %v", out["content"])
+	out := run(t, w, `[{"name":"a","content":"x"}]`)
+	if out["__is_error"] != true {
+		t.Fatalf("expected error for array input, got %v", out)
+	}
+	if !strings.Contains(out["error"].(string), "single entry") {
+		t.Fatalf("expected 'single entry' message, got %q", out["error"])
+	}
+	if n, _ := es.Count(context.Background()); n != 0 {
+		t.Fatalf("store should be empty, has %d", n)
 	}
 }
 
-func TestWrite_ReturnsNextSessionEffective(t *testing.T) {
-	dir := t.TempDir()
-	w := &memorytool.Write{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
+func TestWrite_AppendConcatenates(t *testing.T) {
+	es, _ := testStore(t)
+	w := &memorytool.Write{Store: es, Budgets: budgets()}
 
-	res, err := w.Run(context.Background(), testEnv(), []byte(`{"kind":"memory","content":"data"}`))
-	if err != nil {
-		t.Fatalf("write: %v", err)
+	run(t, w, `{"name":"log","content":"line1"}`)
+	out := run(t, w, `{"name":"log","content":"line2","mode":"append"}`)
+	if out["__is_error"] == true {
+		t.Fatalf("append error: %v", out)
 	}
-
-	var out map[string]any
-	json.Unmarshal([]byte(res.Output), &out)
-	if out["next_session_effective"] != true {
-		t.Errorf("expected next_session_effective true, got %v", out["next_session_effective"])
-	}
-	if out["accepted"] != true {
-		t.Errorf("expected accepted true, got %v", out["accepted"])
+	e, _ := es.GetByName(context.Background(), "log")
+	if e.Content != "line1\nline2" {
+		t.Fatalf("append content = %q, want %q", e.Content, "line1\nline2")
 	}
 }
 
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && searchString(s, sub)
+func TestWrite_AppendOverLimitRejected(t *testing.T) {
+	es, _ := testStore(t)
+	b := budgets()
+	b.EntryContentChars = 8
+	w := &memorytool.Write{Store: es, Budgets: b}
+
+	run(t, w, `{"name":"log","content":"12345"}`) // 5 chars, fits
+	out := run(t, w, `{"name":"log","content":"6789","mode":"append"}`)
+	if out["__is_error"] != true {
+		t.Fatalf("expected over-limit error, got %v", out)
+	}
+	if out["code"] != "memory_too_large" {
+		t.Fatalf("expected code memory_too_large, got %v", out["code"])
+	}
+	// Existing entry left byte-identical.
+	e, _ := es.GetByName(context.Background(), "log")
+	if e.Content != "12345" {
+		t.Fatalf("entry mutated on rejected append: %q", e.Content)
+	}
 }
 
-func searchString(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
+func TestWrite_TriggerNewlineRejected(t *testing.T) {
+	es, _ := testStore(t)
+	w := &memorytool.Write{Store: es, Budgets: budgets()}
+
+	out := run(t, w, `{"name":"a","trigger":"line1\nline2","content":"x"}`)
+	if out["__is_error"] != true || out["code"] != "trigger_invalid" {
+		t.Fatalf("expected trigger_invalid, got %v", out)
+	}
+	if n, _ := es.Count(context.Background()); n != 0 {
+		t.Fatalf("store should be unchanged, has %d", n)
+	}
+}
+
+func TestWrite_PinnedOverBudgetRejected(t *testing.T) {
+	es, _ := testStore(t)
+	b := budgets()
+	b.PinnedChars = 5
+	w := &memorytool.Write{Store: es, Budgets: b}
+
+	out := run(t, w, `{"name":"p","content":"123456","pinned":true}`) // 6 > 5
+	if out["__is_error"] != true || out["code"] != "pinned_budget_exceeded" {
+		t.Fatalf("expected pinned_budget_exceeded, got %v", out)
+	}
+	if n, _ := es.Count(context.Background()); n != 0 {
+		t.Fatalf("store should be unchanged, has %d", n)
+	}
+}
+
+func TestWrite_InvalidDurabilityRejected(t *testing.T) {
+	es, _ := testStore(t)
+	w := &memorytool.Write{Store: es, Budgets: budgets()}
+	out := run(t, w, `{"name":"a","content":"x","durability":"forever"}`)
+	if out["__is_error"] != true {
+		t.Fatalf("expected error for bad durability, got %v", out)
+	}
+}
+
+// ---- memory_read ------------------------------------------------------------
+
+func TestRead_HitReturnsFields(t *testing.T) {
+	es, _ := testStore(t)
+	must := func(err error) {
+		if err != nil {
+			t.Fatalf("seed: %v", err)
 		}
 	}
-	return false
+	must(es.Upsert(context.Background(), &memory.Entry{
+		Name: "alpha", Trigger: "trig", Content: "body", Pinned: true,
+		Durability: "evergreen", Category: "user", CharCount: 4,
+	}))
+
+	r := &memorytool.Read{Store: es}
+	out := run(t, r, `{"name":"alpha"}`)
+	if out["__is_error"] == true {
+		t.Fatalf("read error: %v", out)
+	}
+	if out["content"] != "body" || out["trigger"] != "trig" || out["pinned"] != true ||
+		out["durability"] != "evergreen" || out["category"] != "user" {
+		t.Fatalf("read fields mismatch: %v", out)
+	}
+	if out["hit_count"].(float64) != 0 {
+		t.Fatalf("hit_count = %v, want 0", out["hit_count"])
+	}
+}
+
+func TestRead_DoesNotBumpUsage(t *testing.T) {
+	es, _ := testStore(t)
+	_ = es.Upsert(context.Background(), &memory.Entry{Name: "a", Content: "x", CharCount: 1})
+
+	r := &memorytool.Read{Store: es}
+	run(t, r, `{"name":"a"}`)
+	run(t, r, `{"name":"a"}`)
+
+	e, _ := es.GetByName(context.Background(), "a")
+	if e.HitCount != 0 || e.LastUsedAt != nil {
+		t.Fatalf("memory_read must not bump usage: hit=%d last=%v", e.HitCount, e.LastUsedAt)
+	}
+}
+
+func TestRead_NotFound(t *testing.T) {
+	es, _ := testStore(t)
+	r := &memorytool.Read{Store: es}
+	out := run(t, r, `{"name":"nope"}`)
+	if out["__is_error"] != true || out["code"] != "not_found" {
+		t.Fatalf("expected not_found, got %v", out)
+	}
+}
+
+// ---- LoadMemory -------------------------------------------------------------
+
+func TestLoadMemory_ReturnsContentAndBumps(t *testing.T) {
+	es, _ := testStore(t)
+	_ = es.Upsert(context.Background(), &memory.Entry{Name: "a", Content: "full body here", CharCount: 14})
+
+	usage := memory.NewUsageLogger(es, 16)
+	l := memorytool.NewLoadMemory(es, usage)
+
+	res, err := l.Run(context.Background(), testEnv(), json.RawMessage(`{"name":"a"}`))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", res.Output)
+	}
+	if res.Output != "full body here" {
+		t.Fatalf("content = %q", res.Output)
+	}
+
+	usage.Close() // flush the usage bump
+	e, _ := es.GetByName(context.Background(), "a")
+	if e.HitCount != 1 {
+		t.Fatalf("hit_count = %d, want 1", e.HitCount)
+	}
+	if e.LastUsedAt == nil {
+		t.Fatal("last_used_at should be set after LoadMemory")
+	}
+}
+
+func TestLoadMemory_NotFound(t *testing.T) {
+	es, _ := testStore(t)
+	l := memorytool.NewLoadMemory(es, nil)
+	out := run(t, l, `{"name":"missing"}`)
+	if out["__is_error"] != true || out["code"] != "not_found" {
+		t.Fatalf("expected not_found, got %v", out)
+	}
+}
+
+func TestLoadMemory_NilUsageBestEffort(t *testing.T) {
+	es, _ := testStore(t)
+	_ = es.Upsert(context.Background(), &memory.Entry{Name: "a", Content: "c", CharCount: 1})
+	// A nil usage logger models a failed/absent recorder: the load must still
+	// succeed and return content (best-effort usage semantics).
+	l := memorytool.NewLoadMemory(es, nil)
+	res, err := l.Run(context.Background(), testEnv(), json.RawMessage(`{"name":"a"}`))
+	if err != nil || res.IsError || res.Output != "c" {
+		t.Fatalf("load with nil usage should still succeed: err=%v res=%+v", err, res)
+	}
+}
+
+// ---- MemorySearch -----------------------------------------------------------
+
+func seedSearch(t *testing.T, es *memory.EntryStore) {
+	t.Helper()
+	entries := []*memory.Entry{
+		{Name: "deploy", Trigger: "when deploying", Content: "run the deployment pipeline carefully", CharCount: 37},
+		{Name: "中文笔记", Trigger: "中文触发", Content: "这是一段关于数据中台的中文记忆内容", CharCount: 17},
+		{Name: "golang", Trigger: "writing go code", Content: "prefer table-driven tests and small interfaces", CharCount: 47},
+	}
+	for _, e := range entries {
+		if err := es.Upsert(context.Background(), e); err != nil {
+			t.Fatalf("seed %s: %v", e.Name, err)
+		}
+	}
+}
+
+func TestMemorySearch_EnglishMatch(t *testing.T) {
+	es, db := testStore(t)
+	seedSearch(t, es)
+	s := &memorytool.MemorySearch{DB: db}
+
+	out := run(t, s, `{"query":"deployment"}`)
+	matches := out["matches"].([]any)
+	if len(matches) == 0 {
+		t.Fatalf("expected at least one match, got %v", out)
+	}
+	first := matches[0].(map[string]any)
+	if first["name"] != "deploy" {
+		t.Fatalf("expected deploy match, got %v", first)
+	}
+}
+
+func TestMemorySearch_CJKFallback(t *testing.T) {
+	es, db := testStore(t)
+	seedSearch(t, es)
+	s := &memorytool.MemorySearch{DB: db}
+
+	out := run(t, s, `{"query":"数据中台"}`)
+	matches := out["matches"].([]any)
+	if len(matches) == 0 {
+		t.Fatalf("expected CJK match, got %v", out)
+	}
+	found := false
+	for _, m := range matches {
+		if m.(map[string]any)["name"] == "中文笔记" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected 中文笔记 in matches, got %v", matches)
+	}
+}
+
+func TestMemorySearch_LimitTruncates(t *testing.T) {
+	es, db := testStore(t)
+	for i := 0; i < 5; i++ {
+		_ = es.Upsert(context.Background(), &memory.Entry{
+			Name:      "note" + string(rune('a'+i)),
+			Content:   "common shared keyword content",
+			CharCount: 29,
+		})
+	}
+	s := &memorytool.MemorySearch{DB: db}
+	out := run(t, s, `{"query":"keyword","limit":2}`)
+	matches := out["matches"].([]any)
+	if len(matches) != 2 {
+		t.Fatalf("expected 2 matches with limit 2, got %d", len(matches))
+	}
+	if out["truncated"] != true {
+		t.Fatalf("expected truncated=true, got %v", out["truncated"])
+	}
+}
+
+func TestMemorySearch_DoesNotBump(t *testing.T) {
+	es, db := testStore(t)
+	seedSearch(t, es)
+	s := &memorytool.MemorySearch{DB: db}
+	run(t, s, `{"query":"deployment"}`)
+
+	e, _ := es.GetByName(context.Background(), "deploy")
+	if e.HitCount != 0 {
+		t.Fatalf("MemorySearch must not bump usage, hit=%d", e.HitCount)
+	}
+}
+
+// ---- memory_delete ----------------------------------------------------------
+
+func TestDelete_RemovesEntryAndFTS(t *testing.T) {
+	es, db := testStore(t)
+	_ = es.Upsert(context.Background(), &memory.Entry{Name: "gone", Content: "deletable content", CharCount: 17})
+
+	d := &memorytool.Delete{Store: es}
+	out := run(t, d, `{"name":"gone"}`)
+	if out["__is_error"] == true || out["deleted"] != true {
+		t.Fatalf("delete failed: %v", out)
+	}
+
+	if _, err := es.GetByName(context.Background(), "gone"); err == nil {
+		t.Fatal("entry should be gone")
+	}
+	// FTS mirror removed by trigger.
+	var n int
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT count(*) FROM memory_entries_fts WHERE memory_entries_fts MATCH ?`, "deletable").Scan(&n); err != nil {
+		t.Fatalf("fts count: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("fts row should be gone, found %d", n)
+	}
+}
+
+func TestDelete_NotFound(t *testing.T) {
+	es, _ := testStore(t)
+	d := &memorytool.Delete{Store: es}
+	out := run(t, d, `{"name":"missing"}`)
+	if out["__is_error"] != true || out["code"] != "not_found" {
+		t.Fatalf("expected not_found, got %v", out)
+	}
+}
+
+// ---- memory_merge -----------------------------------------------------------
+
+func TestMerge_Atomic(t *testing.T) {
+	es, _ := testStore(t)
+	_ = es.Upsert(context.Background(), &memory.Entry{Name: "a", Content: "aaa", CharCount: 3})
+	_ = es.Upsert(context.Background(), &memory.Entry{Name: "b", Content: "bbb", CharCount: 3})
+
+	m := &memorytool.Merge{Store: es, Budgets: budgets()}
+	out := run(t, m, `{"names":["a","b"],"into":{"name":"merged","content":"combined","trigger":"merged trig"}}`)
+	if out["__is_error"] == true || out["merged"] != true {
+		t.Fatalf("merge failed: %v", out)
+	}
+	if out["into"] != "merged" {
+		t.Fatalf("into = %v", out["into"])
+	}
+
+	ctx := context.Background()
+	if _, err := es.GetByName(ctx, "a"); err == nil {
+		t.Fatal("source a should be gone")
+	}
+	if _, err := es.GetByName(ctx, "b"); err == nil {
+		t.Fatal("source b should be gone")
+	}
+	merged, err := es.GetByName(ctx, "merged")
+	if err != nil || merged.Content != "combined" {
+		t.Fatalf("merged entry missing/wrong: %+v err=%v", merged, err)
+	}
+}
+
+func TestMerge_IntoOverLimitRejected(t *testing.T) {
+	es, _ := testStore(t)
+	_ = es.Upsert(context.Background(), &memory.Entry{Name: "a", Content: "aaa", CharCount: 3})
+	b := budgets()
+	b.EntryContentChars = 3
+	m := &memorytool.Merge{Store: es, Budgets: b}
+
+	out := run(t, m, `{"names":["a"],"into":{"name":"merged","content":"way too long"}}`)
+	if out["__is_error"] != true || out["code"] != "memory_too_large" {
+		t.Fatalf("expected memory_too_large, got %v", out)
+	}
+	// Source untouched.
+	if _, err := es.GetByName(context.Background(), "a"); err != nil {
+		t.Fatalf("source a should survive a rejected merge: %v", err)
+	}
+}
+
+func TestMerge_RejectsEmptyNames(t *testing.T) {
+	es, _ := testStore(t)
+	m := &memorytool.Merge{Store: es, Budgets: budgets()}
+	out := run(t, m, `{"names":[],"into":{"name":"x","content":"y"}}`)
+	if out["__is_error"] != true {
+		t.Fatalf("expected error for empty names, got %v", out)
+	}
 }

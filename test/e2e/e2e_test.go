@@ -410,9 +410,8 @@ func TestE2E_LastEventIDRace(t *testing.T) {
 
 // --- Memory E2E: session isolation ---
 
-func newMemoryStack(t *testing.T) (*stack, string) {
+func newMemoryStack(t *testing.T) (*stack, *sqlite.Store) {
 	t.Helper()
-	profileDir := t.TempDir()
 
 	st, err := sqlite.Open(context.Background(), sqlite.Options{DSN: ":memory:"})
 	if err != nil {
@@ -426,14 +425,14 @@ func newMemoryStack(t *testing.T) (*stack, string) {
 	orch := &agent.Orchestrator{Registry: reg, MaxParallel: 4, DefaultTimeout: 2 * time.Second}
 	permMgr := permission.New(st, nil, nil, 0, "")
 
-	memLoader := &memory.Loader{ProfileDir: profileDir}
+	memLoader := &memory.Loader{Store: memory.NewEntryStore(st.DB()), Budgets: memory.DefaultBudgets()}
 
 	var mgr *session.Manager
 	mgr = session.NewManager(session.ManagerOptions{
 		Store:         st,
 		MaxConcurrent: 0,
 		RunnerFactory: func(sess *session.Session) session.Runner {
-			snap, _ := memLoader.Load()
+			snap, _ := memLoader.Load(context.Background())
 			sess.MemorySnapshot = snap
 
 			loop := agent.NewLoop(agent.LoopConfig{
@@ -462,13 +461,13 @@ func newMemoryStack(t *testing.T) (*stack, string) {
 	srv := api.NewServer(cfg, mgr, st, logger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return &stack{t: t, srv: srv, mgr: mgr, store: st, mock: mock, ts: ts, url: ts.URL, logger: logger}, profileDir
+	return &stack{t: t, srv: srv, mgr: mgr, store: st, mock: mock, ts: ts, url: ts.URL, logger: logger}, st
 }
 
 // TestE2E_MemoryWrittenBeforeSessionB (task 9.1): write memory after session A
 // starts, verify session A never sees it but session B does.
 func TestE2E_MemoryWrittenBeforeSessionB(t *testing.T) {
-	s, profileDir := newMemoryStack(t)
+	s, st := newMemoryStack(t)
 
 	// Session A: start it and drive one turn.
 	s.mock.QueueResponse([]provider.ProviderEvent{
@@ -502,9 +501,12 @@ func TestE2E_MemoryWrittenBeforeSessionB(t *testing.T) {
 		t.Error("session A system prompt should NOT contain memory written after session start")
 	}
 
-	// Write memory to disk via the memory package directly.
-	w := memory.Writer{ProfileDir: profileDir, MemoryLimit: 2200, UserLimit: 1375}
-	if err := w.Write(memory.KindMemory, "my secret note", memory.ModeReplace); err != nil {
+	// Write memory to the entry store directly. Pinned so it lands in the PINNED
+	// region of the next session's snapshot verbatim.
+	es := memory.NewEntryStore(st.DB())
+	if err := es.Upsert(context.Background(), &memory.Entry{
+		Name: "secret", Content: "my secret note", Pinned: true, CharCount: 14,
+	}); err != nil {
 		t.Fatalf("write memory: %v", err)
 	}
 

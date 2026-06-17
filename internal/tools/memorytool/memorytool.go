@@ -1,92 +1,56 @@
+// Package memorytool implements the entry-shaped memory tools backed by the
+// per-entry SQLite store (internal/memory.EntryStore). It exposes:
+//
+//   - memory_write  (single-entry upsert/append; serial)
+//   - memory_read   (read one entry by name; read-only, no usage bump)
+//   - LoadMemory    (read full content + record a best-effort usage hit)
+//   - MemorySearch  (FTS5 MATCH + CJK LIKE fallback; read-only)
+//   - memory_delete (transactional)
+//   - memory_merge  (atomic write+delete in one transaction)
+//
+// Errors are surfaced through tools.ErrorResultJSON; structured rejections add a
+// machine-readable `code` field via codedError.
 package memorytool
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wallfacers/workhorse-agent/internal/memory"
+	"github.com/wallfacers/workhorse-agent/internal/store"
 	"github.com/wallfacers/workhorse-agent/internal/tools"
 )
 
-// Read implements the memory_read tool.
-type Read struct {
-	ProfileDir  string
-	MemoryLimit int
-	UserLimit   int
-}
-
-func (Read) Name() string                  { return "memory_read" }
-func (Read) Description() string           { return "Read the current content of a memory file from disk." }
-func (Read) IsReadOnly() bool              { return true }
-func (Read) CanRunInParallel() bool        { return true }
-func (Read) DefaultTimeout() time.Duration { return 10 * time.Second }
-
-func (Read) InputSchema() json.RawMessage {
-	return []byte(`{
-		"type": "object",
-		"properties": {
-			"kind": {
-				"type": "string",
-				"enum": ["memory", "user"],
-				"description": "Which memory file to read: 'memory' for agent-curated facts, 'user' for user identity and preferences."
-			}
-		},
-		"required": ["kind"]
-	}`)
-}
-
-type readInput struct {
-	Kind string `json:"kind"`
-}
-
-func (r *Read) Run(_ context.Context, _ *tools.Env, raw json.RawMessage) (*tools.Result, error) {
-	var in readInput
-	if err := json.Unmarshal(raw, &in); err != nil {
-		return tools.ErrorResultJSON("invalid JSON: " + err.Error()), nil
+// codedError builds a structured error Result carrying a machine-readable code
+// plus optional extra fields (limit/actual/budget), keeping the {"error",...}
+// envelope shape consistent with tools.ErrorResultJSON.
+func codedError(code, msg string, extra map[string]any) *tools.Result {
+	m := map[string]any{"error": msg, "code": code}
+	for k, v := range extra {
+		m[k] = v
 	}
-
-	kind, err := memory.ValidateKind(in.Kind)
-	if err != nil {
-		return tools.ErrorResultJSON("invalid_kind: " + err.Error()), nil
-	}
-
-	content, err := memory.ReadFile(r.ProfileDir, in.Kind)
-	if err != nil {
-		return tools.ErrorResultJSON(err.Error()), nil
-	}
-
-	limit := r.limitFor(kind)
-	out, _ := json.Marshal(map[string]any{
-		"content":    content,
-		"char_count": memory.CharCount(content),
-		"char_limit": limit,
-	})
-	return &tools.Result{Output: string(out)}, nil
+	out, _ := json.Marshal(m)
+	return &tools.Result{Output: string(out), IsError: true}
 }
 
-func (r *Read) limitFor(kind memory.Kind) int {
-	switch kind {
-	case memory.KindMemory:
-		return r.MemoryLimit
-	case memory.KindUser:
-		return r.UserLimit
-	default:
-		return 0
-	}
-}
+// charCount counts Unicode code points (never bytes), matching budget semantics.
+func charCount(s string) int { return utf8.RuneCountInString(s) }
 
-// Write implements the memory_write tool.
+// ---- memory_write -----------------------------------------------------------
+
+// Write implements the memory_write tool: create or update exactly one entry.
 type Write struct {
-	ProfileDir  string
-	MemoryLimit int
-	UserLimit   int
+	Store   *memory.EntryStore
+	Budgets memory.Budgets
 }
 
 func (Write) Name() string { return "memory_write" }
 func (Write) Description() string {
-	return "Write content to a memory file. Use mode 'replace' (default) or 'append'."
+	return "Create or update exactly one memory entry. Provide a single entry object (never an array): name (required, slug key), trigger (when it is relevant), content (required), and optional pinned, durability (evergreen|volatile), category, and mode (upsert default, or append to concatenate onto existing content). Takes effect from the next session."
 }
 func (Write) IsReadOnly() bool              { return false }
 func (Write) CanRunInParallel() bool        { return false }
@@ -96,68 +60,182 @@ func (Write) InputSchema() json.RawMessage {
 	return []byte(`{
 		"type": "object",
 		"properties": {
-			"kind": {
-				"type": "string",
-				"enum": ["memory", "user"],
-				"description": "Which memory file to write."
-			},
-			"content": {
-				"type": "string",
-				"description": "The content to write."
-			},
-			"mode": {
-				"type": "string",
-				"enum": ["replace", "append"],
-				"description": "Write mode: 'replace' (default) overwrites the file; 'append' adds after existing content."
-			}
+			"name":    {"type": "string", "description": "Unique slug key for the entry. Writing an existing name upserts it."},
+			"trigger": {"type": "string", "description": "Single short line describing when this entry is relevant."},
+			"content": {"type": "string", "description": "The full body of the entry."},
+			"pinned":  {"type": "boolean", "description": "Pinned entries are loaded in full into every session prompt."},
+			"durability": {"type": "string", "enum": ["evergreen", "volatile"], "description": "evergreen survives longer; volatile decays faster under curation. Defaults to volatile."},
+			"category": {"type": "string", "description": "Facet such as user, feedback, project, reference."},
+			"mode":     {"type": "string", "enum": ["upsert", "append"], "description": "upsert (default) replaces the entry; append concatenates content onto an existing entry."}
 		},
-		"required": ["kind", "content"]
+		"required": ["name", "content"]
 	}`)
 }
 
 type writeInput struct {
-	Kind    string `json:"kind"`
-	Content string `json:"content"`
-	Mode    string `json:"mode"`
+	Name       string `json:"name"`
+	Trigger    string `json:"trigger"`
+	Content    string `json:"content"`
+	Pinned     bool   `json:"pinned"`
+	Durability string `json:"durability"`
+	Category   string `json:"category"`
+	Mode       string `json:"mode"`
 }
 
-func (w *Write) Run(_ context.Context, _ *tools.Env, raw json.RawMessage) (*tools.Result, error) {
+func (w *Write) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*tools.Result, error) {
 	var in writeInput
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return tools.ErrorResultJSON("invalid JSON: " + err.Error()), nil
+		// A JSON array (batch input) fails to decode into a single object.
+		return tools.ErrorResultJSON("memory_write accepts a single entry, not an array"), nil
+	}
+	if in.Name == "" {
+		return tools.ErrorResultJSON("name is required"), nil
+	}
+	if in.Content == "" {
+		return tools.ErrorResultJSON("content is required"), nil
 	}
 
-	kind, err := memory.ValidateKind(in.Kind)
-	if err != nil {
-		return tools.ErrorResultJSON("invalid_kind: " + err.Error()), nil
+	// 1. Durability: default volatile, reject unknown enum values.
+	durability := in.Durability
+	if durability == "" {
+		durability = "volatile"
+	}
+	if durability != "evergreen" && durability != "volatile" {
+		return tools.ErrorResultJSON(fmt.Sprintf("invalid durability %q (want evergreen or volatile)", in.Durability)), nil
 	}
 
-	writer := &memory.Writer{
-		ProfileDir:  w.ProfileDir,
-		MemoryLimit: w.MemoryLimit,
-		UserLimit:   w.UserLimit,
-	}
-
-	mode := memory.EnsureValidMode(in.Mode)
-	if err := writer.Write(kind, in.Content, mode); err != nil {
-		if _, ok := err.(memory.ErrMemoryTooLarge); ok {
-			return tools.ErrorResultJSON(fmt.Sprintf("memory_too_large: %v", err)), nil
+	// 2. Trigger validation (newline / over-length).
+	if err := w.Budgets.CheckTrigger(in.Trigger); err != nil {
+		var ti memory.ErrTriggerInvalid
+		if errors.As(err, &ti) {
+			return codedError("trigger_invalid", ti.Error(), map[string]any{"limit": ti.Limit, "actual": ti.Actual}), nil
 		}
 		return tools.ErrorResultJSON(err.Error()), nil
 	}
 
-	// Re-read to get accurate char count
-	content, err := memory.ReadFile(w.ProfileDir, in.Kind)
-	if err != nil {
-		content = in.Content
+	// 3. Resolve final content (append concatenates onto existing).
+	finalContent := in.Content
+	if in.Mode == "append" {
+		existing, err := w.Store.GetByName(ctx, in.Name)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return tools.ErrorResultJSON(err.Error()), nil
+		}
+		if err == nil && existing.Content != "" {
+			finalContent = existing.Content + "\n" + in.Content
+		}
 	}
-	limit := writer.CharLimit(kind)
+
+	// 4. Per-entry content limit.
+	if err := w.Budgets.CheckEntryContent(finalContent); err != nil {
+		var tooLarge memory.ErrMemoryTooLarge
+		if errors.As(err, &tooLarge) {
+			return codedError("memory_too_large", tooLarge.Error(), map[string]any{"limit": tooLarge.Limit, "actual": tooLarge.Actual}), nil
+		}
+		return tools.ErrorResultJSON(err.Error()), nil
+	}
+
+	cc := charCount(finalContent)
+
+	// 5. Pinned budget: existing pinned total (excluding this name) + new content.
+	if in.Pinned {
+		base, err := w.Store.PinnedCharTotal(ctx, in.Name)
+		if err != nil {
+			return tools.ErrorResultJSON(err.Error()), nil
+		}
+		total := base + cc
+		if total > w.Budgets.PinnedChars {
+			e := memory.ErrPinnedBudgetExceeded{Budget: w.Budgets.PinnedChars, Actual: total}
+			return codedError("pinned_budget_exceeded", e.Error(), map[string]any{"budget": e.Budget, "actual": e.Actual}), nil
+		}
+	}
+
+	src := ""
+	if env != nil {
+		src = env.SessionID
+	}
+	entry := &memory.Entry{
+		Name:            in.Name,
+		Trigger:         in.Trigger,
+		Content:         finalContent,
+		Pinned:          in.Pinned,
+		Durability:      durability,
+		Category:        in.Category,
+		CharCount:       cc,
+		SourceSessionID: src,
+	}
+	if err := w.Store.Upsert(ctx, entry); err != nil {
+		return tools.ErrorResultJSON(err.Error()), nil
+	}
 
 	out, _ := json.Marshal(map[string]any{
 		"accepted":               true,
-		"char_count":             memory.CharCount(content),
-		"char_limit":             limit,
+		"char_count":             cc,
 		"next_session_effective": true,
+	})
+	return &tools.Result{Output: string(out)}, nil
+}
+
+// ---- memory_read ------------------------------------------------------------
+
+// Read implements the memory_read tool: read one entry by name from the store
+// without recording a usage hit.
+type Read struct {
+	Store *memory.EntryStore
+}
+
+func (Read) Name() string { return "memory_read" }
+func (Read) Description() string {
+	return "Read the current stored content and metadata of one memory entry by name, directly from the store (not the frozen session snapshot). Does NOT count as a usage hit. Use LoadMemory instead when you intend to actually use the entry."
+}
+func (Read) IsReadOnly() bool              { return true }
+func (Read) CanRunInParallel() bool        { return true }
+func (Read) DefaultTimeout() time.Duration { return 10 * time.Second }
+
+func (Read) InputSchema() json.RawMessage {
+	return []byte(`{
+		"type": "object",
+		"properties": {
+			"name": {"type": "string", "description": "Name of the entry to read."}
+		},
+		"required": ["name"]
+	}`)
+}
+
+type nameInput struct {
+	Name string `json:"name"`
+}
+
+func (r *Read) Run(ctx context.Context, _ *tools.Env, raw json.RawMessage) (*tools.Result, error) {
+	var in nameInput
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return tools.ErrorResultJSON("invalid JSON: " + err.Error()), nil
+	}
+	if in.Name == "" {
+		return tools.ErrorResultJSON("name is required"), nil
+	}
+
+	e, err := r.Store.GetByName(ctx, in.Name)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return codedError("not_found", fmt.Sprintf("memory entry %q not found", in.Name), nil), nil
+		}
+		return tools.ErrorResultJSON(err.Error()), nil
+	}
+
+	var lastUsed any
+	if e.LastUsedAt != nil {
+		lastUsed = e.LastUsedAt.UTC().Format(time.RFC3339Nano)
+	}
+	out, _ := json.Marshal(map[string]any{
+		"name":         e.Name,
+		"content":      e.Content,
+		"trigger":      e.Trigger,
+		"pinned":       e.Pinned,
+		"durability":   e.Durability,
+		"category":     e.Category,
+		"hit_count":    e.HitCount,
+		"last_used_at": lastUsed,
+		"char_count":   e.CharCount,
 	})
 	return &tools.Result{Output: string(out)}, nil
 }

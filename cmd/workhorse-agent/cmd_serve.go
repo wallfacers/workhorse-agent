@@ -143,10 +143,15 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	// 3. Tool registry (built-ins).
 	registry := tools.NewRegistry()
 	skillCatalog := skills.Scan(cfg.Skills.Dir)
-	if err := registerBuiltinTools(registry, cfg, skillCatalog, st); err != nil {
+	memUsage, err := registerBuiltinTools(registry, cfg, skillCatalog, st)
+	if err != nil {
 		_ = st.Close()
 		return fmt.Errorf("serve: register tools: %w", err)
 	}
+	// memUsage drains the memory usage-bump channel (design D8). Close it on
+	// shutdown so pending bumps flush; if a later init step bails before the
+	// normal defer path is established, Close is idempotent.
+	defer memUsage.Close()
 
 	// 3a. MCP host: load mcp.json (sibling of config.yaml) and register every
 	// healthy server's tools as namespaced adapters (<server>__<tool>). A
@@ -404,7 +409,16 @@ func buildProviderRegistry(cfg config.Config) (def, fast map[string]provider.Pro
 	return def, fast, "", nil
 }
 
-func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skills.Catalog, st *sqlite.Store) error {
+// registerBuiltinTools registers the always-loaded local tools. It returns the
+// memory usage-logger (whose background goroutine drains usage bumps from
+// LoadMemory/MemorySearch, design D8); the caller MUST Close it on shutdown so
+// pending bumps flush.
+func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skills.Catalog, st *sqlite.Store) (*memory.UsageLogger, error) {
+	// Per-entry memory store + budgets (Phase 6 will wire budgets from config).
+	es := memory.NewEntryStore(st.DB())
+	budgets := memory.DefaultBudgets()
+	usage := memory.NewUsageLogger(es, memory.DefaultUsageBuffer)
+
 	for _, t := range []tools.Tool{
 		builtin.Read{
 			MaxBytes: cfg.Tools.ToolResultMaxBytes,
@@ -422,25 +436,22 @@ func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skill
 			BaseEnv:               os.Environ(),
 		},
 		skills.NewLoadSkill(catalog),
-		&memorytool.Read{
-			ProfileDir:  profileDir(cfg),
-			MemoryLimit: cfg.Memory.MemoryCharLimit,
-			UserLimit:   cfg.Memory.UserCharLimit,
-		},
-		&memorytool.Write{
-			ProfileDir:  profileDir(cfg),
-			MemoryLimit: cfg.Memory.MemoryCharLimit,
-			UserLimit:   cfg.Memory.UserCharLimit,
-		},
+		&memorytool.Read{Store: es},
+		&memorytool.Write{Store: es, Budgets: budgets},
+		memorytool.NewLoadMemory(es, usage),
+		&memorytool.MemorySearch{DB: st.DB()},
+		&memorytool.Delete{Store: es},
+		&memorytool.Merge{Store: es, Budgets: budgets},
 		&sessionsearch.Tool{DB: st.DB()},
 		tasklist.TodoWrite{},
 		toolsearch.Tool{},
 	} {
 		if err := reg.Register(t); err != nil {
-			return err
+			usage.Close()
+			return nil, err
 		}
 	}
-	return nil
+	return usage, nil
 }
 
 func profileDir(cfg config.Config) string {

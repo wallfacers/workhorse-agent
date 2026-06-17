@@ -33,23 +33,23 @@
 
 ## 3. Tools
 
-- [ ] 3.1 Reshape `memory_write` to single-entry upsert/append (schema rejects
+- [x] 3.1 Reshape `memory_write` to single-entry upsert/append (schema rejects
   arrays); transactional; `next_session_effective: true`.
-- [ ] 3.2 Reshape `memory_read` to read one entry by name from the store; MUST NOT
+- [x] 3.2 Reshape `memory_read` to read one entry by name from the store; MUST NOT
   bump usage score.
-- [ ] 3.3 Add `LoadMemory{name}` (≈ port of `skills/loadtool.go`), read-only +
+- [x] 3.3 Add `LoadMemory{name}` (≈ port of `skills/loadtool.go`), read-only +
   parallel-safe, returning full content; record an idempotent best-effort usage hit
   (`hit_count++`, `last_used_at`) per design D8.
-- [ ] 3.4 Add `MemorySearch{query, limit?}` over `memory_entries_fts`, reusing the
+- [x] 3.4 Add `MemorySearch{query, limit?}` over `memory_entries_fts`, reusing the
   `sessionsearch` CJK-trigram + LIKE fallback; return `{name, trigger, snippet}`.
-- [ ] 3.5 Add `memory_delete{name}` (transactional).
-- [ ] 3.6 Add `memory_merge{names, into}` (atomic write+delete in one transaction).
-- [ ] 3.7 Register all tools through the existing registry; gate by `allowed_tools`;
+- [x] 3.5 Add `memory_delete{name}` (transactional).
+- [x] 3.6 Add `memory_merge{names, into}` (atomic write+delete in one transaction).
+- [x] 3.7 Register all tools through the existing registry; gate by `allowed_tools`;
   set read-only/parallel flags correctly.
 - [ ] 3.8 Implement the `memory export` artifact path (CLI command and/or HTTP
   endpoint) that renders all entries to a human-readable markdown file for
   inspection/git backup; resolve the output path through `pathguard`. (Docs in 8.2.)
-- [ ] 3.9 Implement the usage-logger goroutine + buffered channel (design D8) that
+- [x] 3.9 Implement the usage-logger goroutine + buffered channel (design D8) that
   `LoadMemory`/`MemorySearch` enqueue to; drop-on-full with DEBUG log.
 
 ## 4. Migration (flat files → entries)

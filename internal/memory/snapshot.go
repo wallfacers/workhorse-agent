@@ -162,6 +162,10 @@ func CharCount(s string) int {
 	return utf8.RuneCountInString(s)
 }
 
+// readFile reads a file, treating a missing file as empty content. Kept for the
+// phase-4 flat-file migration (MEMORY.md/USER.md → entries); unused until then.
+//
+//nolint:unused
 func readFile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -173,6 +177,11 @@ func readFile(path string) (string, error) {
 	return string(data), nil
 }
 
+// memoriesDir resolves the legacy memories directory. Kept for the phase-4
+// flat-file migration (locating MEMORY.md/USER.md and the legacy/ copy target);
+// unused until then.
+//
+//nolint:unused
 func memoriesDir(profileDir string) string {
 	if profileDir == "" {
 		home, err := os.UserHomeDir()
