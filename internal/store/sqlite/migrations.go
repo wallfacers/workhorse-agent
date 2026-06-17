@@ -160,6 +160,72 @@ var v6SessionCustomization = []string{
 	`ALTER TABLE sessions ADD COLUMN metadata_json TEXT NOT NULL DEFAULT ''`,
 }
 
+// v7Memory creates the per-entry memory store (redesign-memory-layered-curation
+// D1/D6): the memory_entries table, its FTS5 mirror with sync triggers, and the
+// single-row curation leader-lease table.
+//
+// Unlike messages_fts (which extracts text out of a JSON column), the memory FTS
+// columns (name, trigger, content) are plain text, so the triggers index them
+// directly with no extract_text() call. All timestamps are INTEGER unix
+// microseconds, consistent with the rest of the schema.
+var v7Memory = []string{
+	`CREATE TABLE IF NOT EXISTS memory_entries (
+		id                TEXT    PRIMARY KEY,
+		name              TEXT    NOT NULL UNIQUE,
+		trigger           TEXT    NOT NULL DEFAULT '',
+		content           TEXT    NOT NULL DEFAULT '',
+		pinned            INTEGER NOT NULL DEFAULT 0,
+		durability        TEXT    NOT NULL DEFAULT 'volatile',
+		category          TEXT    NOT NULL DEFAULT '',
+		hit_count         INTEGER NOT NULL DEFAULT 0,
+		last_used_at      INTEGER,
+		created_at        INTEGER NOT NULL,
+		updated_at        INTEGER NOT NULL,
+		char_count        INTEGER NOT NULL DEFAULT 0,
+		source_session_id TEXT    NOT NULL DEFAULT ''
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_memory_pinned ON memory_entries(pinned)`,
+
+	`CREATE VIRTUAL TABLE IF NOT EXISTS memory_entries_fts USING fts5(
+		name,
+		trigger,
+		content,
+		tokenize='trigram'
+	)`,
+	`CREATE TRIGGER IF NOT EXISTS memory_entries_fts_ai AFTER INSERT ON memory_entries BEGIN
+		INSERT INTO memory_entries_fts(rowid, name, trigger, content)
+		VALUES (new.rowid, new.name, new.trigger, new.content);
+	END`,
+	`CREATE TRIGGER IF NOT EXISTS memory_entries_fts_ad AFTER DELETE ON memory_entries BEGIN
+		DELETE FROM memory_entries_fts WHERE rowid = old.rowid;
+	END`,
+	`CREATE TRIGGER IF NOT EXISTS memory_entries_fts_au AFTER UPDATE ON memory_entries BEGIN
+		DELETE FROM memory_entries_fts WHERE rowid = old.rowid;
+		INSERT INTO memory_entries_fts(rowid, name, trigger, content)
+		VALUES (new.rowid, new.name, new.trigger, new.content);
+	END`,
+
+	`CREATE TABLE IF NOT EXISTS memory_curation_lease (
+		id           INTEGER PRIMARY KEY CHECK (id = 1),
+		holder       TEXT    NOT NULL DEFAULT '',
+		expires_at   INTEGER NOT NULL DEFAULT 0,
+		heartbeat_at INTEGER NOT NULL DEFAULT 0
+	)`,
+	`INSERT OR IGNORE INTO memory_curation_lease(id, holder, expires_at, heartbeat_at)
+		VALUES (1, '', 0, 0)`,
+}
+
+// v7MemoryDown reverses the v7 migration. Order is safe: drop the triggers and
+// FTS mirror before the base table, then the standalone lease table.
+var v7MemoryDown = []string{
+	`DROP TRIGGER IF EXISTS memory_entries_fts_au`,
+	`DROP TRIGGER IF EXISTS memory_entries_fts_ad`,
+	`DROP TRIGGER IF EXISTS memory_entries_fts_ai`,
+	`DROP TABLE IF EXISTS memory_entries_fts`,
+	`DROP TABLE IF EXISTS memory_curation_lease`,
+	`DROP TABLE IF EXISTS memory_entries`,
+}
+
 // migrationsByVersion is the ordered list of all migrations. Each entry is
 // applied inside its own transaction; schema_version is bumped per step.
 var migrationsByVersion = []Migration{
@@ -169,6 +235,7 @@ var migrationsByVersion = []Migration{
 	{Version: 4, Up: v4ProviderAndStopReason, Down: nil},
 	{Version: 5, Up: v5InterruptedFlag, Down: nil},
 	{Version: 6, Up: v6SessionCustomization, Down: nil},
+	{Version: 7, Up: v7Memory, Down: v7MemoryDown},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

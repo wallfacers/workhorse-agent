@@ -2,14 +2,14 @@
 
 ## 1. Storage & schema (SQLite)
 
-- [ ] 1.1 Add `memory_entries` table migration (columns per design D1) via the
+- [x] 1.1 Add `memory_entries` table migration (columns per design D1) via the
   versioned migration framework, forward-only, `IF NOT EXISTS`.
-- [ ] 1.2 Add `memory_entries_fts` FTS5 virtual table + AFTER INSERT/UPDATE/DELETE
+- [x] 1.2 Add `memory_entries_fts` FTS5 virtual table + AFTER INSERT/UPDATE/DELETE
   sync triggers mirroring `(name, trigger, content)`; mirror the `messages_fts`
   migration shape. Backfill from any rows present.
-- [ ] 1.3 Add `memory_curation_lease(id=1, holder, expires_at, heartbeat_at)` table
+- [x] 1.3 Add `memory_curation_lease(id=1, holder, expires_at, heartbeat_at)` table
   migration; seed a single row.
-- [ ] 1.4 Add store accessors for entry CRUD (insert/upsert/get-by-name/delete/list)
+- [x] 1.4 Add store accessors for entry CRUD (insert/upsert/get-by-name/delete/list)
   and FTS query, all transactional; reuse `DB() *sql.DB` accessor.
 
 ## 2. Entry store & two-layer snapshot
