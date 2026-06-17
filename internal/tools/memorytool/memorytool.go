@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-	"unicode/utf8"
 
 	"github.com/wallfacers/workhorse-agent/internal/memory"
 	"github.com/wallfacers/workhorse-agent/internal/store"
@@ -36,9 +35,6 @@ func codedError(code, msg string, extra map[string]any) *tools.Result {
 	out, _ := json.Marshal(m)
 	return &tools.Result{Output: string(out), IsError: true}
 }
-
-// charCount counts Unicode code points (never bytes), matching budget semantics.
-func charCount(s string) int { return utf8.RuneCountInString(s) }
 
 // ---- memory_write -----------------------------------------------------------
 
@@ -138,7 +134,7 @@ func (w *Write) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*
 		return tools.ErrorResultJSON(err.Error()), nil
 	}
 
-	cc := charCount(finalContent)
+	cc := memory.CharCount(finalContent)
 
 	// 5. Pinned budget: existing pinned total (excluding this name) + new content.
 	if in.Pinned {

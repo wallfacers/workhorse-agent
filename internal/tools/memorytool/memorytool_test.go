@@ -425,6 +425,25 @@ func TestMerge_IntoOverLimitRejected(t *testing.T) {
 	}
 }
 
+func TestMerge_PinnedOverBudgetRejected(t *testing.T) {
+	es, _ := testStore(t)
+	_ = es.Upsert(context.Background(), &memory.Entry{Name: "a", Content: "aaa", CharCount: 3})
+	b := budgets()
+	b.PinnedChars = 5
+	m := &memorytool.Merge{Store: es, Budgets: b}
+
+	// Merging into a pinned entry whose content exceeds the pinned budget must be
+	// rejected exactly like a pinned memory_write — no back door to an over-budget
+	// pinned region.
+	out := run(t, m, `{"names":["a"],"into":{"name":"merged","content":"too many pinned chars","pinned":true}}`)
+	if out["__is_error"] != true || out["code"] != "pinned_budget_exceeded" {
+		t.Fatalf("expected pinned_budget_exceeded, got %v", out)
+	}
+	if _, err := es.GetByName(context.Background(), "a"); err != nil {
+		t.Fatalf("source a should survive a rejected merge: %v", err)
+	}
+}
+
 func TestMerge_RejectsEmptyNames(t *testing.T) {
 	es, _ := testStore(t)
 	m := &memorytool.Merge{Store: es, Budgets: budgets()}

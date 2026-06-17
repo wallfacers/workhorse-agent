@@ -260,6 +260,24 @@ func (s *EntryStore) CountNonPinned(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// ManifestSizeEstimate returns an approximate code-point size of the INDEX
+// manifest region: the sum over non-pinned entries of the rendered line
+// `- {name} — {trigger}` plus a per-line overhead for the markers and newline.
+// It is a cheap estimate (SQLite LENGTH counts characters for TEXT) used by the
+// curation pressure trigger's manifest-size water line (design D5), avoiding a
+// full snapshot assembly. The overhead constant mirrors manifestLine's fixed
+// glyphs ("- " + " — " + joining "\n").
+func (s *EntryStore) ManifestSizeEstimate(ctx context.Context) (int, error) {
+	const perLineOverhead = 6
+	var n sql.NullInt64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(LENGTH(name) + LENGTH(trigger) + ?), 0)
+		   FROM memory_entries WHERE pinned = 0`, perLineOverhead).Scan(&n); err != nil {
+		return 0, fmt.Errorf("memory: estimate manifest size: %w", err)
+	}
+	return int(n.Int64), nil
+}
+
 // PinnedCharTotal returns the sum of char_count over all pinned entries,
 // excluding the entry named excludeName (pass "" to exclude nothing). This lets
 // memory_write compute the incremental pinned total for a budget check before an

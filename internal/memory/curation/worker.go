@@ -18,6 +18,7 @@ type Config struct {
 	EntryCountHigh       int            // pressure water line (hot-reloadable)
 	MinInterval          time.Duration  // floor between passes (hot-reloadable)
 	LeaseTTL             time.Duration  // leader-lease duration (hot-reloadable)
+	ManifestBudgetChars  int            // manifest-size water line (restart-only)
 	MaxCandidatesPerPass int            // cap on entries sent to the judge (restart-only)
 	ContentSnippetChars  int            // content code points shown to the judge (restart-only)
 	Weights              Weights        // scorer weights (restart-only)
@@ -37,6 +38,7 @@ type Worker struct {
 	nowFn  func() time.Time
 
 	// restart-only
+	manifestBudget int
 	maxCandidates  int
 	contentSnippet int
 	weights        Weights
@@ -67,6 +69,7 @@ func NewWorker(store *memory.EntryStore, db *sql.DB, call ModelCaller, cfg Confi
 		call:           call,
 		logger:         logger,
 		nowFn:          func() time.Time { return time.Now().UTC() },
+		manifestBudget: cfg.ManifestBudgetChars,
 		maxCandidates:  cfg.MaxCandidatesPerPass,
 		contentSnippet: cfg.ContentSnippetChars,
 		weights:        cfg.Weights,
@@ -184,9 +187,14 @@ func (w *Worker) heartbeat(ctx context.Context, cancel context.CancelFunc, ttl t
 	}
 }
 
-// shouldRun applies the floor and pressure water lines (design D5): never more
-// than once per MinInterval, and only when the non-pinned count is over the
-// high-water mark (so a small healthy store never pays for an LLM pass).
+// shouldRun applies the three water lines from the curation spec ("Pressure-
+// triggered curation"): a pass runs when the non-pinned count exceeds
+// entry_count_high, OR the estimated manifest size exceeds manifest_budget_chars,
+// OR the time since the last completed pass exceeds min_interval_minutes
+// (time-based fallback so stale volatile entries are still reviewed in a small
+// store). An empty non-pinned set short-circuits to false (nothing to review).
+// Bursts are bounded by the debounced enqueue + max_candidates_per_pass, not by
+// a hard time floor.
 func (w *Worker) shouldRun(ctx context.Context, now time.Time) bool {
 	w.mu.Lock()
 	last := w.lastPass
@@ -194,15 +202,32 @@ func (w *Worker) shouldRun(ctx context.Context, now time.Time) bool {
 	high := w.entryCountHigh
 	w.mu.Unlock()
 
-	if !last.IsZero() && now.Sub(last) < minInterval {
-		return false // floor: bound LLM cost
-	}
 	count, err := w.store.CountNonPinned(ctx)
 	if err != nil {
 		w.logger.Warn("curation: count failed", "error", err)
 		return false
 	}
-	return count > high
+	if count == 0 {
+		return false // nothing to curate
+	}
+	if count > high {
+		return true // count water line
+	}
+	// Time-based fallback: never run, or long enough since the last pass.
+	if last.IsZero() || now.Sub(last) >= minInterval {
+		return true
+	}
+	// Manifest-size water line: long triggers can blow the manifest budget even
+	// when the count is under the high-water mark.
+	if w.manifestBudget > 0 {
+		est, err := w.store.ManifestSizeEstimate(ctx)
+		if err != nil {
+			w.logger.Warn("curation: manifest size estimate failed", "error", err)
+		} else if est > w.manifestBudget {
+			return true
+		}
+	}
+	return false
 }
 
 // curate runs the deterministic selection then the LLM judge and applies the

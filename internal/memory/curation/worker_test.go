@@ -150,32 +150,74 @@ func TestWorkerSkipsMergeOverBudget(t *testing.T) {
 	assertExists(t, es, "dup-b")
 }
 
-func TestWorkerHonoursFloorAndPressure(t *testing.T) {
+func TestWorkerWaterLines(t *testing.T) {
 	ctx := context.Background()
 	s, _ := sqlite.Open(ctx, sqlite.Options{DSN: ":memory:"})
 	t.Cleanup(func() { _ = s.Close() })
 	es := memory.NewEntryStore(s.DB())
-	seed(t, es, &memory.Entry{Name: "a", Content: "one", Durability: "volatile"})
+	seed(t, es, &memory.Entry{Name: "a", Trigger: "t", Content: "one", Durability: "volatile"})
 
 	now := time.Unix(1_700_000_000, 0).UTC()
-	// High water line above the count → not enough pressure → no pass.
-	w := NewWorker(es, s.DB(), failCall(t), Config{
-		EntryCountHigh: 5, MinInterval: time.Minute, LeaseTTL: 60 * time.Second,
-		MaxCandidatesPerPass: 20, ContentSnippetChars: 200, Weights: defaultWeights, Budgets: memory.DefaultBudgets(),
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	w.nowFn = func() time.Time { return now }
-	if w.shouldRun(ctx, now) {
-		t.Fatal("should not run below the high-water mark")
+	mk := func(high, manifestBudget int, minInterval time.Duration) *Worker {
+		w := NewWorker(es, s.DB(), failCall(t), Config{
+			EntryCountHigh: high, MinInterval: minInterval, LeaseTTL: 60 * time.Second,
+			ManifestBudgetChars: manifestBudget, MaxCandidatesPerPass: 20, ContentSnippetChars: 200,
+			Weights: defaultWeights, Budgets: memory.DefaultBudgets(),
+		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		w.nowFn = func() time.Time { return now }
+		return w
 	}
 
-	// Floor: even over the water line, a pass just ran → must wait MinInterval.
-	w.SetHotConfig(0, time.Minute, 60*time.Second)
-	w.setLastPass(now)
-	if w.shouldRun(ctx, now.Add(30*time.Second)) {
-		t.Fatal("should not run within the min-interval floor")
+	// Count water line: count(1) > high(0).
+	wc := mk(0, 100000, time.Minute)
+	wc.setLastPass(now) // recent, so time-fallback does not mask the count trigger
+	if !wc.shouldRun(ctx, now) {
+		t.Fatal("count > high should trigger")
 	}
-	if !w.shouldRun(ctx, now.Add(2*time.Minute)) {
-		t.Fatal("should run once the floor has elapsed and pressure is present")
+
+	// Below all water lines (count ≤ high, recent pass, manifest under budget) → no run.
+	wq := mk(5, 100000, time.Minute)
+	wq.setLastPass(now)
+	if wq.shouldRun(ctx, now.Add(30*time.Second)) {
+		t.Fatal("should not run below every water line")
+	}
+
+	// Time-based fallback: count ≤ high but min_interval elapsed since the last pass.
+	if !wq.shouldRun(ctx, now.Add(2*time.Minute)) {
+		t.Fatal("time-based fallback should trigger once min_interval elapsed")
+	}
+
+	// First-ever pass (last is zero) is a time-based trigger even under the count.
+	wf := mk(5, 100000, time.Minute)
+	if !wf.shouldRun(ctx, now) {
+		t.Fatal("a never-run worker should trigger its first pass")
+	}
+
+	// Manifest-size water line: count ≤ high, recent pass, but estimated manifest
+	// size (name+trigger+overhead) exceeds the tiny budget.
+	wm := mk(5, 1, time.Minute)
+	wm.setLastPass(now)
+	if !wm.shouldRun(ctx, now.Add(30*time.Second)) {
+		t.Fatal("manifest-size water line should trigger")
+	}
+}
+
+func TestWorkerEmptyStoreNeverRuns(t *testing.T) {
+	ctx := context.Background()
+	s, _ := sqlite.Open(ctx, sqlite.Options{DSN: ":memory:"})
+	t.Cleanup(func() { _ = s.Close() })
+	es := memory.NewEntryStore(s.DB())
+	now := time.Unix(1_700_000_000, 0).UTC()
+	w := NewWorker(es, s.DB(), failCall(t), Config{
+		EntryCountHigh: 0, MinInterval: time.Minute, LeaseTTL: 60 * time.Second,
+		ManifestBudgetChars: 1, MaxCandidatesPerPass: 20, ContentSnippetChars: 200,
+		Weights: defaultWeights, Budgets: memory.DefaultBudgets(),
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w.nowFn = func() time.Time { return now }
+	// Even with last zero (time fallback) and tiny manifest budget, an empty
+	// non-pinned set short-circuits to no-run.
+	if w.shouldRun(ctx, now.Add(2*time.Minute)) {
+		t.Fatal("empty store must never trigger a pass")
 	}
 }
 

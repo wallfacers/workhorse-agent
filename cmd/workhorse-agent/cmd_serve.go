@@ -492,6 +492,7 @@ func buildCurationWorker(cfg config.Config, es *memory.EntryStore, st *sqlite.St
 		EntryCountHigh:       cur.EntryCountHigh,
 		MinInterval:          time.Duration(cur.MinIntervalMinutes) * time.Minute,
 		LeaseTTL:             time.Duration(cur.LeaseTTLSeconds) * time.Second,
+		ManifestBudgetChars:  cfg.Memory.ManifestBudgetChars,
 		MaxCandidatesPerPass: cur.MaxCandidatesPerPass,
 		ContentSnippetChars:  cfg.Memory.EntryContentMaxChars,
 		Weights:              memoryCurationWeights(cfg),

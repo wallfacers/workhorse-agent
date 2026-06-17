@@ -45,6 +45,15 @@ func runMemory(args []string, stdout, stderr io.Writer) error {
 
 func runMemoryExport(args []string, stdout, stderr io.Writer) error {
 	out := extractFlag(args, "--out")
+	// Guard the footgun where --out is given with no value (last token, or
+	// immediately followed by another flag): the user clearly wanted a file, so
+	// fail loudly instead of silently writing to stdout.
+	for i, a := range args {
+		if a == "--out" && (i+1 >= len(args) || strings.HasPrefix(args[i+1], "--")) {
+			fmt.Fprintln(stderr, "memory export: --out requires a file path")
+			return errExitUsage
+		}
+	}
 
 	configPath := extractConfigPath(args)
 	if configPath == "" {

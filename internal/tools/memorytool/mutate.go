@@ -153,6 +153,23 @@ func (m *Merge) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*
 		return tools.ErrorResultJSON(err.Error()), nil
 	}
 
+	cc := memory.CharCount(in.Into.Content)
+
+	// Pinning the merged entry must respect the pinned budget, exactly like a
+	// pinned memory_write — otherwise a merge is a back door to an over-budget
+	// pinned region.
+	if in.Into.Pinned {
+		base, err := m.Store.PinnedCharTotal(ctx, in.Into.Name)
+		if err != nil {
+			return tools.ErrorResultJSON(err.Error()), nil
+		}
+		total := base + cc
+		if total > m.Budgets.PinnedChars {
+			e := memory.ErrPinnedBudgetExceeded{Budget: m.Budgets.PinnedChars, Actual: total}
+			return codedError("pinned_budget_exceeded", e.Error(), map[string]any{"budget": e.Budget, "actual": e.Actual}), nil
+		}
+	}
+
 	src := ""
 	if env != nil {
 		src = env.SessionID
@@ -164,7 +181,7 @@ func (m *Merge) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*
 		Pinned:          in.Into.Pinned,
 		Durability:      durability,
 		Category:        in.Into.Category,
-		CharCount:       charCount(in.Into.Content),
+		CharCount:       cc,
 		SourceSessionID: src,
 	}
 	if err := m.Store.Merge(ctx, in.Names, into); err != nil {

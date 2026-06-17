@@ -23,6 +23,11 @@ type UsageLogger struct {
 	ch    chan string
 	wg    sync.WaitGroup
 
+	// mu guards ch against the send-on-closed-channel panic: Bump holds RLock
+	// while it sends, Close takes the write lock so it cannot close ch while a
+	// Bump is mid-send and any later Bump observes closed and no-ops.
+	mu        sync.RWMutex
+	closed    bool
 	closeOnce sync.Once
 }
 
@@ -62,6 +67,11 @@ func (u *UsageLogger) Bump(name string) {
 	if u == nil || name == "" {
 		return
 	}
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	if u.closed {
+		return // a Bump racing Close after shutdown is a no-op, never a panic
+	}
 	select {
 	case u.ch <- name:
 	default:
@@ -70,13 +80,17 @@ func (u *UsageLogger) Bump(name string) {
 }
 
 // Close stops the drain goroutine after the channel is fully drained. It is safe
-// to call multiple times and from a defer.
+// to call multiple times and from a defer. A Bump that arrives after Close is a
+// silent no-op (see Bump).
 func (u *UsageLogger) Close() {
 	if u == nil {
 		return
 	}
 	u.closeOnce.Do(func() {
+		u.mu.Lock()
+		u.closed = true
 		close(u.ch)
+		u.mu.Unlock()
 	})
 	u.wg.Wait()
 }

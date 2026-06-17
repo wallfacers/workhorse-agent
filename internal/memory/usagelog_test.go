@@ -39,6 +39,32 @@ func TestUsageLogger_FullChannelDropsWithoutPanic(t *testing.T) {
 	u.Close() // must not panic or hang
 }
 
+func TestUsageLogger_BumpAfterCloseIsNoPanic(t *testing.T) {
+	es, _ := newEntryStore(t)
+	u := memory.NewUsageLogger(es, 4)
+	u.Close()
+	// A Bump arriving after shutdown (out-of-order wiring, in-flight tool) must be
+	// a silent no-op, never a send-on-closed-channel panic.
+	u.Bump("late")
+	u.Bump("late2")
+}
+
+func TestUsageLogger_ConcurrentBumpDuringClose(t *testing.T) {
+	es, _ := newEntryStore(t)
+	must(t, es.Upsert(context.Background(), &memory.Entry{Name: "u", Content: "x", CharCount: 1}))
+	u := memory.NewUsageLogger(es, 8)
+
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 1000; i++ {
+			u.Bump("u")
+		}
+		close(done)
+	}()
+	u.Close() // racing in-flight Bumps must not panic
+	<-done
+}
+
 func TestUsageLogger_NilSafe(t *testing.T) {
 	var u *memory.UsageLogger
 	u.Bump("x") // must not panic

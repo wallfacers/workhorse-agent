@@ -40,6 +40,12 @@ var nonSlugRe = regexp.MustCompile(`[^a-z0-9]+`)
 //     retried on the next startup (best-effort; already-written entries are not
 //     rolled back, but the upsert keys on name so a retry overwrites rather than
 //     duplicates).
+//
+// Migration deliberately bypasses the write-time per-entry and pinned-budget
+// checks (design D7 tolerates an over-long imported block, left for later
+// memory_merge/split): a one-time import must never lose user data by rejecting
+// it. An over-budget pinned import surfaces as a load-time WARN (see Loader.Load)
+// rather than a silent drop.
 func MigrateLegacyFiles(ctx context.Context, store *EntryStore, profileDir string) error {
 	dir := memoriesDir(profileDir)
 	markerPath := filepath.Join(dir, migrationMarker)

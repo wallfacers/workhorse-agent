@@ -63,19 +63,40 @@ func (l *Loader) Load(ctx context.Context) (*Snapshot, error) {
 		pinnedParts[i] = e.Content
 	}
 	pinnedRegion := strings.Join(pinnedParts, "\n\n")
+	// Pinned content is supposed to be bounded by write-time rejection (design
+	// D3). Migration (D7) and a shrunk pinned_budget_chars can both leave it over
+	// budget; we never truncate pinned content (it is load-bearing identity), but
+	// we surface the overage so it is observable rather than silent.
+	if l.Budgets.PinnedChars > 0 {
+		if n := CharCount(pinnedRegion); n > l.Budgets.PinnedChars {
+			slog.Warn("memory: pinned region exceeds budget", "chars", n, "budget", l.Budgets.PinnedChars)
+		}
+	}
 
-	// INDEX: manifest of non-pinned, sorted by score desc then name asc.
+	// INDEX: manifest of non-pinned, sorted by score desc then name asc. Scores
+	// are computed once per entry (not inside the comparator) so a ScoreFn that
+	// reads the clock cannot make the comparison non-transitive mid-sort.
 	score := l.ScoreFn
 	if score == nil {
 		score = defaultScore
 	}
-	sort.SliceStable(nonPinned, func(i, j int) bool {
-		si, sj := score(nonPinned[i]), score(nonPinned[j])
-		if si != sj {
-			return si > sj // higher score first
+	type scoredEntry struct {
+		e *Entry
+		s float64
+	}
+	scored := make([]scoredEntry, len(nonPinned))
+	for i, e := range nonPinned {
+		scored[i] = scoredEntry{e: e, s: score(e)}
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].s != scored[j].s {
+			return scored[i].s > scored[j].s // higher score first
 		}
-		return nonPinned[i].Name < nonPinned[j].Name
+		return scored[i].e.Name < scored[j].e.Name
 	})
+	for i := range scored {
+		nonPinned[i] = scored[i].e
+	}
 
 	indexRegion := assembleManifest(nonPinned, l.Budgets.ManifestChars)
 
@@ -162,10 +183,8 @@ func CharCount(s string) int {
 	return utf8.RuneCountInString(s)
 }
 
-// readFile reads a file, treating a missing file as empty content. Kept for the
-// phase-4 flat-file migration (MEMORY.md/USER.md → entries); unused until then.
-//
-//nolint:unused
+// readFile reads a file, treating a missing file as empty content. Used by the
+// flat-file migration (MEMORY.md/USER.md → entries) in migrate.go.
 func readFile(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -177,11 +196,9 @@ func readFile(path string) (string, error) {
 	return string(data), nil
 }
 
-// memoriesDir resolves the legacy memories directory. Kept for the phase-4
-// flat-file migration (locating MEMORY.md/USER.md and the legacy/ copy target);
-// unused until then.
-//
-//nolint:unused
+// memoriesDir resolves the legacy memories directory. Used by the flat-file
+// migration (locating MEMORY.md/USER.md and the legacy/ copy target) in
+// migrate.go.
 func memoriesDir(profileDir string) string {
 	if profileDir == "" {
 		home, err := os.UserHomeDir()
