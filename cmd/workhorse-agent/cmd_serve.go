@@ -421,9 +421,9 @@ func buildProviderRegistry(cfg config.Config) (def, fast map[string]provider.Pro
 // LoadMemory/MemorySearch, design D8); the caller MUST Close it on shutdown so
 // pending bumps flush.
 func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skills.Catalog, st *sqlite.Store) (*memory.UsageLogger, error) {
-	// Per-entry memory store + budgets (Phase 6 will wire budgets from config).
+	// Per-entry memory store + budgets (from config).
 	es := memory.NewEntryStore(st.DB())
-	budgets := memory.DefaultBudgets()
+	budgets := memoryBudgets(cfg)
 	usage := memory.NewUsageLogger(es, memory.DefaultUsageBuffer)
 
 	for _, t := range []tools.Tool{
@@ -472,6 +472,17 @@ func profileDir(cfg config.Config) string {
 		return filepath.Join(home, ".workhorse-agent")
 	}
 	return filepath.Dir(dir)
+}
+
+// memoryBudgets maps the memory config block onto the memory package's Budgets.
+// Kept here (not in the config package) so config does not import memory.
+func memoryBudgets(cfg config.Config) memory.Budgets {
+	return memory.Budgets{
+		PinnedChars:       cfg.Memory.PinnedBudgetChars,
+		ManifestChars:     cfg.Memory.ManifestBudgetChars,
+		EntryContentChars: cfg.Memory.EntryContentMaxChars,
+		TriggerChars:      cfg.Memory.TriggerMaxChars,
+	}
 }
 
 // loadMCPTools starts the MCP host from mcpPath (if the file exists) and
@@ -629,7 +640,7 @@ func newRunnerFactory(
 	defaultFastModel := cfg.Models.Fast
 	// Memory is now a per-entry SQLite store assembled into a two-layer snapshot
 	// (design D2). Budgets default for now; Phase 6 wires them from config.
-	memLoader := &memory.Loader{Store: memory.NewEntryStore(st.DB()), Budgets: memory.DefaultBudgets()}
+	memLoader := &memory.Loader{Store: memory.NewEntryStore(st.DB()), Budgets: memoryBudgets(cfg)}
 	instrLoader := &instructions.Loader{ProfileDir: profileDir(cfg)}
 	return func(sess *session.Session) session.Runner {
 		snap, err := memLoader.Load(context.Background())

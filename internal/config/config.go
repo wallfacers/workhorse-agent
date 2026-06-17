@@ -150,9 +150,28 @@ type DebugConfig struct {
 }
 
 type MemoryConfig struct {
-	Dir             string `yaml:"dir"`
-	MemoryCharLimit int    `yaml:"memory_char_limit"`
-	UserCharLimit   int    `yaml:"user_char_limit"`
+	Dir                  string               `yaml:"dir"`
+	PinnedBudgetChars    int                  `yaml:"pinned_budget_chars"`
+	ManifestBudgetChars  int                  `yaml:"manifest_budget_chars"`
+	EntryContentMaxChars int                  `yaml:"entry_content_max_chars"`
+	TriggerMaxChars      int                  `yaml:"trigger_max_chars"`
+	Curation             MemoryCurationConfig `yaml:"curation"`
+}
+
+type MemoryCurationConfig struct {
+	EntryCountHigh       int           `yaml:"entry_count_high"`
+	MinIntervalMinutes   int           `yaml:"min_interval_minutes"`
+	LeaseTTLSeconds      int           `yaml:"lease_ttl_seconds"`
+	JudgeModel           string        `yaml:"judge_model"`
+	MaxCandidatesPerPass int           `yaml:"max_candidates_per_pass"`
+	Weights              MemoryWeights `yaml:"weights"`
+}
+
+type MemoryWeights struct {
+	Hit        float64 `yaml:"hit"`
+	Recency    float64 `yaml:"recency"`
+	Age        float64 `yaml:"age"`
+	Volatility float64 `yaml:"volatility"`
 }
 
 type ExternalAgentsConfig struct {
@@ -250,7 +269,20 @@ func Default() Config {
 		Skills:   PathConfig{Dir: "~/.workhorse-agent/skills"},
 		Agents:   PathConfig{Dir: "~/.workhorse-agent/agents"},
 		Logging:  LoggingConfig{Level: "info", Format: "json", LogLLMPayload: false},
-		Memory:   MemoryConfig{MemoryCharLimit: 2200, UserCharLimit: 1375},
+		Memory: MemoryConfig{
+			PinnedBudgetChars:    1500,
+			ManifestBudgetChars:  2000,
+			EntryContentMaxChars: 1200,
+			TriggerMaxChars:      120,
+			Curation: MemoryCurationConfig{
+				EntryCountHigh:       80,
+				MinIntervalMinutes:   30,
+				LeaseTTLSeconds:      60,
+				JudgeModel:           "anthropic:claude-haiku-4-5-20251001",
+				MaxCandidatesPerPass: 20,
+				Weights:              MemoryWeights{Hit: 1.0, Recency: 1.0, Age: 0.5, Volatility: 0.5},
+			},
+		},
 		ExternalAgents: ExternalAgentsConfig{
 			Dir:       "~/.workhorse-agent/external-agents",
 			SmokeTest: ExternalAgentsSmokeTestConfig{CacheTTL: 168},

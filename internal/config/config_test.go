@@ -309,38 +309,76 @@ tools:
 
 func TestDefault_MemoryConfig(t *testing.T) {
 	c := config.Default()
-	if c.Memory.MemoryCharLimit != 2200 {
-		t.Errorf("memory.memory_char_limit: got %d, want 2200", c.Memory.MemoryCharLimit)
+	if c.Memory.PinnedBudgetChars != 1500 {
+		t.Errorf("memory.pinned_budget_chars: got %d, want 1500", c.Memory.PinnedBudgetChars)
 	}
-	if c.Memory.UserCharLimit != 1375 {
-		t.Errorf("memory.user_char_limit: got %d, want 1375", c.Memory.UserCharLimit)
+	if c.Memory.ManifestBudgetChars != 2000 {
+		t.Errorf("memory.manifest_budget_chars: got %d, want 2000", c.Memory.ManifestBudgetChars)
+	}
+	if c.Memory.EntryContentMaxChars != 1200 {
+		t.Errorf("memory.entry_content_max_chars: got %d, want 1200", c.Memory.EntryContentMaxChars)
+	}
+	if c.Memory.TriggerMaxChars != 120 {
+		t.Errorf("memory.trigger_max_chars: got %d, want 120", c.Memory.TriggerMaxChars)
+	}
+	if c.Memory.Curation.EntryCountHigh != 80 {
+		t.Errorf("memory.curation.entry_count_high: got %d, want 80", c.Memory.Curation.EntryCountHigh)
+	}
+	if c.Memory.Curation.LeaseTTLSeconds != 60 {
+		t.Errorf("memory.curation.lease_ttl_seconds: got %d, want 60", c.Memory.Curation.LeaseTTLSeconds)
+	}
+	if c.Memory.Curation.MaxCandidatesPerPass != 20 {
+		t.Errorf("memory.curation.max_candidates_per_pass: got %d, want 20", c.Memory.Curation.MaxCandidatesPerPass)
+	}
+	if c.Memory.Curation.JudgeModel == "" {
+		t.Error("memory.curation.judge_model should have a non-empty default")
+	}
+	if c.Memory.Curation.Weights.Hit != 1.0 || c.Memory.Curation.Weights.Age != 0.5 {
+		t.Errorf("memory.curation.weights default mismatch: %+v", c.Memory.Curation.Weights)
 	}
 }
 
-func TestLoad_RejectsMemoryCharLimitZero(t *testing.T) {
+func TestLoad_RejectsLeaseTTLZero(t *testing.T) {
 	path := writeYAML(t, `
 memory:
-  memory_char_limit: 0
+  curation:
+    lease_ttl_seconds: 0
 `)
 	_, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
 	if err == nil {
-		t.Fatal("expected validation error for memory_char_limit=0")
+		t.Fatal("expected validation error for lease_ttl_seconds=0")
 	}
-	if !strings.Contains(err.Error(), "memory.memory_char_limit must be > 0") {
+	if !strings.Contains(err.Error(), "memory.curation.lease_ttl_seconds must be") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
 
-func TestLoad_RejectsUserCharLimitNegative(t *testing.T) {
+func TestLoad_RejectsPinnedBudgetZero(t *testing.T) {
 	path := writeYAML(t, `
 memory:
-  user_char_limit: -1
+  pinned_budget_chars: 0
 `)
 	_, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
 	if err == nil {
-		t.Fatal("expected validation error for user_char_limit=-1")
+		t.Fatal("expected validation error for pinned_budget_chars=0")
 	}
-	if !strings.Contains(err.Error(), "memory.user_char_limit must be > 0") {
+	if !strings.Contains(err.Error(), "memory.pinned_budget_chars must be") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestLoad_RejectsNegativeWeight(t *testing.T) {
+	path := writeYAML(t, `
+memory:
+  curation:
+    weights:
+      hit: -1
+`)
+	_, err := config.Load(config.LoadOptions{YAMLPath: path, LookupEnv: emptyEnv})
+	if err == nil {
+		t.Fatal("expected validation error for negative weight")
+	}
+	if !strings.Contains(err.Error(), "memory.curation.weights.hit must be >= 0") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

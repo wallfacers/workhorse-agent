@@ -83,7 +83,7 @@
 
 ## 6. Configuration
 
-- [ ] 6.1 Add the `memory` config block — `pinned_budget_chars`,
+- [x] 6.1 Add the `memory` config block — `pinned_budget_chars`,
   `manifest_budget_chars`, `entry_content_max_chars`, `trigger_max_chars`, and
   `curation.{entry_count_high, min_interval_minutes, lease_ttl_seconds, judge_model,
   max_candidates_per_pass, weights}` — with defaults and load-time validation.

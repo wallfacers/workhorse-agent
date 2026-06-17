@@ -223,11 +223,39 @@ func validateStore(s StoreConfig) error {
 }
 
 func validateMemory(m MemoryConfig) error {
-	if m.MemoryCharLimit <= 0 {
-		return fmt.Errorf("invalid config: memory.memory_char_limit must be > 0, got %d", m.MemoryCharLimit)
+	budgets := []rangeIntRule{
+		{"memory.pinned_budget_chars", m.PinnedBudgetChars, 1, 1 << 30},
+		{"memory.manifest_budget_chars", m.ManifestBudgetChars, 1, 1 << 30},
+		{"memory.entry_content_max_chars", m.EntryContentMaxChars, 1, 1 << 30},
+		{"memory.trigger_max_chars", m.TriggerMaxChars, 1, 1 << 30},
+		{"memory.curation.entry_count_high", m.Curation.EntryCountHigh, 1, 1 << 30},
+		{"memory.curation.lease_ttl_seconds", m.Curation.LeaseTTLSeconds, 1, 1 << 30},
+		{"memory.curation.max_candidates_per_pass", m.Curation.MaxCandidatesPerPass, 1, 1 << 30},
 	}
-	if m.UserCharLimit <= 0 {
-		return fmt.Errorf("invalid config: memory.user_char_limit must be > 0, got %d", m.UserCharLimit)
+	for _, r := range budgets {
+		if err := r.check(); err != nil {
+			return err
+		}
+	}
+	if m.Curation.MinIntervalMinutes < 0 {
+		return fmt.Errorf("invalid config: memory.curation.min_interval_minutes must be >= 0, got %d", m.Curation.MinIntervalMinutes)
+	}
+	if m.Curation.JudgeModel == "" {
+		return errors.New("invalid config: memory.curation.judge_model must not be empty")
+	}
+	w := m.Curation.Weights
+	for _, wr := range []struct {
+		field string
+		value float64
+	}{
+		{"memory.curation.weights.hit", w.Hit},
+		{"memory.curation.weights.recency", w.Recency},
+		{"memory.curation.weights.age", w.Age},
+		{"memory.curation.weights.volatility", w.Volatility},
+	} {
+		if wr.value < 0 {
+			return fmt.Errorf("invalid config: %s must be >= 0, got %g", wr.field, wr.value)
+		}
 	}
 	return nil
 }
