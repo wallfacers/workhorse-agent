@@ -33,6 +33,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/instructions"
 	"github.com/wallfacers/workhorse-agent/internal/mcp"
 	"github.com/wallfacers/workhorse-agent/internal/memory"
+	"github.com/wallfacers/workhorse-agent/internal/memory/curation"
 	"github.com/wallfacers/workhorse-agent/internal/permission"
 	"github.com/wallfacers/workhorse-agent/internal/prompt"
 	"github.com/wallfacers/workhorse-agent/internal/provider"
@@ -485,6 +486,19 @@ func memoryBudgets(cfg config.Config) memory.Budgets {
 	}
 }
 
+// memoryCurationWeights maps the configured curation weights onto the curation
+// package's local Weights type. Kept here (not in config or curation) so neither
+// package depends on the other.
+func memoryCurationWeights(cfg config.Config) curation.Weights {
+	w := cfg.Memory.Curation.Weights
+	return curation.Weights{
+		Hit:        w.Hit,
+		Recency:    w.Recency,
+		Age:        w.Age,
+		Volatility: w.Volatility,
+	}
+}
+
 // loadMCPTools starts the MCP host from mcpPath (if the file exists) and
 // registers every healthy server's tools into reg under the namespaced
 // <server>__<tool> name. It never fails serve startup: a missing file is a
@@ -639,8 +653,16 @@ func newRunnerFactory(
 	defaultModel := cfg.Models.Default
 	defaultFastModel := cfg.Models.Fast
 	// Memory is now a per-entry SQLite store assembled into a two-layer snapshot
-	// (design D2). Budgets default for now; Phase 6 wires them from config.
-	memLoader := &memory.Loader{Store: memory.NewEntryStore(st.DB()), Budgets: memoryBudgets(cfg)}
+	// (design D2). The manifest survival ordering uses the same curation scorer
+	// that drives eviction ranking (design D5) — one ranking, no divergence.
+	memWeights := memoryCurationWeights(cfg)
+	memLoader := &memory.Loader{
+		Store:   memory.NewEntryStore(st.DB()),
+		Budgets: memoryBudgets(cfg),
+		ScoreFn: func(e *memory.Entry) float64 {
+			return curation.Score(e, memWeights, time.Now().UTC())
+		},
+	}
 	instrLoader := &instructions.Loader{ProfileDir: profileDir(cfg)}
 	return func(sess *session.Session) session.Runner {
 		snap, err := memLoader.Load(context.Background())

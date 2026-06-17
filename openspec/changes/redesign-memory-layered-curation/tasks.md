@@ -64,11 +64,13 @@
 ## 5. Curation engine
 
 - [ ] 5.1 New `internal/memory/curation` package skeleton (scorer, lease, worker).
-- [ ] 5.2 Deterministic scorer: implement the `norm`/`recency`/`age_penalty`/
+- [x] 5.2 Deterministic scorer: implement the `norm`/`recency`/`age_penalty`/
   `volatility_penalty` functions with the documented formulas (design D5), combine
   with configurable weights; exclude pinned; output ranked eviction candidates.
-- [ ] 5.2a Near-duplicate clustering: FTS pre-filter → exact character-trigram
-  Jaccard ≥ 0.7 → union-find clusters (design D5).
+  (Also wired as `memory.Loader.ScoreFn` so manifest survival uses the same ranking.)
+- [x] 5.2a Near-duplicate clustering: exact character-trigram Jaccard ≥ 0.7 →
+  union-find clusters (design D5); accepts an optional candidate-pair pre-filter
+  (the FTS5 pre-filter is supplied by the 5B runtime path).
 - [ ] 5.3 Pressure trigger hook on successful write (count/size/time water lines),
   idempotent debounced enqueue; off the request hot path.
 - [ ] 5.4 Leader lease: CAS acquire (`WHERE expires_at < now()`), heartbeat renewal,
