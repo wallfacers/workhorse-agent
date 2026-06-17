@@ -107,14 +107,14 @@ func newRealStack(t *testing.T, sc scenarioConfig) *realStack {
 	reg := tools.NewRegistry()
 	registerTestTools(t, reg, st.DB(), workdir, sc.ExtraTools)
 	orch := &agent.Orchestrator{Registry: reg, MaxParallel: 4, DefaultTimeout: 30 * time.Second}
-	memLoader := &memory.Loader{ProfileDir: workdir}
+	memLoader := &memory.Loader{Store: memory.NewEntryStore(st.DB()), Budgets: memory.DefaultBudgets()}
 
 	var mgr *session.Manager
 	mgr = session.NewManager(session.ManagerOptions{
 		Store:         st,
 		MaxConcurrent: 0,
 		RunnerFactory: func(sess *session.Session) session.Runner {
-			snap, _ := memLoader.Load()
+			snap, _ := memLoader.Load(context.Background())
 			sess.MemorySnapshot = snap
 
 			loop := agent.NewLoop(agent.LoopConfig{
@@ -296,6 +296,12 @@ func assertVerdict(t *testing.T, result *judge.JudgeResult) {
 
 func registerTestTools(t *testing.T, reg *tools.Registry, db *sql.DB, workdir string, extra []tools.Tool) {
 	t.Helper()
+	// Per-entry memory store shared by the entry-shaped tools (post-redesign API).
+	es := memory.NewEntryStore(db)
+	budgets := memory.DefaultBudgets()
+	usage := memory.NewUsageLogger(es, memory.DefaultUsageBuffer)
+	t.Cleanup(usage.Close)
+
 	testTools := []tools.Tool{
 		builtin.Read{Timeout: 10 * time.Second},
 		builtin.Write{},
@@ -306,16 +312,12 @@ func registerTestTools(t *testing.T, reg *tools.Registry, db *sql.DB, workdir st
 			MaxOutputBytes:        1 << 20,
 			BaseEnv:               os.Environ(),
 		},
-		&memorytool.Read{
-			ProfileDir:  workdir,
-			MemoryLimit: 2200,
-			UserLimit:   1375,
-		},
-		&memorytool.Write{
-			ProfileDir:  workdir,
-			MemoryLimit: 2200,
-			UserLimit:   1375,
-		},
+		&memorytool.Read{Store: es},
+		&memorytool.Write{Store: es, Budgets: budgets},
+		memorytool.NewLoadMemory(es, usage),
+		&memorytool.MemorySearch{DB: db},
+		&memorytool.Delete{Store: es},
+		&memorytool.Merge{Store: es, Budgets: budgets},
 		&sessionsearch.Tool{DB: db},
 		tasklist.TodoWrite{},
 		// ToolSearch is harmless for tests without deferrable tools: when no

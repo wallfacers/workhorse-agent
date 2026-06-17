@@ -122,8 +122,12 @@
 - [x] 7.7 Curation flow with a **mocked** LLM judge: scorer → judge → mutations is
   correct and deterministic (CI-safe, no real model call); includes fail-safe on
   bad/empty judge output and provider-call error, and pinned-evict refusal.
-- [ ] 7.7a (optional, manual, not in CI) Real-e2e with a live judge model: recall
-  does not regress after a curation pass; gated like existing real-e2e tests.
+- [x] 7.7a (manual, not in CI) Real-e2e with a live judge model: recall does not
+  regress after a curation pass (`test/real_e2e/curation_test.go`,
+  `TestCuration_RecallDoesNotRegress`); build-tagged `real_e2e`, skips without
+  `DASHSCOPE_API_KEY` like the other real-e2e tests. Also repaired the real_e2e
+  harness (`helpers.go`) which the per-entry redesign had left uncompilable
+  against the old memory/`memorytool` API.
 - [x] 7.8 `golangci-lint run` clean on all touched packages (gosec G201 false
   positive in `memorytool/search.go` suppressed with justification);
   `TestLocalToolDescriptionsAreEnglish` passes (no new tools added). Note: a
