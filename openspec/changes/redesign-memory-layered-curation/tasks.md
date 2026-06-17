@@ -54,12 +54,12 @@
 
 ## 4. Migration (flat files → entries)
 
-- [ ] 4.1 One-time idempotent startup migration with a marker file; skip when marker
+- [x] 4.1 One-time idempotent startup migration with a marker file; skip when marker
   present.
-- [ ] 4.2 `USER.md` → single pinned `category=user` `durability=evergreen` entry.
-- [ ] 4.3 `MEMORY.md` → split on markdown sections into `volatile` entries; trigger
+- [x] 4.2 `USER.md` → single pinned `category=user` `durability=evergreen` entry.
+- [x] 4.3 `MEMORY.md` → split on markdown sections into `volatile` entries; trigger
   defaults to first sentence; non-splittable block → single entry.
-- [ ] 4.4 Copy legacy files to `memories/legacy/`; do not delete originals.
+- [x] 4.4 Copy legacy files to `memories/legacy/`; do not delete originals.
 
 ## 5. Curation engine
 

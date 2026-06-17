@@ -116,6 +116,13 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("serve: open store: %w", err)
 	}
 
+	// 1a. One-time, idempotent flat-file → entry migration (design D7). A WARN
+	// on failure is non-fatal: the marker is only written on full success, so a
+	// failed migration is retried on the next startup.
+	if err := memory.MigrateLegacyFiles(ctx, memory.NewEntryStore(st.DB()), profileDir(cfg)); err != nil {
+		logger.Warn("memory: legacy migration failed", "err", err)
+	}
+
 	// 1b. Inject preset permission rules from config (idempotent).
 	if err := applyPresetRules(ctx, st, cfg.Tools.PresetRules, logger); err != nil {
 		_ = st.Close()
