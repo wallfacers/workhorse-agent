@@ -1,14 +1,25 @@
 package memory_test
 
 import (
-	"os"
-	"path/filepath"
+	"context"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/wallfacers/workhorse-agent/internal/memory"
 )
+
+// shared test helpers for the package.
+
+func must(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func mustNow() time.Time { return time.Now().UTC() }
 
 func TestCharCount_CJK(t *testing.T) {
 	got := memory.CharCount("你好世界")
@@ -21,67 +32,76 @@ func TestCharCount_CJK(t *testing.T) {
 	}
 }
 
-func TestSnapshot_MissingFilesYieldEmpty(t *testing.T) {
-	dir := t.TempDir()
-	loader := &memory.Loader{ProfileDir: dir}
-	snap, err := loader.Load()
-	if err != nil {
-		t.Fatalf("load from empty dir: %v", err)
+func TestBudgets_CheckEntryContent_CJK(t *testing.T) {
+	b := memory.Budgets{EntryContentChars: 2}
+	// "你好" = 2 code points → within limit.
+	if err := b.CheckEntryContent("你好"); err != nil {
+		t.Fatalf("2 CJK code points should fit limit 2: %v", err)
 	}
-	if snap.MemoryMD != "" {
-		t.Errorf("memory should be empty, got %q", snap.MemoryMD)
+	// "你好世" = 3 code points → over limit.
+	err := b.CheckEntryContent("你好世")
+	if err == nil {
+		t.Fatal("3 CJK code points should exceed limit 2")
 	}
-	if snap.UserMD != "" {
-		t.Errorf("user should be empty, got %q", snap.UserMD)
+	var tooLarge memory.ErrMemoryTooLarge
+	if !errorAs(err, &tooLarge) {
+		t.Fatalf("expected ErrMemoryTooLarge, got %T: %v", err, err)
 	}
-
-	// Files should NOT be created
-	memDir := filepath.Join(dir, "memories")
-	if _, err := os.Stat(memDir); !os.IsNotExist(err) {
-		t.Error("memories dir should not be created by Load")
-	}
-}
-
-func TestSnapshot_LoadsExistingFiles(t *testing.T) {
-	dir := t.TempDir()
-	memDir := filepath.Join(dir, "memories")
-	os.MkdirAll(memDir, 0o700)
-	os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte("agent facts"), 0o600)
-	os.WriteFile(filepath.Join(memDir, "USER.md"), []byte("user prefs"), 0o600)
-
-	loader := &memory.Loader{ProfileDir: dir}
-	snap, err := loader.Load()
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if snap.MemoryMD != "agent facts" {
-		t.Errorf("memory: got %q", snap.MemoryMD)
-	}
-	if snap.UserMD != "user prefs" {
-		t.Errorf("user: got %q", snap.UserMD)
+	if tooLarge.Limit != 2 || tooLarge.Actual != 3 {
+		t.Fatalf("expected limit=2 actual=3, got limit=%d actual=%d", tooLarge.Limit, tooLarge.Actual)
 	}
 }
 
-func TestSnapshot_IgnoresUnexpectedFiles(t *testing.T) {
-	dir := t.TempDir()
-	memDir := filepath.Join(dir, "memories")
-	os.MkdirAll(memDir, 0o700)
-	os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte("agent facts"), 0o600)
-	os.WriteFile(filepath.Join(memDir, "USER.md"), []byte("user prefs"), 0o600)
-	// Unexpected files that should be ignored
-	os.WriteFile(filepath.Join(memDir, "notes.txt"), []byte("junk"), 0o600)
-	os.WriteFile(filepath.Join(memDir, ".DS_Store"), []byte("mac junk"), 0o600)
+func TestBudgets_CheckTrigger(t *testing.T) {
+	b := memory.Budgets{TriggerChars: 5}
+	if err := b.CheckTrigger("hi"); err != nil {
+		t.Fatalf("short trigger should pass: %v", err)
+	}
+	// Over length.
+	var ti memory.ErrTriggerInvalid
+	err := b.CheckTrigger("toolong")
+	if err == nil {
+		t.Fatal("over-length trigger should be rejected")
+	}
+	if !errorAsTrigger(err, &ti) {
+		t.Fatalf("expected ErrTriggerInvalid, got %T", err)
+	}
+	// Newline.
+	err = b.CheckTrigger("a\nb")
+	if err == nil {
+		t.Fatal("trigger with newline should be rejected")
+	}
+	if !errorAsTrigger(err, &ti) {
+		t.Fatalf("expected ErrTriggerInvalid for newline, got %T", err)
+	}
+}
 
-	loader := &memory.Loader{ProfileDir: dir}
-	snap, err := loader.Load()
+func TestPinnedCharTotal(t *testing.T) {
+	es, _ := newEntryStore(t)
+	ctx := context.Background()
+	must(t, es.Upsert(ctx, &memory.Entry{Name: "p1", Content: "abc", Pinned: true, CharCount: 3}))
+	must(t, es.Upsert(ctx, &memory.Entry{Name: "p2", Content: "de", Pinned: true, CharCount: 2}))
+	must(t, es.Upsert(ctx, &memory.Entry{Name: "n1", Content: "ignored", Pinned: false, CharCount: 7}))
+
+	total, err := es.PinnedCharTotal(ctx, "")
 	if err != nil {
-		t.Fatalf("load: %v", err)
+		t.Fatalf("total: %v", err)
 	}
-	if snap.MemoryMD != "agent facts" {
-		t.Errorf("memory: got %q, want %q", snap.MemoryMD, "agent facts")
+	if total != 5 {
+		t.Fatalf("PinnedCharTotal(all) = %d, want 5", total)
 	}
-	if snap.UserMD != "user prefs" {
-		t.Errorf("user: got %q, want %q", snap.UserMD, "user prefs")
+	// Excluding p1 (the upsert-increment case).
+	total, err = es.PinnedCharTotal(ctx, "p1")
+	if err != nil {
+		t.Fatalf("total exclude: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("PinnedCharTotal(exclude p1) = %d, want 2", total)
+	}
+	// Empty store edge: exclude everything still 0 on a fresh store handled by COALESCE.
+	es2, _ := newEntryStore(t)
+	if got, err := es2.PinnedCharTotal(ctx, ""); err != nil || got != 0 {
+		t.Fatalf("empty store PinnedCharTotal = %d, err %v; want 0", got, err)
 	}
 }
 
@@ -296,29 +316,29 @@ func TestBlock_BothEmpty(t *testing.T) {
 	}
 }
 
-func TestBlock_OnlyUser(t *testing.T) {
-	got := memory.Block(&memory.Snapshot{UserMD: "user content"})
+func TestBlock_OnlyPinned(t *testing.T) {
+	got := memory.Block(&memory.Snapshot{Pinned: "pinned content"})
 	if got == "" {
 		t.Fatal("should not be empty")
 	}
-	if !contains(got, "USER:") {
-		t.Error("should contain USER section")
+	if !contains(got, "PINNED:") {
+		t.Error("should contain PINNED section")
 	}
-	if contains(got, "MEMORY:") {
-		t.Error("should not contain MEMORY section")
+	if contains(got, "INDEX:") {
+		t.Error("should not contain INDEX section")
 	}
 	if contains(got, "---") {
 		t.Error("should not contain separator")
 	}
 }
 
-func TestBlock_OnlyMemory(t *testing.T) {
-	got := memory.Block(&memory.Snapshot{MemoryMD: "memory content"})
-	if !contains(got, "MEMORY:") {
-		t.Error("should contain MEMORY section")
+func TestBlock_OnlyIndex(t *testing.T) {
+	got := memory.Block(&memory.Snapshot{Index: "- a — t"})
+	if !contains(got, "INDEX:") {
+		t.Error("should contain INDEX section")
 	}
-	if contains(got, "USER:") {
-		t.Error("should not contain USER section")
+	if contains(got, "PINNED:") {
+		t.Error("should not contain PINNED section")
 	}
 	if contains(got, "---") {
 		t.Error("should not contain separator")
@@ -326,16 +346,16 @@ func TestBlock_OnlyMemory(t *testing.T) {
 }
 
 func TestBlock_BothPresent(t *testing.T) {
-	snap := &memory.Snapshot{UserMD: "user data", MemoryMD: "memory data"}
+	snap := &memory.Snapshot{Pinned: "pinned data", Index: "- a — t"}
 	got := memory.Block(snap)
-	want := "<memory>\nUSER:\nuser data\n---\nMEMORY:\nmemory data\n</memory>"
+	want := "<memory>\nPINNED:\npinned data\n---\nINDEX:\n- a — t\n</memory>"
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
 }
 
 func TestBlock_Idempotent(t *testing.T) {
-	snap := &memory.Snapshot{UserMD: "u", MemoryMD: "m"}
+	snap := &memory.Snapshot{Pinned: "p", Index: "- a — t"}
 	a := memory.Block(snap)
 	b := memory.Block(snap)
 	if a != b {
@@ -358,6 +378,15 @@ func errorAs(err error, target interface{}) bool {
 		return false
 	}
 	*target.(*memory.ErrMemoryTooLarge) = e
+	return true
+}
+
+func errorAsTrigger(err error, target *memory.ErrTriggerInvalid) bool {
+	e, ok := err.(memory.ErrTriggerInvalid)
+	if !ok {
+		return false
+	}
+	*target = e
 	return true
 }
 

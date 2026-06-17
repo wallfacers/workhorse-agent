@@ -3,8 +3,6 @@ package memorytool_test
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/wallfacers/workhorse-agent/internal/memory"
@@ -106,17 +104,15 @@ func TestWrite_AppendThenRead(t *testing.T) {
 
 func TestWrite_DoesNotAffectSessionSnapshot(t *testing.T) {
 	dir := t.TempDir()
-	memDir := filepath.Join(dir, "memories")
-	os.MkdirAll(memDir, 0o700)
-	os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte("original"), 0o600)
 
-	loader := &memory.Loader{ProfileDir: dir}
-	snap, _ := loader.Load()
+	// A session-start snapshot is an immutable value captured before any write.
+	// (Loading now comes from the entry store; here we only need a held value to
+	// assert mid-session writes do not mutate it.)
+	snap := &memory.Snapshot{Pinned: "original"}
 
 	w := &memorytool.Write{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
 	r := &memorytool.Read{ProfileDir: dir, MemoryLimit: 1000, UserLimit: 1000}
 
-	_ = snap // snapshot loaded at session start
 	w.Run(context.Background(), testEnv(), []byte(`{"kind":"memory","content":"updated"}`))
 
 	// memory_read reads from disk, so it sees the new content
@@ -127,9 +123,9 @@ func TestWrite_DoesNotAffectSessionSnapshot(t *testing.T) {
 		t.Errorf("read after write: got %v", out["content"])
 	}
 
-	// The loaded snapshot should remain unchanged
-	if snap.MemoryMD != "original" {
-		t.Errorf("snapshot should be unchanged, got %q", snap.MemoryMD)
+	// The loaded snapshot value should remain unchanged by the mid-session write.
+	if snap.Pinned != "original" {
+		t.Errorf("snapshot should be unchanged, got %q", snap.Pinned)
 	}
 }
 

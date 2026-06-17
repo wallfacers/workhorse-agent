@@ -14,21 +14,21 @@
 
 ## 2. Entry store & two-layer snapshot
 
-- [ ] 2.1 Reshape `internal/memory` `Snapshot` to hold assembled `(pinnedContent,
+- [x] 2.1 Reshape `internal/memory` `Snapshot` to hold assembled `(pinnedContent,
   manifestLines)` instead of `(MemoryMD, UserMD)`; keep it immutable.
-- [ ] 2.2 Implement `Loader.Load()` to read entries from the store and assemble the
+- [x] 2.2 Implement `Loader.Load()` to read entries from the store and assemble the
   snapshot: pinned full content (name-sorted), non-pinned manifest lines
   (`score desc, name asc`).
-- [ ] 2.3 Rewrite `Block()` to render the `PINNED:` / `---` / `INDEX:` regions
+- [x] 2.3 Rewrite `Block()` to render the `PINNED:` / `---` / `INDEX:` regions
   inside `<memory>…</memory>` with byte-stable layout; empty store → "".
-- [ ] 2.4 Implement manifest budget handling: include highest-scored lines up to
+- [x] 2.4 Implement manifest budget handling: include highest-scored lines up to
   `manifest_budget_chars`, append the `… N more …` line, `slog.Warn` the dropped
   count. Never silently drop.
-- [ ] 2.5 Implement pinned budget enforcement at write/pin time
+- [x] 2.5 Implement pinned budget enforcement at write/pin time
   (`pinned_budget_exceeded`).
-- [ ] 2.6 Implement per-entry `entry_content_max_chars` enforcement (code points)
+- [x] 2.6 Implement per-entry `entry_content_max_chars` enforcement (code points)
   with `memory_too_large`.
-- [ ] 2.7 Confirm injection at the `internal/agent/loop.go` call site is unchanged
+- [x] 2.7 Confirm injection at the `internal/agent/loop.go` call site is unchanged
   in signature and ordering (`base → environment → instructions → memory`).
 
 ## 3. Tools

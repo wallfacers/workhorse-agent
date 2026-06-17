@@ -259,3 +259,17 @@ func (s *EntryStore) CountNonPinned(ctx context.Context) (int, error) {
 	}
 	return n, nil
 }
+
+// PinnedCharTotal returns the sum of char_count over all pinned entries,
+// excluding the entry named excludeName (pass "" to exclude nothing). This lets
+// memory_write compute the incremental pinned total for a budget check before an
+// upsert: total = PinnedCharTotal(ctx, name) + newContentCharCount.
+func (s *EntryStore) PinnedCharTotal(ctx context.Context, excludeName string) (int, error) {
+	var n sql.NullInt64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(char_count), 0) FROM memory_entries WHERE pinned = 1 AND name <> ?`,
+		excludeName).Scan(&n); err != nil {
+		return 0, fmt.Errorf("memory: sum pinned char_count: %w", err)
+	}
+	return int(n.Int64), nil
+}

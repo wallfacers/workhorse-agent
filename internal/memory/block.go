@@ -10,15 +10,15 @@ import "strings"
 // Format:
 //
 //	<memory>
-//	USER:
-//	{userMD}
+//	PINNED:
+//	{snapshot.Pinned}
 //	---
-//	MEMORY:
-//	{memoryMD}
+//	INDEX:
+//	{snapshot.Index}
 //	</memory>
 //
-// When userMD is empty the USER section and the --- separator are omitted.
-// When memoryMD is empty the MEMORY section and the --- separator are omitted.
+// When Pinned is empty the PINNED section and the --- separator are omitted.
+// When Index is empty the INDEX section and the --- separator are omitted.
 // When both are empty the function returns "".
 func Block(snapshot *Snapshot) string {
 	if snapshot == nil {
@@ -26,28 +26,28 @@ func Block(snapshot *Snapshot) string {
 	}
 
 	var b strings.Builder
-	hasUser := snapshot.UserMD != ""
-	hasMemory := snapshot.MemoryMD != ""
+	hasPinned := snapshot.Pinned != ""
+	hasIndex := snapshot.Index != ""
 
-	if !hasUser && !hasMemory {
+	if !hasPinned && !hasIndex {
 		return ""
 	}
 
 	b.WriteString("<memory>\n")
 
-	if hasUser {
-		b.WriteString("USER:\n")
-		b.WriteString(snapshot.UserMD)
-		if hasMemory {
+	if hasPinned {
+		b.WriteString("PINNED:\n")
+		b.WriteString(snapshot.Pinned)
+		if hasIndex {
 			b.WriteString("\n---\n")
 		} else {
 			b.WriteString("\n")
 		}
 	}
 
-	if hasMemory {
-		b.WriteString("MEMORY:\n")
-		b.WriteString(snapshot.MemoryMD)
+	if hasIndex {
+		b.WriteString("INDEX:\n")
+		b.WriteString(snapshot.Index)
 		b.WriteString("\n")
 	}
 

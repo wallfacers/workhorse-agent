@@ -254,7 +254,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	sessMgr = session.NewManager(session.ManagerOptions{
 		Store:         st,
 		MaxConcurrent: cfg.Sessions.MaxConcurrent,
-		RunnerFactory: newRunnerFactory(cfg, providers, fastProviders, registry, permMgr, skillCatalog, extReg, loader, logger),
+		RunnerFactory: newRunnerFactory(cfg, st, providers, fastProviders, registry, permMgr, skillCatalog, extReg, loader, logger),
 	})
 	dispatchHost.Manager = sessMgr
 
@@ -572,6 +572,7 @@ func permissionPromptUsingSessions(mgr **session.Manager, logger *slog.Logger) p
 // distinct provider+role configuration.
 func newRunnerFactory(
 	cfg config.Config,
+	st *sqlite.Store,
 	defProv, fastProv map[string]provider.Provider,
 	reg *tools.Registry,
 	permMgr *permission.Manager,
@@ -608,10 +609,12 @@ func newRunnerFactory(
 	defaultProvName := cfg.Providers.Default
 	defaultModel := cfg.Models.Default
 	defaultFastModel := cfg.Models.Fast
-	memLoader := &memory.Loader{ProfileDir: profileDir(cfg)}
+	// Memory is now a per-entry SQLite store assembled into a two-layer snapshot
+	// (design D2). Budgets default for now; Phase 6 wires them from config.
+	memLoader := &memory.Loader{Store: memory.NewEntryStore(st.DB()), Budgets: memory.DefaultBudgets()}
 	instrLoader := &instructions.Loader{ProfileDir: profileDir(cfg)}
 	return func(sess *session.Session) session.Runner {
-		snap, err := memLoader.Load()
+		snap, err := memLoader.Load(context.Background())
 		if err != nil {
 			slog.Warn("memory snapshot load failed, proceeding without memory", "error", err)
 		}
