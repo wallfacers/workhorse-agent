@@ -46,6 +46,10 @@ func charCount(s string) int { return utf8.RuneCountInString(s) }
 type Write struct {
 	Store   *memory.EntryStore
 	Budgets memory.Budgets
+	// OnWrite, when set, is invoked after a successful upsert. It is the
+	// curation pressure trigger (design D5) — a non-blocking, debounced signal,
+	// so it must not block the tool result. Optional (nil = no curation).
+	OnWrite func()
 }
 
 func (Write) Name() string { return "memory_write" }
@@ -165,6 +169,9 @@ func (w *Write) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*
 	}
 	if err := w.Store.Upsert(ctx, entry); err != nil {
 		return tools.ErrorResultJSON(err.Error()), nil
+	}
+	if w.OnWrite != nil {
+		w.OnWrite() // curation pressure trigger (non-blocking)
 	}
 
 	out, _ := json.Marshal(map[string]any{

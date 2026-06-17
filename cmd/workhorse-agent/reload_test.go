@@ -35,7 +35,7 @@ func newReloader(t *testing.T, configYAML string, st *sqlite.Store, perm *permis
 	if err := applyPresetRules(context.Background(), st, cur.Tools.PresetRules, logger); err != nil {
 		t.Fatal(err)
 	}
-	return newPermReloader(path, cur, st, perm, logger), path
+	return newPermReloader(path, cur, st, perm, nil, logger), path
 }
 
 func newManager(st *sqlite.Store, def store.PermissionDecision) *permission.Manager {

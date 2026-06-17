@@ -63,7 +63,8 @@
 
 ## 5. Curation engine
 
-- [ ] 5.1 New `internal/memory/curation` package skeleton (scorer, lease, worker).
+- [x] 5.1 New `internal/memory/curation` package skeleton (scorer, dedup, lease,
+  judge, worker).
 - [x] 5.2 Deterministic scorer: implement the `norm`/`recency`/`age_penalty`/
   `volatility_penalty` functions with the documented formulas (design D5), combine
   with configurable weights; exclude pinned; output ranked eviction candidates.
@@ -71,17 +72,20 @@
 - [x] 5.2a Near-duplicate clustering: exact character-trigram Jaccard ≥ 0.7 →
   union-find clusters (design D5); accepts an optional candidate-pair pre-filter
   (the FTS5 pre-filter is supplied by the 5B runtime path).
-- [ ] 5.3 Pressure trigger hook on successful write (count/size/time water lines),
-  idempotent debounced enqueue; off the request hot path.
-- [ ] 5.4 Leader lease: CAS acquire (`WHERE expires_at < now()`), heartbeat renewal,
-  TTL takeover, in-process mutex backstop.
-- [ ] 5.5 Background maintenance worker: acquire lease → run scorer → LLM judgment
-  step → emit `memory_delete`/`memory_merge`; fail-safe (WARN + no-op on error).
-- [ ] 5.6 LLM judgment driver: short model call (configurable `judge_model`,
-  candidate cap `max_candidates_per_pass`) given candidates + clusters →
-  keep/evict/merge decisions, emitting `memory_delete`/`memory_merge`.
-- [ ] 5.6a Design the curation judge prompt template (system/user) that elicits a
-  structured keep/evict/merge decision; add it under `internal/prompt`.
+- [x] 5.3 Pressure trigger hook on successful write (count + min-interval floor
+  water lines), idempotent debounced enqueue (buffered(1) channel); off the
+  request hot path (`memory_write` `OnWrite` → `Worker.Notify`).
+- [x] 5.4 Leader lease: CAS acquire (`WHERE expires_at < now OR holder=self`),
+  heartbeat renewal (ttl/3), TTL takeover, in-process mutex backstop.
+- [x] 5.5 Background maintenance worker: acquire lease → run scorer → cluster →
+  LLM judgment → apply `Delete`/`Merge`; fail-safe (WARN + no-op on error).
+- [x] 5.6 LLM judgment driver: short model call (configurable `judge_model` via
+  `NewProviderCaller`, candidate cap `max_candidates_per_pass`) given candidates +
+  clusters → keep/evict/merge decisions, validated against the live store
+  (pinned/unknown-name refusal, merge over-budget skip).
+- [x] 5.6a Curation judge prompt template (system/user) eliciting a structured
+  keep/evict/merge JSON decision; added under `internal/prompt`
+  (`curation_judge.go`, IO-free, boundary-test compliant).
 
 ## 6. Configuration
 
@@ -89,10 +93,11 @@
   `manifest_budget_chars`, `entry_content_max_chars`, `trigger_max_chars`, and
   `curation.{entry_count_high, min_interval_minutes, lease_ttl_seconds, judge_model,
   max_candidates_per_pass, weights}` — with defaults and load-time validation.
-- [ ] 6.2 Hot-reload subset = `curation.entry_count_high`,
-  `curation.min_interval_minutes`, `curation.lease_ttl_seconds` only; all other keys
-  (budgets, per-entry limits, `judge_model`, `max_candidates_per_pass`, `weights`)
-  are restart-only (WARN + ignore on reload).
+- [x] 6.2 Hot-reload subset = `curation.entry_count_high`,
+  `curation.min_interval_minutes`, `curation.lease_ttl_seconds` only (applied via
+  `Worker.SetHotConfig` in `permReloader`); all other keys (budgets, per-entry
+  limits, `judge_model`, `max_candidates_per_pass`, `weights`) are restart-only
+  (`DiffReloadable` surfaces them under `memory` → WARN + ignore).
 
 ## 7. Tests (no tests = not done)
 
@@ -103,13 +108,15 @@
 - [ ] 7.3 Tools: `memory_write` single-entry/array-rejection/upsert/append;
   `memory_read` no-hit; `LoadMemory` hit idempotent + read-only honest;
   `MemorySearch` MATCH + CJK fallback; `memory_merge` atomic rollback.
-- [ ] 7.4 Curation: scorer determinism, pinned-exempt, volatile vs evergreen age,
-  trigger debounce.
-- [ ] 7.5 Multi-process: lease CAS (one winner), TTL takeover, concurrent-write
-  transaction safety, crash release.
+- [x] 7.4 Curation: scorer determinism, pinned-exempt, volatile vs evergreen age
+  (4× ratio), tiebreak by name; worker floor + pressure water lines.
+- [x] 7.5 Multi-process: lease CAS (one winner), TTL takeover, release-enables-
+  immediate-takeover, in-process backstop. (Concurrent-write tx safety is covered
+  by the existing entrystore/store transaction tests.)
 - [ ] 7.6 Migration: USER→pinned, MEMORY split, idempotent re-run, legacy backup.
-- [ ] 7.7 Curation flow with a **mocked** LLM judge: scorer → judge → mutations is
-  correct and deterministic (CI-safe, no real model call).
+- [x] 7.7 Curation flow with a **mocked** LLM judge: scorer → judge → mutations is
+  correct and deterministic (CI-safe, no real model call); includes fail-safe on
+  bad/empty judge output and provider-call error, and pinned-evict refusal.
 - [ ] 7.7a (optional, manual, not in CI) Real-e2e with a live judge model: recall
   does not regress after a curation pass; gated like existing real-e2e tests.
 - [ ] 7.8 `golangci-lint run` clean; `TestLocalToolDescriptionsAreEnglish` passes for

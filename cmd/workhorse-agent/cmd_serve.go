@@ -151,7 +151,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	// 3. Tool registry (built-ins).
 	registry := tools.NewRegistry()
 	skillCatalog := skills.Scan(cfg.Skills.Dir)
-	memUsage, err := registerBuiltinTools(registry, cfg, skillCatalog, st)
+	memUsage, curator, err := registerBuiltinTools(registry, cfg, skillCatalog, st, providers, logger)
 	if err != nil {
 		_ = st.Close()
 		return fmt.Errorf("serve: register tools: %w", err)
@@ -160,6 +160,9 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	// shutdown so pending bumps flush; if a later init step bails before the
 	// normal defer path is established, Close is idempotent.
 	defer memUsage.Close()
+	// Background curation maintenance loop (design D5/D6). Inert when no judge
+	// model is configured. Stops when ctx is cancelled at shutdown.
+	curator.Start(ctx)
 
 	// 3a. MCP host: load mcp.json (sibling of config.yaml) and register every
 	// healthy server's tools as namespaced adapters (<server>__<tool>). A
@@ -300,7 +303,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	// 8. Hot-reload of the permission subset of config.yaml. The store already
 	// has the startup preset rules applied; the reloader diffs future loads
 	// against this snapshot and applies only the permission fields.
-	reloader := newPermReloader(configPath, cfg, st, permMgr, logger)
+	reloader := newPermReloader(configPath, cfg, st, permMgr, curator, logger)
 	reloader.args = args
 	srv.SetPermissionConfig(configPath, func(ctx context.Context) error { return reloader.Reload(ctx) })
 	watchCtx, watchCancel := context.WithCancel(context.Background())
@@ -421,11 +424,19 @@ func buildProviderRegistry(cfg config.Config) (def, fast map[string]provider.Pro
 // memory usage-logger (whose background goroutine drains usage bumps from
 // LoadMemory/MemorySearch, design D8); the caller MUST Close it on shutdown so
 // pending bumps flush.
-func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skills.Catalog, st *sqlite.Store) (*memory.UsageLogger, error) {
+func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skills.Catalog, st *sqlite.Store, providers map[string]provider.Provider, logger *slog.Logger) (*memory.UsageLogger, *curation.Worker, error) {
 	// Per-entry memory store + budgets (from config).
 	es := memory.NewEntryStore(st.DB())
 	budgets := memoryBudgets(cfg)
 	usage := memory.NewUsageLogger(es, memory.DefaultUsageBuffer)
+
+	// Curation worker (design D5/D6). A missing/misconfigured judge_model leaves
+	// the worker inert (call=nil) — memory still works, curation just never runs.
+	curator := buildCurationWorker(cfg, es, st, providers, logger)
+	writeTool := &memorytool.Write{Store: es, Budgets: budgets}
+	if curator != nil {
+		writeTool.OnWrite = curator.Notify
+	}
 
 	for _, t := range []tools.Tool{
 		builtin.Read{
@@ -445,7 +456,7 @@ func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skill
 		},
 		skills.NewLoadSkill(catalog),
 		&memorytool.Read{Store: es},
-		&memorytool.Write{Store: es, Budgets: budgets},
+		writeTool,
 		memorytool.NewLoadMemory(es, usage),
 		&memorytool.MemorySearch{DB: st.DB()},
 		&memorytool.Delete{Store: es},
@@ -456,10 +467,36 @@ func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skill
 	} {
 		if err := reg.Register(t); err != nil {
 			usage.Close()
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	return usage, nil
+	return usage, curator, nil
+}
+
+// judgeMaxTokens caps the curation judge's structured output. The verdict is a
+// short JSON object, so a small ceiling keeps a runaway response bounded.
+const judgeMaxTokens = 2048
+
+// buildCurationWorker assembles the background curation worker from config. It
+// returns nil only on an internal inconsistency; a missing/misconfigured
+// judge_model yields a worker with a nil caller (inert), logged at WARN, so
+// memory keeps working and curation is simply disabled until configured.
+func buildCurationWorker(cfg config.Config, es *memory.EntryStore, st *sqlite.Store, providers map[string]provider.Provider, logger *slog.Logger) *curation.Worker {
+	cur := cfg.Memory.Curation
+	call, err := curation.NewProviderCaller(providers, cur.JudgeModel, judgeMaxTokens)
+	if err != nil {
+		logger.Warn("curation disabled: judge model unavailable", "judge_model", cur.JudgeModel, "error", err)
+		call = nil
+	}
+	return curation.NewWorker(es, st.DB(), call, curation.Config{
+		EntryCountHigh:       cur.EntryCountHigh,
+		MinInterval:          time.Duration(cur.MinIntervalMinutes) * time.Minute,
+		LeaseTTL:             time.Duration(cur.LeaseTTLSeconds) * time.Second,
+		MaxCandidatesPerPass: cur.MaxCandidatesPerPass,
+		ContentSnippetChars:  cfg.Memory.EntryContentMaxChars,
+		Weights:              memoryCurationWeights(cfg),
+		Budgets:              memoryBudgets(cfg),
+	}, logger)
 }
 
 func profileDir(cfg config.Config) string {

@@ -10,6 +10,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 
 	"github.com/wallfacers/workhorse-agent/internal/config"
+	"github.com/wallfacers/workhorse-agent/internal/memory/curation"
 	"github.com/wallfacers/workhorse-agent/internal/permission"
 	"github.com/wallfacers/workhorse-agent/internal/store"
 	"github.com/wallfacers/workhorse-agent/internal/store/sqlite"
@@ -24,17 +25,19 @@ type permReloader struct {
 	lookupEnv  func(string) (string, bool)
 	store      *sqlite.Store
 	perm       *permission.Manager
+	curator    *curation.Worker // nil-safe: SetHotConfig is only called when non-nil
 	logger     *slog.Logger
 
 	mu      sync.Mutex
 	current config.Config
 }
 
-func newPermReloader(configPath string, current config.Config, st *sqlite.Store, perm *permission.Manager, logger *slog.Logger) *permReloader {
+func newPermReloader(configPath string, current config.Config, st *sqlite.Store, perm *permission.Manager, curator *curation.Worker, logger *slog.Logger) *permReloader {
 	return &permReloader{
 		configPath: configPath,
 		store:      st,
 		perm:       perm,
+		curator:    curator,
 		logger:     logger,
 		current:    current,
 	}
@@ -74,6 +77,14 @@ func (r *permReloader) Reload(ctx context.Context) error {
 	if diff.TimeoutChanged {
 		r.perm.SetTimeout(time.Duration(newCfg.Agent.PermissionRequestTimeoutSeconds) * time.Second)
 	}
+	if diff.CurationChanged && r.curator != nil {
+		cur := newCfg.Memory.Curation
+		r.curator.SetHotConfig(
+			cur.EntryCountHigh,
+			time.Duration(cur.MinIntervalMinutes)*time.Minute,
+			time.Duration(cur.LeaseTTLSeconds)*time.Second,
+		)
+	}
 	for _, f := range diff.NonReloadable {
 		r.logger.Warn("config reload: field changed; restart required to take effect", "field", f)
 	}
@@ -83,10 +94,11 @@ func (r *permReloader) Reload(ctx context.Context) error {
 	r.mu.Unlock()
 
 	if diff.HasReloadable() {
-		r.logger.Info("config reload: applied permission changes",
+		r.logger.Info("config reload: applied runtime changes",
 			"preset_rules", diff.PresetRulesChanged,
 			"default_permission", diff.DefaultPermissionChanged,
-			"timeout", diff.TimeoutChanged)
+			"timeout", diff.TimeoutChanged,
+			"curation", diff.CurationChanged)
 	}
 	return nil
 }
