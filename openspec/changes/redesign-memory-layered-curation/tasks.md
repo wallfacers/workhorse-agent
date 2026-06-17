@@ -46,9 +46,11 @@
 - [x] 3.6 Add `memory_merge{names, into}` (atomic write+delete in one transaction).
 - [x] 3.7 Register all tools through the existing registry; gate by `allowed_tools`;
   set read-only/parallel flags correctly.
-- [ ] 3.8 Implement the `memory export` artifact path (CLI command and/or HTTP
-  endpoint) that renders all entries to a human-readable markdown file for
-  inspection/git backup; resolve the output path through `pathguard`. (Docs in 8.2.)
+- [x] 3.8 Implement the `memory export` artifact path (`workhorse-agent memory
+  export [--out F]` CLI) that renders all entries to a human-readable markdown
+  document for inspection/git backup; `--out` resolves through `pathguard`
+  relative to the working directory (stdout when omitted). Renderer is a pure
+  function (`memory.RenderExport`) with unit + CLI tests.
 - [x] 3.9 Implement the usage-logger goroutine + buffered channel (design D8) that
   `LoadMemory`/`MemorySearch` enqueue to; drop-on-full with DEBUG log.
 
@@ -101,30 +103,38 @@
 
 ## 7. Tests (no tests = not done)
 
-- [ ] 7.1 Snapshot assembly: PINNED/INDEX ordering and byte-stability; empty store →
-  no block.
-- [ ] 7.2 Budgets: pinned rejection, manifest overflow with explicit `… N more …`
+- [x] 7.1 Snapshot assembly: PINNED/INDEX ordering and byte-stability; empty store →
+  no block. (`internal/memory/snapshot_test.go`)
+- [x] 7.2 Budgets: pinned rejection, manifest overflow with explicit `… N more …`
   line + WARN, per-entry `memory_too_large`, CJK code-point counting.
-- [ ] 7.3 Tools: `memory_write` single-entry/array-rejection/upsert/append;
+  (`snapshot_test.go` overflow + `memorytool_test.go` write-time limits)
+- [x] 7.3 Tools: `memory_write` single-entry/array-rejection/upsert/append;
   `memory_read` no-hit; `LoadMemory` hit idempotent + read-only honest;
   `MemorySearch` MATCH + CJK fallback; `memory_merge` atomic rollback.
+  (`internal/tools/memorytool/memorytool_test.go`, 22 cases)
 - [x] 7.4 Curation: scorer determinism, pinned-exempt, volatile vs evergreen age
   (4× ratio), tiebreak by name; worker floor + pressure water lines.
 - [x] 7.5 Multi-process: lease CAS (one winner), TTL takeover, release-enables-
   immediate-takeover, in-process backstop. (Concurrent-write tx safety is covered
   by the existing entrystore/store transaction tests.)
-- [ ] 7.6 Migration: USER→pinned, MEMORY split, idempotent re-run, legacy backup.
+- [x] 7.6 Migration: USER→pinned, MEMORY split, idempotent re-run, legacy backup.
+  (`internal/memory/migrate_test.go`, 7 cases)
 - [x] 7.7 Curation flow with a **mocked** LLM judge: scorer → judge → mutations is
   correct and deterministic (CI-safe, no real model call); includes fail-safe on
   bad/empty judge output and provider-call error, and pinned-evict refusal.
 - [ ] 7.7a (optional, manual, not in CI) Real-e2e with a live judge model: recall
   does not regress after a curation pass; gated like existing real-e2e tests.
-- [ ] 7.8 `golangci-lint run` clean; `TestLocalToolDescriptionsAreEnglish` passes for
-  new tools.
+- [x] 7.8 `golangci-lint run` clean on all touched packages (gosec G201 false
+  positive in `memorytool/search.go` suppressed with justification);
+  `TestLocalToolDescriptionsAreEnglish` passes (no new tools added). Note: a
+  pre-existing G201/unusedwrite pair in `internal/tools/sessionsearch` (the
+  session-archive change, out of scope here) is only surfaced by the newer local
+  golangci-lint v1.64.8, not CI's pinned v1.62.0.
 
 ## 8. Docs
 
-- [ ] 8.1 Update `CLAUDE.md` "Memory subsystem" section to describe the per-entry
-  layered store + curation engine.
-- [ ] 8.2 Add a `memory export` command (and brief docs) for human-readable
-  inspection/git backup of entries.
+- [x] 8.1 Update `CLAUDE.md` "Memory subsystem" section to describe the per-entry
+  layered store + curation engine (rewritten: store schema, two-layer snapshot,
+  tools, curation engine, hot-reload subset, legacy migration).
+- [x] 8.2 Add a `memory export` command (and brief docs) for human-readable
+  inspection/git backup of entries (documented in CLAUDE.md + `memory --help`).

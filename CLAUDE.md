@@ -178,21 +178,54 @@ bridge the SSE stream (e.g. DataWeave):
 
 Two memory layers ship with the current version:
 
-- **L1 Prompt Memory**: `internal/memory/` owns `Snapshot`, `Writer`, and `Block`.
-  Two files (`MEMORY.md` and `USER.md`) live under `~/.workhorse-agent/memories/`.
-  Content is loaded once at session start as an immutable snapshot and injected
-  into the system prompt at the agent-loop call site (`internal/agent/loop.go`).
-  Mid-session writes via `memory_write` update disk but do **not** mutate the
-  snapshot (preserves Anthropic prompt-cache hit rate). Char limits are enforced
-  at write time (default: MEMORY ≤ 2200, USER ≤ 1375 code points).
+- **L1 Prompt Memory (per-entry, layered, self-curating)**: `internal/memory/`
+  owns a per-entry SQLite store (`memory_entries`, migration v7) — **not** flat
+  files. Each entry has `name`, `trigger`, `content`, `pinned`, `durability`
+  (`evergreen`|`volatile`), `category`, and usage metadata (`hit_count`,
+  `last_used_at`, `created_at`). At session start the `Loader` reads the store
+  **once** and assembles an immutable two-layer `Snapshot` (`Block` renders it):
+  a **PINNED** region (full content of pinned entries, name-sorted) and an
+  **INDEX** manifest (one `name — trigger` line per non-pinned entry, ordered by
+  the curation scorer so the highest-value lines survive a budget truncation; an
+  explicit `… N more …` line + WARN on overflow, never silent). Injected into the
+  system prompt at `internal/agent/loop.go`; mid-session writes update the store
+  but **not** the snapshot (preserves the Anthropic prompt-cache prefix → delayed
+  effect to the next session). Budgets (code points) are config-driven:
+  `memory.{pinned_budget_chars, manifest_budget_chars, entry_content_max_chars,
+  trigger_max_chars}`, enforced at write/pin time.
+
+  Tools (registered through the registry, gated by `allowed_tools`): read-only +
+  parallel-safe `LoadMemory{name}` (full content + best-effort usage bump via a
+  single usage-logger goroutine, design D8), `MemorySearch{query}` (FTS5
+  `memory_entries_fts`, CJK-trigram + LIKE fallback), `memory_read{name}` (no
+  usage bump); serial writers `memory_write` (single entry, upsert|append),
+  `memory_delete`, `memory_merge`.
+
+  **Curation engine** (`internal/memory/curation/`, design D5/D6): a background
+  worker keeps the store healthy. A successful `memory_write` fires a debounced,
+  off-hot-path pressure trigger; when the non-pinned count crosses
+  `curation.entry_count_high` (and the `min_interval_minutes` floor has elapsed)
+  the worker — guarded by a DB **leader lease** (`memory_curation_lease`,
+  CAS + ttl/3 heartbeat + expiry takeover, so multiple processes elect one
+  curator) — runs a bounded pass: deterministic **scorer** (`norm`/`recency`/
+  `age_penalty`/`volatility_penalty` with `curation.weights`) ranks eviction
+  candidates, **near-duplicate clustering** (char-trigram Jaccard ≥ 0.7 →
+  union-find) groups merge candidates, then a small **LLM judge** (`judge_model`,
+  capped at `max_candidates_per_pass`) returns a conservative keep/evict/merge
+  JSON verdict. Every mutation is validated against the live store (pinned/unknown
+  names refused, over-budget merges skipped) and the whole pass is fail-safe
+  (WARN + no-op on any error). Hot-reloadable: `entry_count_high`,
+  `min_interval_minutes`, `lease_ttl_seconds`; all other `memory.*` keys are
+  restart-only. Inspect the store with `workhorse-agent memory export [--out F]`.
 
 - **L2 Session Archive**: FTS5 virtual table `messages_fts` mirrors `messages`
   via triggers; backfilled on migration. The `session_search` tool (`internal/tools/sessionsearch/`)
   runs MATCH queries with CJK trigram synthesis and LIKE fallback, returning raw
   matches + context. No LLM summarization.
 
-Three new built-in tools: `memory_read`, `memory_write`, `session_search`. They
-are registered through the existing tool registry and gated by `allowed_tools`.
+Legacy `MEMORY.md`/`USER.md` under `~/.workhorse-agent/memories/` are migrated
+once at startup into entries (idempotent, `.migrated_to_entries` marker; originals
+copied to `memories/legacy/`, design D7).
 
 ## Extended thinking & prompt cache
 

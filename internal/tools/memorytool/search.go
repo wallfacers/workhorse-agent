@@ -107,6 +107,9 @@ func (m *MemorySearch) searchLike(ctx context.Context, query string, limit int) 
 		like := "%" + f + "%"
 		args = append(args, like, like, like)
 	}
+	// #nosec G201 -- clauses are compile-time-constant LIKE fragments; every user
+	// value is bound through a ? placeholder in args, so there is no injection
+	// surface despite the Sprintf.
 	query2 := fmt.Sprintf(`
 		SELECT e.name, e.trigger, '' AS snippet
 		FROM memory_entries e
