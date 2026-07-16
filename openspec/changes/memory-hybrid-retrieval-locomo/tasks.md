@@ -2,10 +2,10 @@
 
 ## 1. Schema & store foundation
 
-- [ ] 1.1 Migration v8 in `internal/store/sqlite/migrations.go`: `ALTER TABLE memory_entries ADD COLUMN event_date INTEGER` + `ADD COLUMN fact_source TEXT NOT NULL DEFAULT ''`; create `memory_embeddings` and `memory_entities` tables + `idx_memory_entities_norm`; migration test
-- [ ] 1.2 Extend `memory.Entry` + `EntryStore` scan/upsert for the new columns (preserve upsert keep-fields semantics); unit tests
-- [ ] 1.3 `EntryStore.Delete`/`Merge` cascade deletes to `memory_embeddings`/`memory_entities` (same transaction); unit tests
-- [ ] 1.4 Entity accessors on the store: `PutEntities(name, []string)` (normalized), `EntityMatchRanks(tokens)`; unit tests incl. CJK normalization
+- [x] 1.1 Migration v8 in `internal/store/sqlite/migrations.go`: `ALTER TABLE memory_entries ADD COLUMN event_date INTEGER` + `ADD COLUMN fact_source TEXT NOT NULL DEFAULT ''`; create `memory_embeddings` and `memory_entities` tables + `idx_memory_entities_norm`; migration test
+- [x] 1.2 Extend `memory.Entry` + `EntryStore` scan/upsert for the new columns (preserve upsert keep-fields semantics); unit tests
+- [x] 1.3 `EntryStore.Delete`/`Merge` cascade deletes to `memory_embeddings`/`memory_entities` (same transaction); unit tests
+- [x] 1.4 Entity accessors on the store: `PutEntities(name, []string)` (normalized), `EntityMatchRanks(tokens)`; unit tests incl. CJK normalization
 
 ## 2. Embedding infrastructure
 

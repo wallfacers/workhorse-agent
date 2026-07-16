@@ -276,3 +276,100 @@ func TestCountAndCountNonPinned(t *testing.T) {
 		t.Fatalf("CountNonPinned = %d, err %v; want 2", c, err)
 	}
 }
+
+func TestEventDateAndFactSourceRoundTrip(t *testing.T) {
+	es, _ := newEntryStore(t)
+	ctx := context.Background()
+	ev := time.UnixMicro(1_600_000_000_000_000).UTC()
+	e := &memory.Entry{Name: "moved", Content: "moved from sweden", CharCount: 17, EventDate: &ev, FactSource: "extraction"}
+	if err := es.Upsert(ctx, e); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, err := es.GetByName(ctx, "moved")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.FactSource != "extraction" {
+		t.Fatalf("fact_source: got %q", got.FactSource)
+	}
+	if got.EventDate == nil || !got.EventDate.Equal(ev) {
+		t.Fatalf("event_date: got %v want %v", got.EventDate, ev)
+	}
+}
+
+func TestDeleteCascadesDerived(t *testing.T) {
+	es, db := newEntryStore(t)
+	ctx := context.Background()
+	if err := es.Upsert(ctx, &memory.Entry{Name: "alpha", Content: "hi", CharCount: 2}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := es.PutEntities(ctx, "alpha", []string{"Sweden", "Quicksort"}); err != nil {
+		t.Fatalf("put entities: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO memory_embeddings(entry_name, model, dims, vec, updated_at) VALUES ('alpha','m',1,x'00',0)`); err != nil {
+		t.Fatalf("insert embedding: %v", err)
+	}
+	if err := es.Delete(ctx, "alpha"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	for _, tbl := range []string{"memory_embeddings", "memory_entities"} {
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+tbl+` WHERE entry_name='alpha'`).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", tbl, err)
+		}
+		if n != 0 {
+			t.Fatalf("%s not cascaded: %d rows remain", tbl, n)
+		}
+	}
+}
+
+func TestEntityMatchCounts(t *testing.T) {
+	es, _ := newEntryStore(t)
+	ctx := context.Background()
+	for _, e := range []*memory.Entry{
+		{Name: "a", Content: "x", CharCount: 1},
+		{Name: "b", Content: "y", CharCount: 1},
+	} {
+		if err := es.Upsert(ctx, e); err != nil {
+			t.Fatalf("upsert %s: %v", e.Name, err)
+		}
+	}
+	if err := es.PutEntities(ctx, "a", []string{"Sweden", "Python"}); err != nil {
+		t.Fatalf("put a: %v", err)
+	}
+	if err := es.PutEntities(ctx, "b", []string{"Python"}); err != nil {
+		t.Fatalf("put b: %v", err)
+	}
+	counts, err := es.EntityMatchCounts(ctx, memory.EntityQueryTokens("Tell me about python and sweden"))
+	if err != nil {
+		t.Fatalf("match: %v", err)
+	}
+	if counts["a"] != 2 {
+		t.Fatalf("entry a: got %d want 2", counts["a"])
+	}
+	if counts["b"] != 1 {
+		t.Fatalf("entry b: got %d want 1", counts["b"])
+	}
+}
+
+func TestPutEntitiesReplaces(t *testing.T) {
+	es, _ := newEntryStore(t)
+	ctx := context.Background()
+	if err := es.Upsert(ctx, &memory.Entry{Name: "a", Content: "x", CharCount: 1}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := es.PutEntities(ctx, "a", []string{"Sweden"}); err != nil {
+		t.Fatalf("put1: %v", err)
+	}
+	if err := es.PutEntities(ctx, "a", []string{"Norway"}); err != nil {
+		t.Fatalf("put2: %v", err)
+	}
+	counts, err := es.EntityMatchCounts(ctx, []string{"sweden", "norway"})
+	if err != nil {
+		t.Fatalf("match: %v", err)
+	}
+	if counts["a"] != 1 {
+		t.Fatalf("expected only norway to match after replace, got %d", counts["a"])
+	}
+}
