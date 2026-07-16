@@ -31,11 +31,21 @@
 
 ## 5. LoCoMo bench
 
-- [ ] 5.1 `cmd/locomo-bench` skeleton: dataset loader (LoCoMo JSON), flags (`--data --run-dir --conversations --questions --top-k --retrieval fts|hybrid`), env credentials (`LOCOMO_BASE_URL/API_KEY/MODEL`), key-hygiene guard
-- [ ] 5.2 Ingest stage: per-conversation temp store → pipeline per session with session date
-- [ ] 5.3 Answer stage: single-pass answer prompt over top-k retrieval results (timestamps rendered); JSONL artifacts + resume
-- [ ] 5.4 Judge stage: LLM-as-a-Judge prompt aligned with mem0ai/memory-benchmarks; per-category + overall report (adversarial excluded)
+- [x] 5.1 `cmd/locomo-bench` skeleton: dataset loader (LoCoMo JSON), flags (`--data --run-dir --conversations --questions --top-k --retrieval fts|hybrid`), env credentials (`LOCOMO_BASE_URL/API_KEY/MODEL`), key-hygiene guard
+- [x] 5.2 Ingest stage: per-conversation temp store → pipeline per session with session date
+- [x] 5.3 Answer stage: single-pass answer prompt over top-k retrieval results (timestamps rendered); JSONL artifacts + resume
+- [x] 5.4 Judge stage: LLM-as-a-Judge prompt aligned with mem0ai/memory-benchmarks; per-category + overall report (adversarial excluded)
 - [ ] 5.5 Baseline run (sampled, `--retrieval fts`) then hybrid run; record A-B uplift in change notes; iterate prompts/top_k until absolute J ≥ 66% on the sample or blockers documented
+  - Harness verified end-to-end against the live DeepSeek endpoint on a synthetic
+    LoCoMo-format conversation: ingest → ADD-only extraction → FTS+entity
+    retrieval → answer → judge, 3/3 including the temporal question ("four years
+    ago" → 2019 resolved against the 2023 session date). Resume + key-hygiene
+    confirmed.
+  - BLOCKED on environment for the real number: the public LoCoMo `locomo10.json`
+    dataset is not present, and no local embedding server (Ollama) is available
+    for the hybrid arm. To run: `ollama pull qwen3-embedding:0.6b`, download the
+    dataset, then `LOCOMO_API_KEY=… go run ./cmd/locomo-bench --data locomo10.json
+    --run-dir ./run --retrieval fts` and again with `--retrieval hybrid`.
 
 ## 6. Hardening & docs
 
