@@ -23,6 +23,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/api/protocol"
 	"github.com/wallfacers/workhorse-agent/internal/config"
 	"github.com/wallfacers/workhorse-agent/internal/coord"
+	"github.com/wallfacers/workhorse-agent/internal/embedding"
 	"github.com/wallfacers/workhorse-agent/internal/extagent"
 	"github.com/wallfacers/workhorse-agent/internal/extagent/approval"
 	"github.com/wallfacers/workhorse-agent/internal/extagent/draft"
@@ -151,7 +152,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	// 3. Tool registry (built-ins).
 	registry := tools.NewRegistry()
 	skillCatalog := skills.Scan(cfg.Skills.Dir)
-	memUsage, curator, err := registerBuiltinTools(registry, cfg, skillCatalog, st, providers, logger)
+	memUsage, curator, memEmbedder, err := registerBuiltinTools(registry, cfg, skillCatalog, st, providers, logger)
 	if err != nil {
 		_ = st.Close()
 		return fmt.Errorf("serve: register tools: %w", err)
@@ -160,6 +161,15 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	// shutdown so pending bumps flush; if a later init step bails before the
 	// normal defer path is established, Close is idempotent.
 	defer memUsage.Close()
+	// Write-behind embedder (memory-hybrid-retrieval-locomo). Nil when embedding
+	// is unconfigured; Close and Backfill are nil-safe. Backfill runs off the hot
+	// path so a slow/absent embedding endpoint never blocks startup.
+	defer memEmbedder.Close()
+	go func() {
+		if err := memEmbedder.Backfill(ctx); err != nil {
+			logger.Warn("memory: embedding backfill failed", "error", err)
+		}
+	}()
 	// Background curation maintenance loop (design D5/D6). Inert when no judge
 	// model is configured. Stops when ctx is cancelled at shutdown.
 	curator.Start(ctx)
@@ -424,11 +434,18 @@ func buildProviderRegistry(cfg config.Config) (def, fast map[string]provider.Pro
 // memory usage-logger (whose background goroutine drains usage bumps from
 // LoadMemory/MemorySearch, design D8); the caller MUST Close it on shutdown so
 // pending bumps flush.
-func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skills.Catalog, st *sqlite.Store, providers map[string]provider.Provider, logger *slog.Logger) (*memory.UsageLogger, *curation.Worker, error) {
+func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skills.Catalog, st *sqlite.Store, providers map[string]provider.Provider, logger *slog.Logger) (*memory.UsageLogger, *curation.Worker, *memory.Embedder, error) {
 	// Per-entry memory store + budgets (from config).
 	es := memory.NewEntryStore(st.DB())
 	budgets := memoryBudgets(cfg)
 	usage := memory.NewUsageLogger(es, memory.DefaultUsageBuffer)
+
+	// Embedding infrastructure (memory-hybrid-retrieval-locomo). A nil client
+	// (embedding unconfigured) yields a nil embedder: every vector path degrades
+	// to FTS behavior.
+	vectors := memory.NewVectorStore(st.DB())
+	embClient := buildEmbeddingClient(cfg, logger)
+	embedder := memory.NewEmbedder(es, vectors, embClient, memory.DefaultEmbedBuffer)
 
 	// Curation worker (design D5/D6). A missing/misconfigured judge_model leaves
 	// the worker inert (call=nil) — memory still works, curation just never runs.
@@ -436,6 +453,13 @@ func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skill
 	writeTool := &memorytool.Write{Store: es, Budgets: budgets}
 	if curator != nil {
 		writeTool.OnWrite = curator.Notify
+	}
+	if embedder != nil {
+		writeTool.AfterWrite = embedder.Enqueue
+	}
+	searchTool := &memorytool.MemorySearch{
+		DB:        st.DB(),
+		Retriever: memory.NewRetriever(es, vectors, embClient),
 	}
 
 	for _, t := range []tools.Tool{
@@ -458,7 +482,7 @@ func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skill
 		&memorytool.Read{Store: es},
 		writeTool,
 		memorytool.NewLoadMemory(es, usage),
-		&memorytool.MemorySearch{DB: st.DB()},
+		searchTool,
 		&memorytool.Delete{Store: es},
 		&memorytool.Merge{Store: es, Budgets: budgets},
 		&sessionsearch.Tool{DB: st.DB()},
@@ -467,10 +491,35 @@ func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skill
 	} {
 		if err := reg.Register(t); err != nil {
 			usage.Close()
-			return nil, nil, err
+			embedder.Close()
+			return nil, nil, nil, err
 		}
 	}
-	return usage, curator, nil
+	return usage, curator, embedder, nil
+}
+
+// buildEmbeddingClient constructs the embedding client from config. It returns
+// nil (embedding disabled → FTS-only degradation) when base_url or model is
+// empty, or when construction fails. The API key is never logged.
+func buildEmbeddingClient(cfg config.Config, logger *slog.Logger) embedding.Client {
+	emb := cfg.Memory.Embedding
+	client, err := embedding.New(embedding.Config{
+		BaseURL:    emb.BaseURL,
+		Model:      emb.Model,
+		APIKey:     emb.APIKey,
+		Dimensions: emb.Dimensions,
+		Timeout:    time.Duration(emb.TimeoutSeconds) * time.Second,
+	})
+	if err != nil {
+		logger.Warn("memory: embedding disabled: client construction failed", "error", err)
+		return nil
+	}
+	if client == nil {
+		logger.Info("memory: semantic search disabled (memory.embedding not configured); retrieval uses keyword + entity signals")
+		return nil
+	}
+	logger.Info("memory: semantic search enabled", "model", emb.Model, "base_url", emb.BaseURL)
+	return client
 }
 
 // judgeMaxTokens caps the curation judge's structured output. The verdict is a

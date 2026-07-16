@@ -257,6 +257,14 @@ func validateMemory(m MemoryConfig) error {
 			return fmt.Errorf("invalid config: %s must be >= 0, got %g", wr.field, wr.value)
 		}
 	}
+	// Embedding: BaseURL/Model empty is the valid "disabled" state; only the
+	// numeric knobs are range-checked. Dimensions 0 means "endpoint default".
+	if m.Embedding.Dimensions < 0 || m.Embedding.Dimensions > 1<<16 {
+		return fmt.Errorf("invalid config: memory.embedding.dimensions must be 0-65536, got %d", m.Embedding.Dimensions)
+	}
+	if m.Embedding.TimeoutSeconds < 1 || m.Embedding.TimeoutSeconds > 600 {
+		return fmt.Errorf("invalid config: memory.embedding.timeout_seconds must be 1-600, got %d", m.Embedding.TimeoutSeconds)
+	}
 	return nil
 }
 

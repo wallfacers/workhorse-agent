@@ -9,17 +9,17 @@
 
 ## 2. Embedding infrastructure
 
-- [ ] 2.1 Config: `memory.embedding.{base_url,model,api_key,dimensions,timeout_seconds}` structs + defaults + validation (restart-only); docs in config comments
-- [ ] 2.2 `internal/embedding`: `Client` interface + OpenAI-compatible HTTP implementation (batch, `dimensions` passthrough, key never logged); httptest unit tests
-- [ ] 2.3 Vector codec + math: float32 LE BLOB encode/decode, cosine top-k scan; unit tests with known fixtures
-- [ ] 2.4 Write-behind embedder goroutine (D8 usage-logger pattern) + startup/backfill sweep (missing or model-mismatched rows); unit tests with fake client
-- [ ] 2.5 Wire into `cmd_serve.go`: construct client from config (nil when unconfigured → INFO), hook entry writes to enqueue embeds
+- [x] 2.1 Config: `memory.embedding.{base_url,model,api_key,dimensions,timeout_seconds}` structs + defaults + validation (restart-only); docs in config comments
+- [x] 2.2 `internal/embedding`: `Client` interface + OpenAI-compatible HTTP implementation (batch, `dimensions` passthrough, key never logged); httptest unit tests
+- [x] 2.3 Vector codec + math: float32 LE BLOB encode/decode, cosine top-k scan; unit tests with known fixtures
+- [x] 2.4 Write-behind embedder goroutine (D8 usage-logger pattern) + startup/backfill sweep (missing or model-mismatched rows); unit tests with fake client
+- [x] 2.5 Wire into `cmd_serve.go`: construct client from config (nil when unconfigured → INFO), hook entry writes to enqueue embeds
 
 ## 3. Hybrid retrieval
 
-- [ ] 3.1 `internal/memory/retrieval`: three-signal search (vector cosine, FTS5 BM25 via existing plan/fallback, entity match) + RRF fusion with deterministic tiebreak; table-driven unit tests incl. full degradation matrix
-- [ ] 3.2 Upgrade `MemorySearch` tool: `top_k` (default 8, cap 50, `limit` alias), hybrid backend, `[event:]`/`[recorded:]` rendering; keep read-only/parallel-safe; English description; unit tests
-- [ ] 3.3 Degradation behavior tests: no embedding client ≡ BM25+entity; no entities ≡ current FTS behavior byte-compatible
+- [x] 3.1 `internal/memory/retrieval`: three-signal search (vector cosine, FTS5 BM25 via existing plan/fallback, entity match) + RRF fusion with deterministic tiebreak; table-driven unit tests incl. full degradation matrix
+- [x] 3.2 Upgrade `MemorySearch` tool: `top_k` (default 8, cap 50, `limit` alias), hybrid backend, `[event:]`/`[recorded:]` rendering; keep read-only/parallel-safe; English description; unit tests
+- [x] 3.3 Degradation behavior tests: no embedding client ≡ BM25+entity; no entities ≡ current FTS behavior byte-compatible
 
 ## 4. Extraction pipeline
 

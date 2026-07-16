@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wallfacers/workhorse-agent/internal/memory"
 	"github.com/wallfacers/workhorse-agent/internal/store/sqlite"
@@ -450,5 +451,41 @@ func TestMerge_RejectsEmptyNames(t *testing.T) {
 	out := run(t, m, `{"names":[],"into":{"name":"x","content":"y"}}`)
 	if out["__is_error"] != true {
 		t.Fatalf("expected error for empty names, got %v", out)
+	}
+}
+
+func TestMemorySearch_HybridRendersTimestamps(t *testing.T) {
+	es, db := testStore(t)
+	ctx := context.Background()
+	ev := time.Date(2019, 5, 1, 0, 0, 0, 0, time.UTC)
+	if err := es.Upsert(ctx, &memory.Entry{
+		Name: "moved", Trigger: "origin", Content: "moved from Sweden", CharCount: 17, EventDate: &ev,
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	vs := memory.NewVectorStore(db)
+	s := &memorytool.MemorySearch{DB: db, Retriever: memory.NewRetriever(es, vs, nil)}
+
+	out := run(t, s, `{"query":"Sweden","top_k":5}`)
+	matches := out["matches"].([]any)
+	if len(matches) == 0 {
+		t.Fatalf("expected a match, got %v", out)
+	}
+	snip := matches[0].(map[string]any)["snippet"].(string)
+	if !strings.Contains(snip, "[event: 2019-05-01]") {
+		t.Fatalf("expected event marker in snippet, got %q", snip)
+	}
+	if !strings.Contains(snip, "[recorded:") {
+		t.Fatalf("expected recorded marker in snippet, got %q", snip)
+	}
+}
+
+func TestMemorySearch_TopKCap(t *testing.T) {
+	es, db := testStore(t)
+	vs := memory.NewVectorStore(db)
+	s := &memorytool.MemorySearch{DB: db, Retriever: memory.NewRetriever(es, vs, nil)}
+	out := run(t, s, `{"query":"x","top_k":200}`)
+	if out["top_k_capped"] != true {
+		t.Fatalf("expected top_k_capped true, got %v", out["top_k_capped"])
 	}
 }

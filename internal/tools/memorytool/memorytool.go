@@ -46,6 +46,10 @@ type Write struct {
 	// curation pressure trigger (design D5) — a non-blocking, debounced signal,
 	// so it must not block the tool result. Optional (nil = no curation).
 	OnWrite func()
+	// AfterWrite, when set, is invoked after a successful upsert with the entry
+	// name. It is the write-behind embed enqueue (memory-hybrid-retrieval-locomo)
+	// — non-blocking. Optional (nil = no embedding).
+	AfterWrite func(name string)
 }
 
 func (Write) Name() string { return "memory_write" }
@@ -168,6 +172,9 @@ func (w *Write) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*
 	}
 	if w.OnWrite != nil {
 		w.OnWrite() // curation pressure trigger (non-blocking)
+	}
+	if w.AfterWrite != nil {
+		w.AfterWrite(in.Name) // write-behind embed enqueue (non-blocking)
 	}
 
 	out, _ := json.Marshal(map[string]any{
