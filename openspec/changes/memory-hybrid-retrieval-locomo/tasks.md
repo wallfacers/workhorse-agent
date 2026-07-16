@@ -23,11 +23,11 @@
 
 ## 4. Extraction pipeline
 
-- [ ] 4.1 `AdapterGeneration`-style prompt in `internal/prompt`: extraction system+user prompts (facts+entities+event_date strict JSON, agent facts first-class, session date injection)
-- [ ] 4.2 `internal/memory/pipeline`: batch → one LLM call (reuse `curation.NewProviderCaller`) → tolerant JSON parse → per-fact validation (existing budget checks) → ADD-only writes (slug+ULID names, fact_source/event_date/entities) → curation `OnWrite` hook; unit tests with fake caller
-- [ ] 4.3 Config: `memory.pipeline.{enabled(default true), extract_model(default=judge_model)}` + inert mode when provider missing
-- [ ] 4.4 Session-end trigger in the loop/session teardown path: async, WARN on failure, skip trivial batches; integration test with fake provider
-- [ ] 4.5 real_e2e smoke: pipeline extraction against recorded fixtures (record/replay JSONL, follow memory_test.go pattern)
+- [x] 4.1 `AdapterGeneration`-style prompt in `internal/prompt`: extraction system+user prompts (facts+entities+event_date strict JSON, agent facts first-class, session date injection)
+- [x] 4.2 `internal/memory/pipeline`: batch → one LLM call (reuse `curation.NewProviderCaller`) → tolerant JSON parse → per-fact validation (existing budget checks) → ADD-only writes (slug+ULID names, fact_source/event_date/entities) → curation `OnWrite` hook; unit tests with fake caller
+- [x] 4.3 Config: `memory.pipeline.{enabled(default true), extract_model(default=judge_model)}` + inert mode when provider missing
+- [x] 4.4 Session-end trigger in the loop/session teardown path: async, WARN on failure, skip trivial batches; integration test with fake provider
+- [x] 4.5 real_e2e smoke: pipeline extraction against recorded fixtures (record/replay JSONL, follow memory_test.go pattern)
 
 ## 5. LoCoMo bench
 

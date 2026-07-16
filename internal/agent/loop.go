@@ -97,6 +97,11 @@ type Loop struct {
 	// and a filtered list for the rest.
 	ImplicitTriggerInterceptor ImplicitTriggerHook
 
+	// MemoryIngestor, when non-nil, extracts durable memories from this
+	// session's history when the loop exits (ADD-only pipeline). Only top-level
+	// sessions get one; nil disables extraction.
+	MemoryIngestor MemoryIngestor
+
 	Config LoopConfig
 
 	// activeTurnCancel holds the cancel func of the in-progress turn so an
@@ -128,11 +133,24 @@ func NewLoop(cfg LoopConfig) *Loop {
 	return &Loop{Config: cfg}
 }
 
+// MemoryIngestor distills durable memories from a finished session's message
+// history (memory-hybrid-retrieval-locomo, ADD-only extraction). It is invoked
+// once when the session loop exits. Implementations MUST be asynchronous and
+// self-detaching (the loop's ctx is already cancelled at that point) and MUST
+// never block loop teardown. A nil ingestor disables extraction.
+type MemoryIngestor interface {
+	IngestSession(sessionID string, history []provider.Message)
+}
+
 // Run is the session goroutine entry point. It selects on ctx.Done and
 // Session.Inbox; user messages trigger a turn, other client messages are
 // handled inline. The outer recover catches any panic that escapes
 // runTurnSafe so the loop survives.
 func (l *Loop) Run(ctx context.Context) {
+	// Extract memories from the finished session on the way out (delayed-effect:
+	// entries become visible to the NEXT session). Fire-and-forget; the ingestor
+	// detaches from the cancelled ctx internally.
+	defer l.ingestSessionMemories()
 	for {
 		select {
 		case <-ctx.Done():
@@ -146,6 +164,16 @@ func (l *Loop) Run(ctx context.Context) {
 			l.dispatchIdle(ctx, msg)
 		}
 	}
+}
+
+// ingestSessionMemories hands the session history to the memory ingestor when
+// one is wired. Guarded so it is a no-op for child agents / configs without a
+// pipeline.
+func (l *Loop) ingestSessionMemories() {
+	if l.MemoryIngestor == nil || l.Session == nil {
+		return
+	}
+	l.MemoryIngestor.IngestSession(l.Session.ID, l.Session.History())
 }
 
 // dispatchCompactIdle runs the manual-compact path requested by

@@ -35,6 +35,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/mcp"
 	"github.com/wallfacers/workhorse-agent/internal/memory"
 	"github.com/wallfacers/workhorse-agent/internal/memory/curation"
+	"github.com/wallfacers/workhorse-agent/internal/memory/pipeline"
 	"github.com/wallfacers/workhorse-agent/internal/permission"
 	"github.com/wallfacers/workhorse-agent/internal/prompt"
 	"github.com/wallfacers/workhorse-agent/internal/provider"
@@ -152,26 +153,30 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	// 3. Tool registry (built-ins).
 	registry := tools.NewRegistry()
 	skillCatalog := skills.Scan(cfg.Skills.Dir)
-	memUsage, curator, memEmbedder, err := registerBuiltinTools(registry, cfg, skillCatalog, st, providers, logger)
+	memRT, err := registerBuiltinTools(registry, cfg, skillCatalog, st, providers, logger)
 	if err != nil {
 		_ = st.Close()
 		return fmt.Errorf("serve: register tools: %w", err)
 	}
-	// memUsage drains the memory usage-bump channel (design D8). Close it on
+	// memRT.usage drains the memory usage-bump channel (design D8). Close it on
 	// shutdown so pending bumps flush; if a later init step bails before the
 	// normal defer path is established, Close is idempotent.
-	defer memUsage.Close()
+	defer memRT.usage.Close()
 	// Write-behind embedder (memory-hybrid-retrieval-locomo). Nil when embedding
 	// is unconfigured; Close and Backfill are nil-safe. Backfill runs off the hot
 	// path so a slow/absent embedding endpoint never blocks startup.
-	defer memEmbedder.Close()
+	defer memRT.embedder.Close()
+	// Session-end extraction ingestor (ADD-only pipeline). Nil-safe Close flushes
+	// in-flight extractions on shutdown.
+	defer memRT.ingestor.Close()
 	go func() {
-		if err := memEmbedder.Backfill(ctx); err != nil {
+		if err := memRT.embedder.Backfill(ctx); err != nil {
 			logger.Warn("memory: embedding backfill failed", "error", err)
 		}
 	}()
 	// Background curation maintenance loop (design D5/D6). Inert when no judge
 	// model is configured. Stops when ctx is cancelled at shutdown.
+	curator := memRT.curator
 	curator.Start(ctx)
 
 	// 3a. MCP host: load mcp.json (sibling of config.yaml) and register every
@@ -280,7 +285,7 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	sessMgr = session.NewManager(session.ManagerOptions{
 		Store:         st,
 		MaxConcurrent: cfg.Sessions.MaxConcurrent,
-		RunnerFactory: newRunnerFactory(cfg, st, providers, fastProviders, registry, permMgr, skillCatalog, extReg, loader, logger),
+		RunnerFactory: newRunnerFactory(cfg, st, providers, fastProviders, registry, permMgr, skillCatalog, extReg, loader, memRT.ingestor, logger),
 	})
 	dispatchHost.Manager = sessMgr
 
@@ -434,7 +439,16 @@ func buildProviderRegistry(cfg config.Config) (def, fast map[string]provider.Pro
 // memory usage-logger (whose background goroutine drains usage bumps from
 // LoadMemory/MemorySearch, design D8); the caller MUST Close it on shutdown so
 // pending bumps flush.
-func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skills.Catalog, st *sqlite.Store, providers map[string]provider.Provider, logger *slog.Logger) (*memory.UsageLogger, *curation.Worker, *memory.Embedder, error) {
+// memoryRuntime bundles the background memory components that outlive
+// registerBuiltinTools and must be stopped on shutdown.
+type memoryRuntime struct {
+	usage    *memory.UsageLogger
+	curator  *curation.Worker
+	embedder *memory.Embedder          // may be nil (embedding disabled)
+	ingestor *pipeline.SessionIngestor // may be nil (pipeline disabled)
+}
+
+func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skills.Catalog, st *sqlite.Store, providers map[string]provider.Provider, logger *slog.Logger) (*memoryRuntime, error) {
 	// Per-entry memory store + budgets (from config).
 	es := memory.NewEntryStore(st.DB())
 	budgets := memoryBudgets(cfg)
@@ -461,6 +475,11 @@ func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skill
 		DB:        st.DB(),
 		Retriever: memory.NewRetriever(es, vectors, embClient),
 	}
+
+	// ADD-only extraction pipeline (memory-hybrid-retrieval-locomo). Enabled by
+	// default; inert when disabled or when the extract model's provider is
+	// unavailable.
+	ingestor := buildMemoryIngestor(cfg, es, embedder, budgets, curator, providers, logger)
 
 	for _, t := range []tools.Tool{
 		builtin.Read{
@@ -492,11 +511,46 @@ func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skill
 		if err := reg.Register(t); err != nil {
 			usage.Close()
 			embedder.Close()
-			return nil, nil, nil, err
+			ingestor.Close()
+			return nil, err
 		}
 	}
-	return usage, curator, embedder, nil
+	return &memoryRuntime{usage: usage, curator: curator, embedder: embedder, ingestor: ingestor}, nil
 }
+
+// buildMemoryIngestor constructs the session-end extraction ingestor. Returns
+// nil when the pipeline is disabled or its extract model's provider is missing.
+func buildMemoryIngestor(cfg config.Config, es *memory.EntryStore, embedder *memory.Embedder, budgets memory.Budgets, curator *curation.Worker, providers map[string]provider.Provider, logger *slog.Logger) *pipeline.SessionIngestor {
+	if !cfg.Memory.Pipeline.Enabled {
+		logger.Info("memory: extraction pipeline disabled (memory.pipeline.enabled=false)")
+		return nil
+	}
+	extractModel := cfg.Memory.Pipeline.ExtractModel
+	if extractModel == "" {
+		extractModel = cfg.Memory.Curation.JudgeModel
+	}
+	call, err := curation.NewProviderCaller(providers, extractModel, extractMaxTokens)
+	if err != nil {
+		logger.Warn("memory: extraction pipeline inert: extract model unavailable", "extract_model", extractModel, "error", err)
+		return nil
+	}
+	var onWrite func()
+	if curator != nil {
+		onWrite = curator.Notify
+	}
+	p := pipeline.New(pipeline.Config{
+		Entries:  es,
+		Embedder: embedder,
+		Call:     pipeline.ModelCaller(call),
+		Budgets:  budgets,
+		OnWrite:  onWrite,
+	})
+	logger.Info("memory: extraction pipeline enabled", "extract_model", extractModel)
+	return pipeline.NewSessionIngestor(p)
+}
+
+// extractMaxTokens caps the extraction model's JSON output.
+const extractMaxTokens = 2048
 
 // buildEmbeddingClient constructs the embedding client from config. It returns
 // nil (embedding disabled → FTS-only degradation) when base_url or model is
@@ -709,6 +763,7 @@ func newRunnerFactory(
 	skillCatalog *skills.Catalog,
 	extReg *extagent.Registry,
 	agentLoader *coord.Loader,
+	ingestor *pipeline.SessionIngestor,
 	logger *slog.Logger,
 ) session.RunnerFactory {
 	orch := &agent.Orchestrator{
@@ -831,6 +886,12 @@ func newRunnerFactory(
 			}
 		}
 		loop.Config.Model = modelID
+		// Session-end memory extraction runs for top-level sessions only; child
+		// agents (Dispatch) don't accumulate durable user memory. Nil when the
+		// pipeline is disabled.
+		if sess.ParentID == "" && ingestor != nil {
+			loop.MemoryIngestor = ingestor
+		}
 		// Per-session task list: in-memory, broadcast over SSE on every change so
 		// the user sees progress. Independent per session — child agents get their
 		// own store (add-todo-tool D2a). sess is captured per factory call.
