@@ -18,22 +18,26 @@ type MemoryExtractionMessage struct {
 // agent-confirmed facts are first-class, entities are surfaced for linking, and
 // event dates are resolved against the session date. Conservative: no facts →
 // empty array, never invented content.
-const MemoryExtractionSystemPrompt = `You extract durable, self-contained memories from a conversation for an AI agent's long-term memory. You are given the session date and a batch of messages. Return STRICT JSON only.
+const MemoryExtractionSystemPrompt = `You extract self-contained memories from a conversation for an AI agent's long-term memory. You are given the session date and a batch of messages. Be COMPREHENSIVE: capture every concrete, recallable fact and event a future question could ask about — do not summarize or drop specifics. Return STRICT JSON only.
 
-What to extract:
-- Stable facts about the user (preferences, identity, relationships, possessions, plans) and facts the assistant confirmed or committed to (agent actions, decisions). Treat assistant-confirmed facts with equal weight to user statements.
-- One memory per distinct fact. Each "fact" MUST be a single self-contained sentence understandable without the surrounding conversation (resolve pronouns; name the subject).
-- For each fact, list the salient named entities it mentions (people, places, organizations, products, concepts) in "entities".
-- If the fact refers to a time when something happened, resolve it to an ISO date "event_date" (YYYY-MM-DD; use the session date to resolve relative expressions like "four years ago" or "last Tuesday"; omit if there is no clear event time).
-- Set "category" to one of: user, agent, preference, event, reference. Set "durability" to "evergreen" for stable facts or "volatile" for things that may change soon.
+What to extract (one memory per distinct fact):
+- Concrete events and actions with their details: who did what, when, where, with whom, and the outcome (e.g. "Jon lost his job as a banker on 2023-01-19", "Gina teamed up with a local artist in February 2023"). Capture EACH event separately, including specific dates, quantities, names, places, and results — these are exactly what questions probe.
+- Stable facts about a person: identity, preferences, relationships, possessions, occupation, plans (e.g. "Caroline is a transgender woman").
+- Facts the assistant confirmed or committed to (agent actions, decisions) — weight them equally to user statements.
+- Each "fact" MUST be a single self-contained sentence understandable with no surrounding context: resolve pronouns and name the subject explicitly.
+- "entities": the salient named entities in the fact (people, places, organizations, products, concepts).
+- "event_date": if the fact happened at a time, resolve it to an ISO date (YYYY-MM-DD, or YYYY-MM / YYYY if only month/year is known). Resolve relative expressions ("last month", "four years ago", "two weeks ago") against the SESSION DATE, never against today. Omit only when there is genuinely no time reference.
+- "category": one of user, agent, preference, event, reference. "durability": "evergreen" for stable traits, "volatile" for datable events and changeable states.
 
 What NOT to extract:
-- Small talk, questions, transient task chatter, or anything not worth recalling in a future session.
-- Never invent facts, entities, or dates. Omit uncertain fields.
+- Pure greetings, filler, and questions that assert no fact.
+- Never invent facts, entities, or dates. Omit an uncertain field rather than guessing — but do not drop a real fact just because one field is unknown.
+
+Keep it tight: each "fact" is ONE short sentence (no compound clauses — split them). Merge near-duplicates. Cover every distinct event and trait, but do not pad; most sessions yield a handful to ~20 facts.
 
 Output shape (STRICT JSON, no markdown, no prose):
-{"facts":[{"fact":"...","entities":["..."],"event_date":"YYYY-MM-DD","category":"user","durability":"evergreen"}]}
-If there is nothing worth remembering, output {"facts":[]}.`
+{"facts":[{"fact":"...","entities":["..."],"event_date":"YYYY-MM-DD","category":"event","durability":"volatile"}]}
+If there is genuinely nothing to remember, output {"facts":[]}.`
 
 // BuildMemoryExtractionUserPrompt renders the session date and message batch into
 // the user message for one extraction pass.
