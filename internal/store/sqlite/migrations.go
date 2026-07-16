@@ -235,7 +235,7 @@ var v7MemoryDown = []string{
 //
 // event_date is nullable: the unix-micros instant the remembered fact occurred
 // (distinct from created_at, when it was recorded). fact_source records
-// provenance ('' | user | agent | extraction).
+// provenance (” | user | agent | extraction).
 var v8MemoryHybrid = []string{
 	`ALTER TABLE memory_entries ADD COLUMN event_date INTEGER`,
 	`ALTER TABLE memory_entries ADD COLUMN fact_source TEXT NOT NULL DEFAULT ''`,

@@ -49,6 +49,6 @@
 
 ## 6. Hardening & docs
 
-- [ ] 6.1 `golangci-lint run` clean; `TestLocalToolDescriptionsAreEnglish` passes
-- [ ] 6.2 Update CLAUDE.md memory subsystem section (pipeline, embedding, hybrid retrieval, bench)
-- [ ] 6.3 Full-suite `go test ./...` + existing real_e2e memory/curation tests unaffected
+- [x] 6.1 `golangci-lint run` clean; `TestLocalToolDescriptionsAreEnglish` passes
+- [x] 6.2 Update CLAUDE.md memory subsystem section (pipeline, embedding, hybrid retrieval, bench)
+- [x] 6.3 Full-suite `go test ./...` + existing real_e2e memory/curation tests unaffected
