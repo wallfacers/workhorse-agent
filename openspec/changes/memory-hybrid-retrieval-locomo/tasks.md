@@ -84,6 +84,32 @@
     larger extraction JSON at max_tokens=8000 → fixed by raising to 12000 and
     bounding fact count in the prompt.
 
+  - **Tuning round 2 (kitchen-sink ablation, three full runs):** five changes
+    were introduced together (bge-large 1024-dim embedding; cross-encoder
+    rerank stage `bge-reranker-base` over the fused pool + 1-hop entity
+    neighbors; per-category answer prompts — open-domain gets a
+    world-knowledge/inference prompt; IDK rewrite-and-retry second retrieval
+    round; top_k 50→20), then peeled apart:
+
+    | run | config | hybrid J | verdict |
+    |-----|--------|----------|---------|
+    | v3  | all five, k=20 | 48.8% | k=20 collapsed recall (multi-hop 49.6→32.6, IDK 18.2→24.2%) |
+    | v4  | all five, k=50 | 51.7% | k restored breadth, but rerank still −7.6 vs v1: cross-encoder drops complementary facts multi-hop needs (−12.7 pp) while open-domain prompt gains +14.5 |
+    | v5  | v1 config + open-domain prompt + IDK retry (no rerank, bge-base) | **61.4%** | new best |
+
+    **Final: hybrid J = 61.4%** (multi-hop 50.0 / temporal 72.6 /
+    open-domain 58.3 / single-hop 61.2), IDK 18.2% → 14.1%. Two findings worth
+    keeping: (1) the **open-domain split prompt** (ground in memories, then
+    reason with world knowledge — AtomMem-style) is worth **+16.6 pp** on that
+    category and is the single highest-ROI change of the whole effort;
+    (2) **pairwise cross-encoder reranking hurts LoCoMo-style multi-fact QA**
+    at a fixed budget — it scores facts independently against the question and
+    evicts the complementary facts that RRF's signal diversity retains. The
+    rerank stage stays in the codebase as an opt-in
+    (`memory.embedding.rerank_model`, default off) since single-fact lookup
+    workloads may still benefit; the 4.6 pp of unrealized stretch-goal gap is
+    open-domain extraction work, not retrieval.
+
 ## 6. Hardening & docs
 
 - [x] 6.1 `golangci-lint run` clean; `TestLocalToolDescriptionsAreEnglish` passes

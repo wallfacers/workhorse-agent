@@ -473,7 +473,7 @@ func registerBuiltinTools(reg *tools.Registry, cfg config.Config, catalog *skill
 	}
 	searchTool := &memorytool.MemorySearch{
 		DB:        st.DB(),
-		Retriever: memory.NewRetriever(es, vectors, embClient),
+		Retriever: memory.NewRetriever(es, vectors, embClient).WithReranker(buildReranker(cfg, logger)),
 	}
 
 	// ADD-only extraction pipeline (memory-hybrid-retrieval-locomo). Enabled by
@@ -574,6 +574,25 @@ func buildEmbeddingClient(cfg config.Config, logger *slog.Logger) embedding.Clie
 	}
 	logger.Info("memory: semantic search enabled", "model", emb.Model, "base_url", emb.BaseURL)
 	return client
+}
+
+// buildReranker constructs the cross-encoder rerank client from config. It
+// returns nil (rerank disabled → pure RRF order) when memory.embedding.base_url
+// or rerank_model is empty, or when construction fails. The API key is never
+// logged.
+func buildReranker(cfg config.Config, logger *slog.Logger) embedding.Reranker {
+	emb := cfg.Memory.Embedding
+	rr, err := embedding.NewReranker(embedding.RerankConfig{
+		BaseURL: emb.BaseURL,
+		Model:   emb.RerankModel,
+		APIKey:  emb.APIKey,
+		Timeout: time.Duration(emb.TimeoutSeconds) * time.Second,
+	})
+	if err != nil || rr == nil {
+		return nil
+	}
+	logger.Info("memory: retrieval reranking enabled", "rerank_model", emb.RerankModel)
+	return rr
 }
 
 // judgeMaxTokens caps the curation judge's structured output. The verdict is a

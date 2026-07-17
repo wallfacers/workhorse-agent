@@ -25,6 +25,15 @@ const candidateMultiplier = 10
 // minCandidatePool floors the BM25 candidate pull for small k.
 const minCandidatePool = 100
 
+// rerankPool caps how many fused candidates are handed to the cross-encoder.
+const rerankPool = 50
+
+// expansionSeeds is how many top fused hits seed the 1-hop entity expansion.
+const expansionSeeds = 10
+
+// expansionLimit caps how many entity-neighbor entries join the rerank pool.
+const expansionLimit = 25
+
 // Retriever implements three-signal hybrid retrieval with RRF fusion
 // (memory-hybrid-retrieval-locomo). The three signals are:
 //
@@ -39,14 +48,25 @@ const minCandidatePool = 100
 // gracefully: no client → keyword+entity; no entities → keyword only, which is
 // behaviorally identical to the pre-feature FTS path.
 type Retriever struct {
-	entries *EntryStore
-	vectors *VectorStore
-	client  embedding.Client // may be nil
+	entries  *EntryStore
+	vectors  *VectorStore
+	client   embedding.Client   // may be nil
+	reranker embedding.Reranker // may be nil
 }
 
 // NewRetriever builds a Retriever. A nil client disables the semantic signal.
 func NewRetriever(entries *EntryStore, vectors *VectorStore, client embedding.Client) *Retriever {
 	return &Retriever{entries: entries, vectors: vectors, client: client}
+}
+
+// WithReranker enables the cross-encoder rerank stage (and, with it, 1-hop
+// entity expansion of the candidate pool). A nil reranker is a no-op, keeping
+// the pure-RRF path byte-identical.
+func (r *Retriever) WithReranker(rr embedding.Reranker) *Retriever {
+	if r != nil {
+		r.reranker = rr
+	}
+	return r
 }
 
 // Result is one fused retrieval hit. Content carries the full entry body; the
@@ -90,6 +110,9 @@ func (r *Retriever) Search(ctx context.Context, query string, k int) ([]Result, 
 	if len(fused) == 0 {
 		return nil, nil
 	}
+	if r.reranker != nil {
+		fused = r.rerank(ctx, query, fused, k)
+	}
 	if len(fused) > k {
 		fused = fused[:k]
 	}
@@ -110,6 +133,100 @@ func (r *Retriever) Search(ctx context.Context, query string, k int) ([]Result, 
 		})
 	}
 	return out, nil
+}
+
+// rerank widens the fused list with 1-hop entity neighbors, scores every
+// candidate's content against the query with the cross-encoder, and returns
+// the re-ordered list. Any failure degrades to the fused input (fail-safe,
+// same philosophy as the per-signal degradation above).
+func (r *Retriever) rerank(ctx context.Context, query string, fused []embedding.Scored, k int) []embedding.Scored {
+	pool := rerankPool
+	if k > pool {
+		pool = k
+	}
+	if len(fused) > pool {
+		fused = fused[:pool]
+	}
+	candidates := make([]string, 0, len(fused)+expansionLimit)
+	seen := make(map[string]struct{}, len(fused)+expansionLimit)
+	for _, s := range fused {
+		candidates = append(candidates, s.Key)
+		seen[s.Key] = struct{}{}
+	}
+	for _, name := range r.entityNeighbors(ctx, fused) {
+		if _, dup := seen[name]; dup {
+			continue
+		}
+		seen[name] = struct{}{}
+		candidates = append(candidates, name)
+	}
+
+	docs := make([]string, 0, len(candidates))
+	names := make([]string, 0, len(candidates))
+	for _, name := range candidates {
+		e, err := r.entries.GetByName(ctx, name)
+		if err != nil {
+			continue
+		}
+		docs = append(docs, e.Content)
+		names = append(names, name)
+	}
+	if len(docs) == 0 {
+		return fused
+	}
+	ranked, err := r.reranker.Rerank(ctx, query, docs, k)
+	if err != nil || len(ranked) == 0 {
+		return fused
+	}
+	out := make([]embedding.Scored, 0, len(ranked))
+	for _, rd := range ranked {
+		if rd.Index < 0 || rd.Index >= len(names) {
+			return fused
+		}
+		out = append(out, embedding.Scored{Key: names[rd.Index], Score: rd.Score})
+	}
+	return out
+}
+
+// entityNeighbors returns entry names sharing at least one entity with the top
+// fused seeds, ordered by shared-entity count descending (name ascending on
+// ties), capped at expansionLimit. Failures return nil — expansion is a bonus,
+// never a dependency.
+func (r *Retriever) entityNeighbors(ctx context.Context, fused []embedding.Scored) []string {
+	seeds := make([]string, 0, expansionSeeds)
+	for i := 0; i < len(fused) && i < expansionSeeds; i++ {
+		seeds = append(seeds, fused[i].Key)
+	}
+	tokens, err := r.entries.EntitiesOf(ctx, seeds)
+	if err != nil || len(tokens) == 0 {
+		return nil
+	}
+	counts, err := r.entries.EntityMatchCounts(ctx, tokens)
+	if err != nil || len(counts) == 0 {
+		return nil
+	}
+	type nc struct {
+		name  string
+		count int
+	}
+	ordered := make([]nc, 0, len(counts))
+	for name, c := range counts {
+		ordered = append(ordered, nc{name, c})
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].count != ordered[j].count {
+			return ordered[i].count > ordered[j].count
+		}
+		return ordered[i].name < ordered[j].name
+	})
+	if len(ordered) > expansionLimit {
+		ordered = ordered[:expansionLimit]
+	}
+	names := make([]string, len(ordered))
+	for i, o := range ordered {
+		names[i] = o.name
+	}
+	return names
 }
 
 // keywordRanks returns a name→rank map (1-based) from the FTS5 BM25 ordering,

@@ -192,3 +192,30 @@ func TestParseDataset(t *testing.T) {
 		t.Fatalf("qa parse wrong: %+v", c.QA)
 	}
 }
+
+func TestAnswerPromptFor(t *testing.T) {
+	if answerPromptFor(3) != openDomainAnswerPrompt {
+		t.Fatal("category 3 must use the open-domain prompt")
+	}
+	for _, c := range []int{1, 2, 4} {
+		if answerPromptFor(c) != answerSystemPrompt {
+			t.Fatalf("category %d must use the extraction prompt", c)
+		}
+	}
+}
+
+func TestIsIDK(t *testing.T) {
+	cases := map[string]bool{
+		"I don't know":                          true,
+		"  i do not know. ":                     true,
+		"That is not mentioned in the memories": true,
+		"":                                      true,
+		"Sweden":                                false,
+		"May 2023":                              false,
+	}
+	for in, want := range cases {
+		if got := isIDK(in); got != want {
+			t.Fatalf("isIDK(%q) = %v, want %v", in, got, want)
+		}
+	}
+}

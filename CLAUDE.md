@@ -226,7 +226,11 @@ Two memory layers ship with the current version:
   Fusion** (k=60): semantic cosine (Go-side scan of the vector BLOBs), FTS5 BM25
   (the existing trigram MATCH), and entity exact-match. Signals degrade
   independently — no embedding client → BM25+entity; no entities → BM25 only,
-  byte-identical to the pre-feature path. `MemorySearch` gained `top_k` (default
+  byte-identical to the pre-feature path. An optional **cross-encoder rerank
+  stage** (`memory.embedding.rerank_model`, Cohere/Jina-compatible
+  `POST {base_url}/rerank`) re-scores the fused pool (top 50) **plus 1-hop
+  entity neighbors** (entries sharing an entity with the top seeds, ≤25) and
+  returns the top-k; unset or on any error it falls back to the fused order. `MemorySearch` gained `top_k` (default
   8, cap 50, `limit` alias) and renders `[event: …] [recorded: …]` per hit for
   time-aware disambiguation. Embeddings come from an **OpenAI-compatible client**
   (`internal/embedding/`, default local Ollama `qwen3-embedding:0.6b`; any

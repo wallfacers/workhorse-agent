@@ -19,6 +19,8 @@
 //	EXTRACT_MODEL    (default = LOCOMO_MODEL)      extraction model (a fast,
 //	                 non-reasoning model here cuts wall-clock and cost markedly)
 //	EMBED_API_KEY / EMBED_BASE_URL / EMBED_MODEL  (hybrid arm embedding client)
+//	EMBED_RERANK_MODEL  (optional; enables the hybrid arm's cross-encoder
+//	                 rerank stage against the same EMBED_BASE_URL endpoint)
 package main
 
 import (
@@ -28,6 +30,7 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -234,11 +237,13 @@ func processConversation(ctx context.Context, opt options, conv conversation, ex
 	}
 	embedder.Close()
 
-	// One retriever per arm over the same store.
+	// One retriever per arm over the same store. Only the hybrid arm gets the
+	// semantic signal and the optional rerank stage; fts stays the pure legacy
+	// baseline.
 	retrievers := make(map[string]*memory.Retriever, len(states))
 	for _, s := range states {
 		if s.name == "hybrid" {
-			retrievers[s.name] = memory.NewRetriever(es, vectors, embClient)
+			retrievers[s.name] = memory.NewRetriever(es, vectors, embClient).WithReranker(buildBenchReranker())
 		} else {
 			retrievers[s.name] = memory.NewRetriever(es, vectors, nil)
 		}
@@ -284,13 +289,76 @@ func processConversation(ctx context.Context, opt options, conv conversation, ex
 	return nil
 }
 
-// answerAndJudge retrieves, answers, and grades one question. Returns (correct,
-// predicted answer).
+// answerAndJudge retrieves, answers, and grades one question. When the first
+// answer is an IDK bail-out, one rewrite-and-retry round runs: the model
+// produces an alternative search query, its hits are unioned with the first
+// round's, and the question is answered again (EverMemOS-style second round,
+// paid only for the IDK tail). Returns (correct, predicted answer).
 func answerAndJudge(ctx context.Context, retriever *memory.Retriever, call modelCaller, topK int, qa locomoQA) (bool, string) {
 	hits, err := retriever.Search(ctx, qa.Question, topK)
 	if err != nil {
 		return false, ""
 	}
+	prompt := answerPromptFor(qa.Category)
+	predicted, err := call(ctx, prompt, buildAnswerPrompt(qa.Question, toMemories(hits)))
+	if err != nil {
+		return false, ""
+	}
+
+	if isIDK(predicted) {
+		if retry, ok := retryWithRewrite(ctx, retriever, call, topK, qa, prompt, hits); ok {
+			predicted = retry
+		}
+	}
+
+	verdict, err := call(ctx, judgeSystemPrompt, buildJudgePrompt(qa.Question, qa.AnswerText(), predicted))
+	if err != nil {
+		return false, predicted
+	}
+	return parseJudgeVerdict(verdict), predicted
+}
+
+// retryWithRewrite runs the IDK second round. Returns (answer, true) only when
+// the retry produced a non-IDK answer worth keeping.
+func retryWithRewrite(ctx context.Context, retriever *memory.Retriever, call modelCaller, topK int, qa locomoQA, prompt string, first []memory.Result) (string, bool) {
+	rewritten, err := call(ctx, queryRewriteSystemPrompt, "QUESTION: "+qa.Question)
+	if err != nil {
+		return "", false
+	}
+	rewritten = strings.TrimSpace(rewritten)
+	if rewritten == "" || rewritten == qa.Question {
+		return "", false
+	}
+	more, err := retriever.Search(ctx, rewritten, topK)
+	if err != nil || len(more) == 0 {
+		return "", false
+	}
+	seen := make(map[string]struct{}, len(first))
+	union := make([]memory.Result, 0, len(first)+len(more))
+	for _, h := range first {
+		seen[h.Name] = struct{}{}
+		union = append(union, h)
+	}
+	fresh := 0
+	for _, h := range more {
+		if _, dup := seen[h.Name]; dup {
+			continue
+		}
+		union = append(union, h)
+		fresh++
+	}
+	if fresh == 0 {
+		return "", false
+	}
+	retry, err := call(ctx, prompt, buildAnswerPrompt(qa.Question, toMemories(union)))
+	if err != nil || isIDK(retry) {
+		return "", false
+	}
+	return retry, true
+}
+
+// toMemories converts retrieval hits into the prompt-facing form.
+func toMemories(hits []memory.Result) []retrievedMemory {
 	mems := make([]retrievedMemory, 0, len(hits))
 	for _, h := range hits {
 		rm := retrievedMemory{Content: h.Content}
@@ -302,15 +370,7 @@ func answerAndJudge(ctx context.Context, retriever *memory.Retriever, call model
 		}
 		mems = append(mems, rm)
 	}
-	predicted, err := call(ctx, answerSystemPrompt, buildAnswerPrompt(qa.Question, mems))
-	if err != nil {
-		return false, ""
-	}
-	verdict, err := call(ctx, judgeSystemPrompt, buildJudgePrompt(qa.Question, qa.AnswerText(), predicted))
-	if err != nil {
-		return false, predicted
-	}
-	return parseJudgeVerdict(verdict), predicted
+	return mems
 }
 
 // buildBenchEmbeddingClient builds the embedding client from EMBED_* env, with
@@ -327,6 +387,21 @@ func buildBenchEmbeddingClient(logger *slog.Logger) embedding.Client {
 		return nil
 	}
 	return c
+}
+
+// buildBenchReranker builds the rerank client from EMBED_RERANK_MODEL (empty =
+// disabled) against the same EMBED_BASE_URL endpoint.
+func buildBenchReranker() embedding.Reranker {
+	rr, err := embedding.NewReranker(embedding.RerankConfig{
+		BaseURL: envOr("EMBED_BASE_URL", "http://127.0.0.1:11434/v1"),
+		Model:   os.Getenv("EMBED_RERANK_MODEL"),
+		APIKey:  os.Getenv("EMBED_API_KEY"),
+		Timeout: 60 * time.Second,
+	})
+	if err != nil || rr == nil {
+		return nil
+	}
+	return rr
 }
 
 func envOr(key, def string) string {

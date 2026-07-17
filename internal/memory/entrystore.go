@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/wallfacers/workhorse-agent/internal/idgen"
@@ -346,6 +347,38 @@ func (s *EntryStore) EntityMatchCounts(ctx context.Context, tokens []string) (ma
 		rows.Close() //nolint:errcheck
 	}
 	return counts, nil
+}
+
+// EntitiesOf returns the distinct normalized entity tokens indexed for the
+// given entry names. Used by the retriever's 1-hop associative expansion:
+// seed hits → their entities → co-occurring entries.
+func (s *EntryStore) EntitiesOf(ctx context.Context, names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.Repeat("?,", len(names))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(names))
+	for i, n := range names {
+		args[i] = n
+	}
+	// #nosec G201 -- placeholders is a constant "?" list; values are all bound.
+	rows, err := s.db.QueryContext(ctx,
+		fmt.Sprintf(`SELECT DISTINCT entity_norm FROM memory_entities WHERE entry_name IN (%s)`, placeholders),
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("memory: entities of: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	var out []string
+	for rows.Next() {
+		var tok string
+		if err := rows.Scan(&tok); err != nil {
+			return nil, fmt.Errorf("memory: scan entity token: %w", err)
+		}
+		out = append(out, tok)
+	}
+	return out, rows.Err()
 }
 
 // BumpUsage records a usage hit: increments hit_count and stamps last_used_at.

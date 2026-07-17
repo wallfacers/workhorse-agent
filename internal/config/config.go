@@ -171,6 +171,9 @@ type MemoryEmbeddingConfig struct {
 	APIKey         string `yaml:"api_key"`
 	Dimensions     int    `yaml:"dimensions"`
 	TimeoutSeconds int    `yaml:"timeout_seconds"`
+	// RerankModel enables the cross-encoder rerank stage on the same endpoint
+	// (POST {base_url}/rerank, Cohere/Jina-compatible). Empty disables reranking.
+	RerankModel string `yaml:"rerank_model"`
 }
 
 // MemoryPipelineConfig configures the ADD-only extraction pipeline. Enabled by

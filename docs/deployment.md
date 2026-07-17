@@ -202,17 +202,47 @@ The reference sidecar:
 
 ```sh
 pip install fastembed
-EMBED_SERVER_MODEL=BAAI/bge-m3 EMBED_SERVER_PORT=11434 \
+EMBED_SERVER_MODEL=BAAI/bge-large-en-v1.5 EMBED_SERVER_PORT=11434 \
   python3 scripts/embed_server.py
 # then set memory.embedding.base_url: http://127.0.0.1:11434/v1
-#          memory.embedding.model:    BAAI/bge-m3
+#          memory.embedding.model:    BAAI/bge-large-en-v1.5
 ```
 
 For a Chinese + English deployment prefer a multilingual model
-(`BAAI/bge-m3`, `qwen3-embedding`, `intfloat/multilingual-e5-*`). For an
-English-only corpus a small English model (`BAAI/bge-base-en-v1.5`, 768-dim) is
-faster. The model id you configure is stored alongside each vector, so changing
-it triggers an automatic backfill on the next start.
+(`intfloat/multilingual-e5-large` via the sidecar, or `qwen3-embedding` /
+`BAAI/bge-m3` via Ollama). For an English-only corpus `BAAI/bge-large-en-v1.5`
+(1024-dim) is the accuracy pick and `BAAI/bge-base-en-v1.5` (768-dim) the fast
+one. Run `python3 scripts/embed_server.py --list` for the sidecar's supported
+set. The model id you configure is stored alongside each vector, so changing it
+triggers an automatic backfill on the next start.
+
+### Reranking (optional, on top of embedding)
+
+Retrieval fuses its signals with RRF; a **cross-encoder rerank stage** can then
+re-score the fused candidate pool (plus 1-hop entity neighbors) against the
+query, which sharpens precision at a fixed retrieval budget. Like embedding it
+is fully optional and fail-safe: unset, or on any endpoint error, retrieval
+keeps the fused order.
+
+The reference sidecar serves it on the same port (Cohere/Jina-compatible
+`POST /v1/rerank`):
+
+```sh
+EMBED_SERVER_MODEL=BAAI/bge-large-en-v1.5 \
+EMBED_SERVER_RERANK_MODEL=BAAI/bge-reranker-base \
+  python3 scripts/embed_server.py
+```
+
+```yaml
+memory:
+  embedding:
+    base_url: http://127.0.0.1:11434/v1
+    model: BAAI/bge-large-en-v1.5
+    rerank_model: BAAI/bge-reranker-base   # empty = reranking off
+```
+
+Multilingual rerankers: `jinaai/jina-reranker-v2-base-multilingual`. Smaller and
+faster English-only: `Xenova/ms-marco-MiniLM-L-6-v2`.
 
 ## Enabling Bearer auth
 

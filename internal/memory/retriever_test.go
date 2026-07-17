@@ -2,9 +2,11 @@ package memory_test
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"testing"
 
+	"github.com/wallfacers/workhorse-agent/internal/embedding"
 	"github.com/wallfacers/workhorse-agent/internal/memory"
 )
 
@@ -125,6 +127,88 @@ func TestRetriever_TimeAwareFields(t *testing.T) {
 	if got[0].CreatedAt.IsZero() {
 		t.Fatal("expected CreatedAt populated on result")
 	}
+}
+
+func TestRetriever_RerankReorders(t *testing.T) {
+	ctx := context.Background()
+	es, vs := seedRetrievalCorpus(t)
+	// BM25 alone would rank python-pref first for this query; the fake
+	// reranker forces coffee-habit to the top.
+	rr := &fakeReranker{scores: map[string]float64{
+		"The user drinks black coffee every morning.":  0.9,
+		"The user prefers Python for scripting tasks.": 0.2,
+	}}
+	r := memory.NewRetriever(es, vs, nil).WithReranker(rr)
+	got, err := r.Search(ctx, "Python coffee", 2)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(got) == 0 || got[0].Name != "coffee-habit" {
+		t.Fatalf("expected reranker to put coffee-habit top, got %+v", got)
+	}
+}
+
+func TestRetriever_RerankErrorDegradesToFused(t *testing.T) {
+	ctx := context.Background()
+	es, vs := seedRetrievalCorpus(t)
+	r := memory.NewRetriever(es, vs, nil).WithReranker(&fakeReranker{fail: true})
+	got, err := r.Search(ctx, "Python scripting", 5)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(got) == 0 || got[0].Name != "python-pref" {
+		t.Fatalf("expected fused order to survive reranker failure, got %+v", got)
+	}
+}
+
+func TestRetriever_EntityExpansionSurfacesNeighbor(t *testing.T) {
+	ctx := context.Background()
+	es, vs := seedRetrievalCorpus(t)
+	// A neighbor entry that shares the "Sweden" entity but matches the query on
+	// neither keywords nor entities: only 1-hop expansion can surface it.
+	if err := es.Upsert(ctx, &memory.Entry{Name: "midsummer-party", Trigger: "holiday plans",
+		Content: "The user hosts a midsummer party each June.", CharCount: 43}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := es.PutEntities(ctx, "midsummer-party", []string{"Sweden"}); err != nil {
+		t.Fatalf("entities: %v", err)
+	}
+	rr := &fakeReranker{scores: map[string]float64{
+		"The user hosts a midsummer party each June.": 0.9,
+		"The user moved from Sweden four years ago.":  0.5,
+	}}
+	r := memory.NewRetriever(es, vs, nil).WithReranker(rr)
+	got, err := r.Search(ctx, "Sweden", 2)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(got) == 0 || got[0].Name != "midsummer-party" {
+		t.Fatalf("expected entity-expanded neighbor on top, got %+v", got)
+	}
+}
+
+// fakeReranker scores documents from a fixed map (unknown docs score 0);
+// fail=true simulates an endpoint failure.
+type fakeReranker struct {
+	scores map[string]float64
+	fail   bool
+}
+
+func (f *fakeReranker) Model() string { return "fake-reranker" }
+
+func (f *fakeReranker) Rerank(_ context.Context, _ string, docs []string, topN int) ([]embedding.RankedDoc, error) {
+	if f.fail {
+		return nil, context.DeadlineExceeded
+	}
+	out := make([]embedding.RankedDoc, len(docs))
+	for i, d := range docs {
+		out[i] = embedding.RankedDoc{Index: i, Score: f.scores[d]}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	if topN > 0 && len(out) > topN {
+		out = out[:topN]
+	}
+	return out, nil
 }
 
 // vectorFakeClient returns a stored vector by exact input text; unknown inputs
