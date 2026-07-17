@@ -17,3 +17,5 @@ coverage.*
 /workhorse-agent
 /docs/superpowers/
 workhorse-agent.exe
+/locomo-bench
+/.locomo-run/

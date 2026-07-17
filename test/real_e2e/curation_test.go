@@ -71,8 +71,12 @@ func TestCuration_RecallDoesNotRegress(t *testing.T) {
 
 	before, _ := es.Count(ctx)
 
+	model := os.Getenv("WORKHORSE_CURATION_MODEL")
+	if model == "" {
+		model = defaultTestModel
+	}
 	prov := anthropic.New(anthropic.Options{APIKey: apiKey, BaseURL: baseURL, DefaultMaxTokens: 2048})
-	call, err := curation.NewProviderCaller(map[string]provider.Provider{"anthropic": prov}, "anthropic:"+defaultTestModel, 2048)
+	call, err := curation.NewProviderCaller(map[string]provider.Provider{"anthropic": prov}, "anthropic:"+model, 2048)
 	if err != nil {
 		t.Fatalf("build judge caller: %v", err)
 	}

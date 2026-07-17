@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/wallfacers/workhorse-agent/internal/idgen"
@@ -28,6 +29,13 @@ type Entry struct {
 	UpdatedAt       time.Time
 	CharCount       int
 	SourceSessionID string
+	// EventDate is when the remembered fact occurred (nil when unknown),
+	// distinct from CreatedAt (when it was recorded). Added by migration v8 for
+	// time-aware retrieval (memory-hybrid-retrieval-locomo).
+	EventDate *time.Time
+	// FactSource records provenance: "" (legacy/manual write), "user", "agent",
+	// or "extraction" (the ADD-only pipeline).
+	FactSource string
 }
 
 // EntryStore is a thin SQLite-backed accessor for memory_entries. It takes the
@@ -106,8 +114,9 @@ func (s *EntryStore) upsert(ctx context.Context, q execContext, e *Entry) error 
 	_, err := q.ExecContext(ctx,
 		`INSERT INTO memory_entries(
 			id, name, trigger, content, pinned, durability, category,
-			hit_count, last_used_at, created_at, updated_at, char_count, source_session_id)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+			hit_count, last_used_at, created_at, updated_at, char_count, source_session_id,
+			event_date, fact_source)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(name) DO UPDATE SET
 			trigger           = excluded.trigger,
 			content           = excluded.content,
@@ -116,10 +125,13 @@ func (s *EntryStore) upsert(ctx context.Context, q execContext, e *Entry) error 
 			category          = excluded.category,
 			char_count        = excluded.char_count,
 			source_session_id = excluded.source_session_id,
+			event_date        = excluded.event_date,
+			fact_source       = excluded.fact_source,
 			updated_at        = excluded.updated_at`,
 		e.ID, e.Name, e.Trigger, e.Content, boolToInt(e.Pinned), e.Durability, e.Category,
 		e.HitCount, entryNullableMicros(e.LastUsedAt),
-		entryToMicros(e.CreatedAt), entryToMicros(e.UpdatedAt), e.CharCount, e.SourceSessionID)
+		entryToMicros(e.CreatedAt), entryToMicros(e.UpdatedAt), e.CharCount, e.SourceSessionID,
+		entryNullableMicros(e.EventDate), e.FactSource)
 	if err != nil {
 		return fmt.Errorf("memory: upsert entry %q: %w", e.Name, err)
 	}
@@ -133,16 +145,18 @@ func (s *EntryStore) Upsert(ctx context.Context, e *Entry) error {
 }
 
 const entrySelectCols = `id, name, trigger, content, pinned, durability, category,
-	hit_count, last_used_at, created_at, updated_at, char_count, source_session_id`
+	hit_count, last_used_at, created_at, updated_at, char_count, source_session_id,
+	event_date, fact_source`
 
 func scanEntry(sc interface{ Scan(dest ...any) error }) (*Entry, error) {
 	var e Entry
 	var pinned int
-	var lastUsedAt sql.NullInt64
+	var lastUsedAt, eventDate sql.NullInt64
 	var createdAt, updatedAt int64
 	if err := sc.Scan(&e.ID, &e.Name, &e.Trigger, &e.Content, &pinned,
 		&e.Durability, &e.Category, &e.HitCount, &lastUsedAt,
-		&createdAt, &updatedAt, &e.CharCount, &e.SourceSessionID); err != nil {
+		&createdAt, &updatedAt, &e.CharCount, &e.SourceSessionID,
+		&eventDate, &e.FactSource); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, store.ErrNotFound
 		}
@@ -152,6 +166,7 @@ func scanEntry(sc interface{ Scan(dest ...any) error }) (*Entry, error) {
 	e.LastUsedAt = entryFromNullableMicros(lastUsedAt)
 	e.CreatedAt = entryFromMicros(createdAt)
 	e.UpdatedAt = entryFromMicros(updatedAt)
+	e.EventDate = entryFromNullableMicros(eventDate)
 	return &e, nil
 }
 
@@ -182,9 +197,18 @@ func (s *EntryStore) List(ctx context.Context) ([]*Entry, error) {
 	return out, rows.Err()
 }
 
-// Delete removes the entry by name, returning store.ErrNotFound when no row matched.
+// Delete removes the entry by name, returning store.ErrNotFound when no row
+// matched. Derived rows in memory_embeddings and memory_entities are cascaded
+// away in the same transaction (migration v8 has no FK cascade because the
+// side tables key on entry_name, not rowid).
 func (s *EntryStore) Delete(ctx context.Context, name string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM memory_entries WHERE name = ?`, name)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("memory: delete begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once committed
+
+	res, err := tx.ExecContext(ctx, `DELETE FROM memory_entries WHERE name = ?`, name)
 	if err != nil {
 		return fmt.Errorf("memory: delete entry %q: %w", name, err)
 	}
@@ -194,6 +218,23 @@ func (s *EntryStore) Delete(ctx context.Context, name string) error {
 	}
 	if n == 0 {
 		return store.ErrNotFound
+	}
+	if err := deleteDerivedTx(ctx, tx, name); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("memory: delete commit: %w", err)
+	}
+	return nil
+}
+
+// deleteDerivedTx removes the embedding and entity rows for one entry name.
+func deleteDerivedTx(ctx context.Context, q execContext, name string) error {
+	if _, err := q.ExecContext(ctx, `DELETE FROM memory_embeddings WHERE entry_name = ?`, name); err != nil {
+		return fmt.Errorf("memory: delete embedding %q: %w", name, err)
+	}
+	if _, err := q.ExecContext(ctx, `DELETE FROM memory_entities WHERE entry_name = ?`, name); err != nil {
+		return fmt.Errorf("memory: delete entities %q: %w", name, err)
 	}
 	return nil
 }
@@ -221,11 +262,123 @@ func (s *EntryStore) Merge(ctx context.Context, names []string, into *Entry) err
 		if _, err := tx.ExecContext(ctx, `DELETE FROM memory_entries WHERE name = ?`, name); err != nil {
 			return fmt.Errorf("memory: merge delete %q: %w", name, err)
 		}
+		if err := deleteDerivedTx(ctx, tx, name); err != nil {
+			return err
+		}
+	}
+	// The merged target's own derived rows are stale (content changed); drop
+	// them so the write-behind embedder re-embeds and the caller re-indexes
+	// entities from the merged content.
+	if err := deleteDerivedTx(ctx, tx, into.Name); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("memory: merge commit: %w", err)
 	}
 	return nil
+}
+
+// PutEntities replaces the entity index rows for entry name with the given
+// entities (normalized via EntityNorm; blanks and duplicates dropped). An empty
+// list clears the entry's entities. Runs in one transaction.
+func (s *EntryStore) PutEntities(ctx context.Context, name string, entities []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("memory: put entities begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_entities WHERE entry_name = ?`, name); err != nil {
+		return fmt.Errorf("memory: clear entities %q: %w", name, err)
+	}
+	seen := make(map[string]struct{}, len(entities))
+	for _, raw := range entities {
+		norm := EntityNorm(raw)
+		if norm == "" {
+			continue
+		}
+		if _, dup := seen[norm]; dup {
+			continue
+		}
+		seen[norm] = struct{}{}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR REPLACE INTO memory_entities(entry_name, entity_norm, entity_raw) VALUES (?,?,?)`,
+			name, norm, raw); err != nil {
+			return fmt.Errorf("memory: insert entity %q/%q: %w", name, norm, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("memory: put entities commit: %w", err)
+	}
+	return nil
+}
+
+// EntityMatchCounts returns, for the given normalized entity tokens, a map from
+// entry name to the number of distinct query tokens that entry matches. Entries
+// with zero matches are absent. Used to build the entity retrieval signal.
+func (s *EntryStore) EntityMatchCounts(ctx context.Context, tokens []string) (map[string]int, error) {
+	counts := make(map[string]int)
+	seen := make(map[string]struct{}, len(tokens))
+	for _, tok := range tokens {
+		if tok == "" {
+			continue
+		}
+		if _, dup := seen[tok]; dup {
+			continue
+		}
+		seen[tok] = struct{}{}
+		rows, err := s.db.QueryContext(ctx,
+			`SELECT entry_name FROM memory_entities WHERE entity_norm = ?`, tok)
+		if err != nil {
+			return nil, fmt.Errorf("memory: entity match %q: %w", tok, err)
+		}
+		for rows.Next() {
+			var name string
+			if err := rows.Scan(&name); err != nil {
+				rows.Close() //nolint:errcheck
+				return nil, fmt.Errorf("memory: scan entity match: %w", err)
+			}
+			counts[name]++
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close() //nolint:errcheck
+			return nil, err
+		}
+		rows.Close() //nolint:errcheck
+	}
+	return counts, nil
+}
+
+// EntitiesOf returns the distinct normalized entity tokens indexed for the
+// given entry names. Used by the retriever's 1-hop associative expansion:
+// seed hits → their entities → co-occurring entries.
+func (s *EntryStore) EntitiesOf(ctx context.Context, names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.Repeat("?,", len(names))
+	placeholders = placeholders[:len(placeholders)-1]
+	args := make([]any, len(names))
+	for i, n := range names {
+		args[i] = n
+	}
+	// #nosec G201 -- placeholders is a constant "?" list; values are all bound.
+	rows, err := s.db.QueryContext(ctx,
+		fmt.Sprintf(`SELECT DISTINCT entity_norm FROM memory_entities WHERE entry_name IN (%s)`, placeholders),
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("memory: entities of: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+	var out []string
+	for rows.Next() {
+		var tok string
+		if err := rows.Scan(&tok); err != nil {
+			return nil, fmt.Errorf("memory: scan entity token: %w", err)
+		}
+		out = append(out, tok)
+	}
+	return out, rows.Err()
 }
 
 // BumpUsage records a usage hit: increments hit_count and stamps last_used_at.

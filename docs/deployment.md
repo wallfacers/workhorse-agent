@@ -148,6 +148,102 @@ The `TimeoutStopSec` should comfortably exceed
 escalate to `SIGKILL` while the server is still draining cancelled
 sessions.
 
+## Memory embedding (optional semantic retrieval)
+
+The L1 prompt-memory subsystem retrieves with three fused signals: FTS5 BM25,
+entity exact-match, and — when an embedding endpoint is configured — semantic
+cosine similarity. **The embedding signal is optional.** With no endpoint the
+retriever degrades cleanly to BM25 + entity (byte-identical to the pre-feature
+path), so the default install has **zero embedding dependencies** and works out
+of the box.
+
+Semantic retrieval is what closes the recall gap on paraphrased and multi-hop
+questions. On a LoCoMo sample it lifted judged accuracy substantially over the
+FTS-only baseline, which is why it is worth enabling for memory-heavy workloads.
+
+### Design decision: the embedder is a sidecar, not bundled
+
+workhorse-agent is a single, CGO-free Go binary. It deliberately does **not**
+embed a model runtime (Ollama, llama.cpp, ONNX runtime) into the binary:
+
+- Embedding is optional for correctness — FTS + entity already work.
+- A bundled runtime would add 0.6–2 GB of weights and a second managed process,
+  breaking the single-binary / no-CGO posture and bloating distribution.
+- The client speaks the **OpenAI `/v1/embeddings`** protocol, so any endpoint
+  satisfies it — a local sidecar, an existing Ollama, or a cloud provider. The
+  choice stays with the operator.
+
+Configure it in `config.yaml` (restart-only):
+
+```yaml
+memory:
+  embedding:
+    base_url: http://127.0.0.1:11434/v1   # any OpenAI-compatible endpoint; empty = FTS only
+    model: qwen3-embedding:0.6b           # Chinese-friendly default
+    # api_key: ...        # only if the endpoint requires it; never logged
+    # dimensions: 0       # 0 = model default
+    timeout_seconds: 30
+```
+
+Vectors are written write-behind (never blocking a memory write) and backfilled
+at startup or when the model id changes. If `base_url`/`model` are empty, or the
+endpoint is unreachable, startup logs an INFO line and retrieval falls back to
+FTS + entity.
+
+### Sidecar options (pick one)
+
+| Option | Footprint | When |
+|--------|-----------|------|
+| **Lightweight ONNX sidecar** (recommended) | 0.07–0.6 GB model, no torch, no CGO | Turnkey local semantic with the smallest footprint. Reference: `scripts/embed_server.py` (fastembed + stdlib HTTP). |
+| **Ollama** | ~1.5 GB runtime + 0.6–2 GB model | You already run Ollama for other things. `ollama pull qwen3-embedding:0.6b`; endpoint is `http://127.0.0.1:11434/v1`. |
+| **llama.cpp server** | one binary + a GGUF | You want a single native process. `llama-server --embedding -m bge-m3.gguf`. |
+
+The reference sidecar:
+
+```sh
+pip install fastembed
+EMBED_SERVER_MODEL=BAAI/bge-large-en-v1.5 EMBED_SERVER_PORT=11434 \
+  python3 scripts/embed_server.py
+# then set memory.embedding.base_url: http://127.0.0.1:11434/v1
+#          memory.embedding.model:    BAAI/bge-large-en-v1.5
+```
+
+For a Chinese + English deployment prefer a multilingual model
+(`intfloat/multilingual-e5-large` via the sidecar, or `qwen3-embedding` /
+`BAAI/bge-m3` via Ollama). For an English-only corpus `BAAI/bge-large-en-v1.5`
+(1024-dim) is the accuracy pick and `BAAI/bge-base-en-v1.5` (768-dim) the fast
+one. Run `python3 scripts/embed_server.py --list` for the sidecar's supported
+set. The model id you configure is stored alongside each vector, so changing it
+triggers an automatic backfill on the next start.
+
+### Reranking (optional, on top of embedding)
+
+Retrieval fuses its signals with RRF; a **cross-encoder rerank stage** can then
+re-score the fused candidate pool (plus 1-hop entity neighbors) against the
+query, which sharpens precision at a fixed retrieval budget. Like embedding it
+is fully optional and fail-safe: unset, or on any endpoint error, retrieval
+keeps the fused order.
+
+The reference sidecar serves it on the same port (Cohere/Jina-compatible
+`POST /v1/rerank`):
+
+```sh
+EMBED_SERVER_MODEL=BAAI/bge-large-en-v1.5 \
+EMBED_SERVER_RERANK_MODEL=BAAI/bge-reranker-base \
+  python3 scripts/embed_server.py
+```
+
+```yaml
+memory:
+  embedding:
+    base_url: http://127.0.0.1:11434/v1
+    model: BAAI/bge-large-en-v1.5
+    rerank_model: BAAI/bge-reranker-base   # empty = reranking off
+```
+
+Multilingual rerankers: `jinaai/jina-reranker-v2-base-multilingual`. Smaller and
+faster English-only: `Xenova/ms-marco-MiniLM-L-6-v2`.
+
 ## Enabling Bearer auth
 
 Auth is off by default. To enable:

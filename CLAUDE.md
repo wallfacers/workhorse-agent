@@ -218,6 +218,58 @@ Two memory layers ship with the current version:
   `min_interval_minutes`, `lease_ttl_seconds`; all other `memory.*` keys are
   restart-only. Inspect the store with `workhorse-agent memory export [--out F]`.
 
+  **Hybrid retrieval + extraction** (`memory-hybrid-retrieval-locomo`, migration
+  v8): the store gains `event_date`/`fact_source` columns and two side tables —
+  `memory_embeddings` (one little-endian float32 vector BLOB per entry) and
+  `memory_entities` (normalized entity → entry index). Retrieval
+  (`internal/memory/retriever.go`) fuses three signals with **Reciprocal Rank
+  Fusion** (k=60): semantic cosine (Go-side scan of the vector BLOBs), FTS5 BM25
+  (the existing trigram MATCH), and entity exact-match. Signals degrade
+  independently — no embedding client → BM25+entity; no entities → BM25 only,
+  byte-identical to the pre-feature path. An optional **cross-encoder rerank
+  stage** (`memory.embedding.rerank_model`, Cohere/Jina-compatible
+  `POST {base_url}/rerank`) re-scores the fused pool (top 50) **plus 1-hop
+  entity neighbors** (entries sharing an entity with the top seeds, ≤25) and
+  returns the top-k; unset or on any error it falls back to the fused order. `MemorySearch` gained `top_k` (default
+  8, cap 50, `limit` alias) and renders `[event: …] [recorded: …]` per hit for
+  time-aware disambiguation. Embeddings come from an **OpenAI-compatible client**
+  (`internal/embedding/`, default local Ollama `qwen3-embedding:0.6b`; any
+  `/v1/embeddings` endpoint works). Unconfigured (`memory.embedding.base_url`/
+  `model` empty) → nil client → FTS degradation (fail-safe, like curation's inert
+  mode). Vectors are written **write-behind** by a single goroutine (never blocks
+  a write) and backfilled at startup / on model change; the API key never appears
+  in logs. The **ADD-only extraction pipeline** (`internal/memory/pipeline/`)
+  distills each finished session's messages into new entries via ONE LLM call
+  (facts + entities + `event_date` as strict JSON; agent-confirmed facts are
+  first-class), never updating/deleting — accumulation is left to the curation
+  engine. It fires at session end for top-level sessions (detached, non-blocking,
+  WARN + no-op on failure). Config: `memory.embedding.{base_url,model,api_key,
+  dimensions,timeout_seconds}` and `memory.pipeline.{enabled (default true),
+  extract_model (defaults to curation.judge_model)}`, all restart-only. The
+  `cmd/locomo-bench` harness measures LoCoMo A-B (`--retrieval fts|hybrid`) with
+  an env-only credential (`LOCOMO_API_KEY`/`LOCOMO_BASE_URL`/`LOCOMO_MODEL`,
+  embeddings via `EMBED_*`), single-pass answering, mem0-aligned LLM judge, and
+  JSONL resume.
+
+  **Bench tuning outcome (2026-07, five ablation rounds — full record in
+  `openspec/changes/memory-hybrid-retrieval-locomo/tasks.md`):** best config is
+  a verbatim-chunk ∪ facts union store with per-kind and per-category retrieval
+  budgets — `--chunks --chunk-quota 15 --top-k 50 --cat-top-k "1=150"
+  --cat-chunk-quota "1=50,4=30"` plus per-category answer prompts and a
+  two-stage IDK retry. Clean-run scores: **~73-77% answerable-only (mean
+  ~74.7%, J≥66 acceptance target met on every run; pre-tuning baseline
+  41.2%)** and **72.6% under the Mem0-comparable protocol** (`--adversarial`
+  includes the 446 category-5 questions, judged by refusal). Findings that
+  generalize: extraction is lossy distillation (verbatim chunks are the single
+  biggest lever, but only with a per-kind quota — RRF is biased toward facts);
+  aggregation questions need breadth, not second-stage filtering (listwise LLM
+  filter and pairwise rerank both measured net-negative); breadth curves are
+  sharply unimodal (multi-hop peaks at k=150, single-hop at chunk-quota 30);
+  answer-generation stochasticity dominates run noise (±3-5 pp/category — the
+  LLM judge flips only 2.4%), so effects below ~3 pp need repeated runs; and
+  the anti-IDK retry that wins answerable points causes confident fabrications
+  on adversarial questions — calibrated abstention is the next real lever.
+
 - **L2 Session Archive**: FTS5 virtual table `messages_fts` mirrors `messages`
   via triggers; backfilled on migration. The `session_search` tool (`internal/tools/sessionsearch/`)
   runs MATCH queries with CJK trigram synthesis and LIKE fallback, returning raw

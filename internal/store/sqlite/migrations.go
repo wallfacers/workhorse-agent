@@ -226,6 +226,47 @@ var v7MemoryDown = []string{
 	`DROP TABLE IF EXISTS memory_entries`,
 }
 
+// v8MemoryHybrid extends the memory store for hybrid retrieval
+// (memory-hybrid-retrieval-locomo). It adds provenance/temporal columns to
+// memory_entries and two side tables kept out of the FTS-mirrored base table:
+// memory_embeddings (one float32 vector BLOB per entry, rebuildable on model
+// change) and memory_entities (normalized entity -> entry index for the
+// entity-match retrieval signal). All timestamps remain INTEGER unix micros.
+//
+// event_date is nullable: the unix-micros instant the remembered fact occurred
+// (distinct from created_at, when it was recorded). fact_source records
+// provenance (” | user | agent | extraction).
+var v8MemoryHybrid = []string{
+	`ALTER TABLE memory_entries ADD COLUMN event_date INTEGER`,
+	`ALTER TABLE memory_entries ADD COLUMN fact_source TEXT NOT NULL DEFAULT ''`,
+
+	`CREATE TABLE IF NOT EXISTS memory_embeddings (
+		entry_name TEXT    PRIMARY KEY,
+		model      TEXT    NOT NULL DEFAULT '',
+		dims       INTEGER NOT NULL DEFAULT 0,
+		vec        BLOB    NOT NULL,
+		updated_at INTEGER NOT NULL DEFAULT 0
+	)`,
+
+	`CREATE TABLE IF NOT EXISTS memory_entities (
+		entry_name  TEXT NOT NULL,
+		entity_norm TEXT NOT NULL,
+		entity_raw  TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (entry_name, entity_norm)
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_memory_entities_norm ON memory_entities(entity_norm)`,
+}
+
+// v8MemoryHybridDown reverses v8. SQLite (modernc) supports DROP COLUMN, so the
+// added columns are removed after the side tables.
+var v8MemoryHybridDown = []string{
+	`DROP INDEX IF EXISTS idx_memory_entities_norm`,
+	`DROP TABLE IF EXISTS memory_entities`,
+	`DROP TABLE IF EXISTS memory_embeddings`,
+	`ALTER TABLE memory_entries DROP COLUMN fact_source`,
+	`ALTER TABLE memory_entries DROP COLUMN event_date`,
+}
+
 // migrationsByVersion is the ordered list of all migrations. Each entry is
 // applied inside its own transaction; schema_version is bumped per step.
 var migrationsByVersion = []Migration{
@@ -236,6 +277,7 @@ var migrationsByVersion = []Migration{
 	{Version: 5, Up: v5InterruptedFlag, Down: nil},
 	{Version: 6, Up: v6SessionCustomization, Down: nil},
 	{Version: 7, Up: v7Memory, Down: v7MemoryDown},
+	{Version: 8, Up: v8MemoryHybrid, Down: v8MemoryHybridDown},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

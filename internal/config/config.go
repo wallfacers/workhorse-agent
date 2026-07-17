@@ -150,12 +150,38 @@ type DebugConfig struct {
 }
 
 type MemoryConfig struct {
-	Dir                  string               `yaml:"dir"`
-	PinnedBudgetChars    int                  `yaml:"pinned_budget_chars"`
-	ManifestBudgetChars  int                  `yaml:"manifest_budget_chars"`
-	EntryContentMaxChars int                  `yaml:"entry_content_max_chars"`
-	TriggerMaxChars      int                  `yaml:"trigger_max_chars"`
-	Curation             MemoryCurationConfig `yaml:"curation"`
+	Dir                  string                `yaml:"dir"`
+	PinnedBudgetChars    int                   `yaml:"pinned_budget_chars"`
+	ManifestBudgetChars  int                   `yaml:"manifest_budget_chars"`
+	EntryContentMaxChars int                   `yaml:"entry_content_max_chars"`
+	TriggerMaxChars      int                   `yaml:"trigger_max_chars"`
+	Curation             MemoryCurationConfig  `yaml:"curation"`
+	Embedding            MemoryEmbeddingConfig `yaml:"embedding"`
+	Pipeline             MemoryPipelineConfig  `yaml:"pipeline"`
+}
+
+// MemoryEmbeddingConfig configures the OpenAI-compatible embedding client used
+// for semantic retrieval (memory-hybrid-retrieval-locomo). Empty BaseURL or
+// Model disables the client: every vector path degrades to FTS behavior.
+// Restart-only (not part of the hot-reload permission subset). The APIKey value
+// must never be logged.
+type MemoryEmbeddingConfig struct {
+	BaseURL        string `yaml:"base_url"`
+	Model          string `yaml:"model"`
+	APIKey         string `yaml:"api_key"`
+	Dimensions     int    `yaml:"dimensions"`
+	TimeoutSeconds int    `yaml:"timeout_seconds"`
+	// RerankModel enables the cross-encoder rerank stage on the same endpoint
+	// (POST {base_url}/rerank, Cohere/Jina-compatible). Empty disables reranking.
+	RerankModel string `yaml:"rerank_model"`
+}
+
+// MemoryPipelineConfig configures the ADD-only extraction pipeline. Enabled by
+// default; ExtractModel defaults to the curation JudgeModel when left empty.
+// Restart-only.
+type MemoryPipelineConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	ExtractModel string `yaml:"extract_model"`
 }
 
 type MemoryCurationConfig struct {
@@ -281,6 +307,16 @@ func Default() Config {
 				JudgeModel:           "anthropic:claude-haiku-4-5-20251001",
 				MaxCandidatesPerPass: 20,
 				Weights:              MemoryWeights{Hit: 1.0, Recency: 1.0, Age: 0.5, Volatility: 0.5},
+			},
+			Embedding: MemoryEmbeddingConfig{
+				BaseURL:        "http://127.0.0.1:11434/v1",
+				Model:          "qwen3-embedding:0.6b",
+				Dimensions:     0,
+				TimeoutSeconds: 30,
+			},
+			Pipeline: MemoryPipelineConfig{
+				Enabled:      true,
+				ExtractModel: "",
 			},
 		},
 		ExternalAgents: ExternalAgentsConfig{
