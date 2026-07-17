@@ -190,6 +190,24 @@
     --cat-top-k "1=150" --cat-chunk-quota "1=50,4=30"` + per-category answer
     prompts + two-stage IDK retry.
 
+  - **Mem0-comparable protocol (adversarial included):** a free journal
+    cross-diff first split the noise sources — on 624 identical predictions
+    across two runs the judge flipped only 2.4% (±0.5-1 pp), while 59.5% of
+    predictions differed textually: answer-generation stochasticity dominates,
+    so a majority-of-3 judge was measured to be NOT worth its cost, and
+    top-200 retrieval alignment was killed by our own peaked breadth curves
+    (v13/v16/v17). The one move that survived analysis: `--adversarial`
+    (include the 446 category-5 questions, judged by refusal against a
+    dedicated abstention gold — the dataset's adversarial_answer field is the
+    trap, not the truth). Gated rollout: 100-question sample scored 77% →
+    full 446 scored 72.6%. **Comparable-protocol OVERALL: 72.6% single-run
+    (1442/1986; ~74% using the two-run answerable mean).** 121 of 122
+    adversarial misses are confident fabrications — the anti-IDK machinery
+    (prompt + two-stage retry) that buys +12 questions on answerable
+    categories costs ~27% of adversarial; calibrated abstention is where
+    ~5-6 pp of the remaining gap to Mem0's 92.5 (private stack, private
+    judge) sits, alongside extraction quality.
+
 ## 6. Hardening & docs
 
 - [x] 6.1 `golangci-lint run` clean; `TestLocalToolDescriptionsAreEnglish` passes

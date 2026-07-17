@@ -62,6 +62,7 @@ type options struct {
 	chunkQuota   int
 	filterPool   int
 	opinionPass  bool
+	adversarial  int
 	catTopKSpec  string
 	catQuotaSpec string
 	catTopK      map[int]int
@@ -91,6 +92,7 @@ func run() error {
 	flag.StringVar(&opt.catTopKSpec, "cat-top-k", "", `per-category top-k overrides, e.g. "1=150" — multi-hop enumeration questions need evidence from many sessions`)
 	flag.StringVar(&opt.catQuotaSpec, "cat-chunk-quota", "", `per-category chunk-quota overrides, e.g. "1=50,4=30"`)
 	flag.BoolVar(&opt.opinionPass, "opinion-pass", false, "run a supplementary extraction pass focused on opinions/preferences/traits (ADD-only; run once per store — resuming with this flag duplicates entries)")
+	flag.IntVar(&opt.adversarial, "adversarial", 0, "include category-5 adversarial questions, scored by refusal per the Mem0 convention (0 = skip, -1 = all, N = at most N per conversation)")
 	flag.StringVar(&opt.storeDir, "store-dir", "", "persist per-conversation stores here and reuse their extraction on re-runs (default in-memory)")
 	flag.Parse()
 
@@ -330,15 +332,19 @@ func processConversation(ctx context.Context, opt options, conv conversation, ex
 	// Answer/judge questions concurrently across arms; the global semaphore
 	// bounds real in-flight LLM calls.
 	var qwg sync.WaitGroup
-	answered := 0
+	answered, advAnswered := 0, 0
 	for qi, qa := range conv.QA {
 		if qa.Category == adversarialCategory {
-			continue
+			if opt.adversarial == 0 || (opt.adversarial > 0 && advAnswered >= opt.adversarial) {
+				continue
+			}
+			advAnswered++
+		} else {
+			if opt.maxQuestions > 0 && answered >= opt.maxQuestions {
+				break
+			}
+			answered++
 		}
-		if opt.maxQuestions > 0 && answered >= opt.maxQuestions {
-			break
-		}
-		answered++
 		key := resultKey{Conv: conv.ID, Q: qi}
 		for _, s := range states {
 			if prev, ok := s.journal.lookup(key); ok {
@@ -356,7 +362,7 @@ func processConversation(ctx context.Context, opt options, conv conversation, ex
 					Category:  qa.Category,
 					Correct:   correct,
 					Question:  qa.Question,
-					Gold:      qa.AnswerText(),
+					Gold:      goldFor(qa),
 					Predicted: predicted,
 				})
 			}(s, qa, key)
@@ -416,12 +422,25 @@ func answerAndJudge(ctx context.Context, retriever *memory.Retriever, call model
 		}
 	}
 
-	verdict, err := call(ctx, judgeSystemPrompt, buildJudgePrompt(qa.Question, qa.AnswerText(), predicted))
+	verdict, err := call(ctx, judgeSystemPrompt, buildJudgePrompt(qa.Question, goldFor(qa), predicted))
 	if err != nil {
 		logger.Warn("judge call failed; question scored wrong", "err", err)
 		return false, predicted
 	}
 	return parseJudgeVerdict(verdict), predicted
+}
+
+// adversarialGold is the judge-facing gold for category-5 questions. They have
+// no answer in the conversation (the dataset's adversarial_answer field is the
+// TRAP, not the truth) — per the Mem0/LoCoMo convention a correct response
+// declines to answer.
+const adversarialGold = `This question cannot be answered from the conversation — it contains no such information. The correct response DECLINES: it says the information is not mentioned, not available, or "I don't know". Any confident substantive answer is wrong.`
+
+func goldFor(qa locomoQA) string {
+	if qa.Category == adversarialCategory {
+		return adversarialGold
+	}
+	return qa.AnswerText()
 }
 
 // parseCatOverrides parses "cat=value" pairs ("1=150,4=30") into a map.
