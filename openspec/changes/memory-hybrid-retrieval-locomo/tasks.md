@@ -151,17 +151,44 @@
     | v12 | multi-hop breadth k=150 / quota=50 | **74.4%** | multi-hop 66.0 — breadth optimum |
     | v13 | multi-hop breadth k=250 / quota=120 (≈ full context) | 72.9% | multi-hop fell to 57.8: distractor overload / lost-in-the-middle; the curve peaks at ~150 |
 
-    **Final: hybrid J = 74.4%** (multi-hop 66.0 / temporal 79.8 /
+    **Round-4 best: hybrid J = 74.4%** (multi-hop 66.0 / temporal 79.8 /
     open-domain 62.5 / single-hop 76.5), cumulative 41.2 → 74.4 (+33.2 pp).
     Key findings: (1) aggregation questions need WIDE evidence, not filtered
     evidence — a per-category retrieval budget (`--cat-top-k`,
     `--cat-chunk-quota`) beats any second-stage selection we tried, and the
     breadth-vs-noise curve is unimodal with a peak near k=150 for ~100-chunk
     conversations; (2) the journal-strip resume trick (delete one category's
-    rows, re-run) makes a per-category ablation cost ~¥6, not ~¥28. Round
-    ended on an external blocker: API balance exhausted; next planned
-    single-variable runs are category-4 chunk-quota 30 (~¥15) and open-domain
-    extraction coverage.
+    rows, re-run) makes a per-category ablation cost ~¥6, not ~¥28.
+
+  - **Tuning round 5 (peak-hunting + variance audit — honest final ≈ 73-77%):**
+    per-category curve probes all confirmed the round-4 settings as sharp
+    peaks: single-hop chunk-quota 15→76.5 / **30→82.0** / 40→80.6; scaling k at
+    fixed chunk mix regressed both cat-1 (k180: 58.5) and cat-4 (k80: 78.7);
+    quota 30 hurt open-domain (−3.1, subjective questions prefer distilled
+    facts) and was noise for temporal. Two keeper mechanisms: a structured
+    counting rule in the multi-hop prompt (list-merge-count; mh 66.0→67.4) and
+    a two-stage IDK escalation (rewrite retry, then re-retrieve the original
+    question at 3× breadth; net +12 questions on the 57-question IDK tail for
+    ~¥3). Two temporal prompt variants (anchored relative dates) both churned
+    ~13 fixed / ~14 broken — the relative-date gold format is a judge-level
+    ceiling, not promptable. A supplementary opinion/preference extraction
+    pass (`--opinion-pass`, +~390 entries/conversation) diluted retrieval and
+    REGRESSED single-hop by 25 questions — subjective-fact coverage cannot be
+    bought by flooding the store.
+
+    The stitched per-category journal gave 78.4%, but a clean full re-run of
+    the identical config measured **72.6%**, and the opinion-pass full run
+    measured 76.7% — i.e. run-to-run noise under the single-LLM-judge protocol
+    is ±3-5 pp per category (±2-4 pp overall), and per-category
+    keep-the-best stitching harvests the upside of that noise. **Honest
+    claim: the final config scores ≈73-77% per clean run (expected ~75%);
+    every clean run clears the J≥66 acceptance target by a wide margin; an
+    80+ single-run number cannot be certified without a variance-reducing
+    judge protocol (e.g. majority-of-3), which is also the first prerequisite
+    for any future tuning round — effects below ~3 pp are unmeasurable in
+    single runs.** Final config: `--chunks --chunk-quota 15 --top-k 50
+    --cat-top-k "1=150" --cat-chunk-quota "1=50,4=30"` + per-category answer
+    prompts + two-stage IDK retry.
 
 ## 6. Hardening & docs
 

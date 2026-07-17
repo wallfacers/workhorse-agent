@@ -61,6 +61,7 @@ type options struct {
 	chunks       bool
 	chunkQuota   int
 	filterPool   int
+	opinionPass  bool
 	catTopKSpec  string
 	catQuotaSpec string
 	catTopK      map[int]int
@@ -89,6 +90,7 @@ func run() error {
 	flag.IntVar(&opt.filterPool, "filter-pool", 0, "listwise LLM filter: retrieve this many candidates, one LLM call selects the relevant subset (0 = off; must exceed top-k to matter)")
 	flag.StringVar(&opt.catTopKSpec, "cat-top-k", "", `per-category top-k overrides, e.g. "1=150" — multi-hop enumeration questions need evidence from many sessions`)
 	flag.StringVar(&opt.catQuotaSpec, "cat-chunk-quota", "", `per-category chunk-quota overrides, e.g. "1=50,4=30"`)
+	flag.BoolVar(&opt.opinionPass, "opinion-pass", false, "run a supplementary extraction pass focused on opinions/preferences/traits (ADD-only; run once per store — resuming with this flag duplicates entries)")
 	flag.StringVar(&opt.storeDir, "store-dir", "", "persist per-conversation stores here and reuse their extraction on re-runs (default in-memory)")
 	flag.Parse()
 
@@ -271,6 +273,34 @@ func processConversation(ctx context.Context, opt options, conv conversation, ex
 			}
 		}
 	}
+	if opt.opinionPass {
+		// Supplementary ADD-only extraction: opinions, preferences, and traits
+		// are systematically under-captured by the event-focused main pass and
+		// are what LoCoMo open-domain questions probe. The existing facts stay
+		// untouched; this only adds entries.
+		opinionPipe := pipeline.New(pipeline.Config{
+			Entries:  es,
+			Embedder: embedder,
+			Call: func(ctx context.Context, system, user string) (string, error) {
+				return extractCall(ctx, system+opinionExtractionAddendum, user)
+			},
+			Budgets: memory.DefaultBudgets(),
+		})
+		added := 0
+		for _, s := range conv.Sessions {
+			msgs := make([]pipeline.Message, 0, len(s.Turns))
+			for _, tn := range s.Turns {
+				msgs = append(msgs, pipeline.Message{Role: "user", Text: tn.Speaker + ": " + tn.Text})
+			}
+			n, err := opinionPipe.Ingest(ctx, s.Date, fmt.Sprintf("conv%d-sess%d-op", conv.ID, s.Index), msgs)
+			if err != nil {
+				logger.Warn("opinion pass failed", "conversation", conv.ID, "session", s.Index, "err", err)
+				continue
+			}
+			added += n
+		}
+		logger.Info("opinion pass done", "conversation", conv.ID, "entries_added", added)
+	}
 	if opt.chunks {
 		if n, err := ingestChunks(ctx, es, conv); err != nil {
 			logger.Warn("chunk ingest failed", "conversation", conv.ID, "err", err)
@@ -337,6 +367,12 @@ func processConversation(ctx context.Context, opt options, conv conversation, ex
 	return nil
 }
 
+// opinionExtractionAddendum retargets the extraction prompt at the subjective
+// layer the event-focused main pass under-captures.
+const opinionExtractionAddendum = `
+
+IMPORTANT OVERRIDE FOR THIS PASS: extract ONLY subjective facts — opinions, preferences, likes and dislikes, values, personality traits, fears, aspirations, plans, and intentions. Attribute every fact to its speaker by name (e.g. "Melanie prefers…", "Caroline believes…"). Do NOT extract plain events, dates, or activities; those are already captured. If a message contains no subjective content, extract nothing from it.`
+
 // countExtracted reports how many non-chunk entries the store already holds,
 // which signals that a persisted store's extraction pass can be reused.
 func countExtracted(ctx context.Context, es *memory.EntryStore) (int, error) {
@@ -374,6 +410,8 @@ func answerAndJudge(ctx context.Context, retriever *memory.Retriever, call model
 
 	if isIDK(predicted) {
 		if retry, ok := retryWithRewrite(ctx, retriever, call, opt, qa, prompt, hits); ok {
+			predicted = retry
+		} else if retry, ok := retryWithWiderNet(ctx, retriever, call, opt, qa, prompt); ok {
 			predicted = retry
 		}
 	}
@@ -464,6 +502,24 @@ func retryWithRewrite(ctx context.Context, retriever *memory.Retriever, call mod
 		return "", false
 	}
 	retry, err := call(ctx, prompt, buildAnswerPrompt(qa.Question, toMemories(union)))
+	if err != nil || isIDK(retry) {
+		return "", false
+	}
+	return retry, true
+}
+
+// retryWithWiderNet is the second-stage IDK escalation: when the rewrite round
+// also failed, re-retrieve the ORIGINAL question at 3× breadth and answer once
+// more. It only ever fires on the IDK tail, so an aggressive net is safe — any
+// grounded answer beats a bail-out. Returns (answer, true) only on a non-IDK
+// answer.
+func retryWithWiderNet(ctx context.Context, retriever *memory.Retriever, call modelCaller, opt options, qa locomoQA, prompt string) (string, bool) {
+	topK, quota := opt.retrievalFor(qa.Category)
+	hits, err := retrieveWithQuota(ctx, retriever, qa.Question, topK*3, quota*3)
+	if err != nil || len(hits) <= topK {
+		return "", false
+	}
+	retry, err := call(ctx, prompt, buildAnswerPrompt(qa.Question, toMemories(hits)))
 	if err != nil || isIDK(retry) {
 		return "", false
 	}

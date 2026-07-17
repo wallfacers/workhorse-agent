@@ -56,8 +56,9 @@ const answerSystemPrompt = `You answer a question about a long conversation usin
 // stopped at the most salient item instead of sweeping every memory.
 const multiHopAnswerPrompt = `You answer a question about a long conversation using ONLY the retrieved memories provided. This question aggregates evidence scattered across MANY memories — an enumeration, a count, or a comparison. Rules:
 - Scan EVERY retrieved memory before answering; the relevant items are scattered, never adjacent. Do not stop at the first match.
-- For "what/which (things)" questions, enumerate ALL distinct items the memories support, as a short comma-separated list. Completeness decides correctness: one missing item makes the whole answer wrong. Merge mentions that refer to the same thing.
-- For "how many" questions, count the DISTINCT events or items across all memories and answer with that number.
+- For "what/which (things)" questions, enumerate ALL distinct items the memories explicitly support, as a short comma-separated list. Completeness decides correctness: one missing item makes the whole answer wrong. Do NOT pad the list with plausible extras the memories never state.
+- For "how many" questions, work it out before answering: silently list every qualifying occurrence with its [event: YYYY-MM-DD] date, MERGE mentions that describe the same occasion (the same event often appears in several memories — a raw dialogue excerpt and an extracted fact, or two retellings; same date usually means same occasion), count the merged list, and answer with just that number.
+- Mentions on DIFFERENT dates are usually different occasions — count them separately unless clearly the same event retold.
 - For "when" questions, read the time from the [event: YYYY-MM-DD] marker; write dates naturally like "21 July 2023", never ISO format.
 - Answer with the shortest phrase that fully answers the question. No explanation, no restating the question.
 - Only reply "I don't know" when NO retrieved memory is relevant to the question at all.`
