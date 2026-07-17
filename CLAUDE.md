@@ -251,6 +251,25 @@ Two memory layers ship with the current version:
   embeddings via `EMBED_*`), single-pass answering, mem0-aligned LLM judge, and
   JSONL resume.
 
+  **Bench tuning outcome (2026-07, five ablation rounds — full record in
+  `openspec/changes/memory-hybrid-retrieval-locomo/tasks.md`):** best config is
+  a verbatim-chunk ∪ facts union store with per-kind and per-category retrieval
+  budgets — `--chunks --chunk-quota 15 --top-k 50 --cat-top-k "1=150"
+  --cat-chunk-quota "1=50,4=30"` plus per-category answer prompts and a
+  two-stage IDK retry. Clean-run scores: **~73-77% answerable-only (mean
+  ~74.7%, J≥66 acceptance target met on every run; pre-tuning baseline
+  41.2%)** and **72.6% under the Mem0-comparable protocol** (`--adversarial`
+  includes the 446 category-5 questions, judged by refusal). Findings that
+  generalize: extraction is lossy distillation (verbatim chunks are the single
+  biggest lever, but only with a per-kind quota — RRF is biased toward facts);
+  aggregation questions need breadth, not second-stage filtering (listwise LLM
+  filter and pairwise rerank both measured net-negative); breadth curves are
+  sharply unimodal (multi-hop peaks at k=150, single-hop at chunk-quota 30);
+  answer-generation stochasticity dominates run noise (±3-5 pp/category — the
+  LLM judge flips only 2.4%), so effects below ~3 pp need repeated runs; and
+  the anti-IDK retry that wins answerable points causes confident fabrications
+  on adversarial questions — calibrated abstention is the next real lever.
+
 - **L2 Session Archive**: FTS5 virtual table `messages_fts` mirrors `messages`
   via triggers; backfilled on migration. The `session_search` tool (`internal/tools/sessionsearch/`)
   runs MATCH queries with CJK trigram synthesis and LIKE fallback, returning raw
