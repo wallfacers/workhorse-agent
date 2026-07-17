@@ -45,7 +45,22 @@ func newModelCaller(p provider.Provider, model string, maxTokens int) modelCalle
 const answerSystemPrompt = `You answer a question about a long conversation using ONLY the retrieved memories provided. Rules:
 - Answer with the shortest phrase that fully answers the question — a name, a date, a place, a list. No explanation, no restating the question.
 - For "when" questions, read the time from the memory's [event: YYYY-MM-DD] marker (that is when it happened). NEVER answer relative to today's date. Answer at the granularity the memory supports (a month like "May 2023" is fine if that is all that is known).
+- Write dates in natural form like "21 July 2023" or "May 2023" — never ISO format like 2023-07-21.
 - Make your best supported inference from the evidence — combine multiple memories if needed. Only reply "I don't know" when NO retrieved memory is relevant to the question at all; do not bail out just because the phrasing differs.`
+
+// multiHopAnswerPrompt targets LoCoMo category 1 (multi-hop), which is
+// dominated by enumeration/aggregation questions ("what things has X done",
+// "how many times…") whose gold answers are lists assembled from evidence
+// scattered across many sessions. The v7 failure analysis showed 95% of
+// multi-hop misses were partial answers, not retrieval IDKs — the model
+// stopped at the most salient item instead of sweeping every memory.
+const multiHopAnswerPrompt = `You answer a question about a long conversation using ONLY the retrieved memories provided. This question aggregates evidence scattered across MANY memories — an enumeration, a count, or a comparison. Rules:
+- Scan EVERY retrieved memory before answering; the relevant items are scattered, never adjacent. Do not stop at the first match.
+- For "what/which (things)" questions, enumerate ALL distinct items the memories support, as a short comma-separated list. Completeness decides correctness: one missing item makes the whole answer wrong. Merge mentions that refer to the same thing.
+- For "how many" questions, count the DISTINCT events or items across all memories and answer with that number.
+- For "when" questions, read the time from the [event: YYYY-MM-DD] marker; write dates naturally like "21 July 2023", never ISO format.
+- Answer with the shortest phrase that fully answers the question. No explanation, no restating the question.
+- Only reply "I don't know" when NO retrieved memory is relevant to the question at all.`
 
 // openDomainAnswerPrompt relaxes the grounding rule for open-domain questions
 // (LoCoMo category 3), which probe opinion, motivation, and likely behavior
@@ -58,12 +73,17 @@ const openDomainAnswerPrompt = `You answer a question about a person based on re
 - Only reply "I don't know" when the memories offer no basis whatsoever for even an informed inference.`
 
 // answerPromptFor picks the system prompt by LoCoMo category
-// (3 = open-domain; everything else is extraction-style).
+// (1 = multi-hop aggregation; 3 = open-domain; everything else is
+// extraction-style).
 func answerPromptFor(category int) string {
-	if category == 3 {
+	switch category {
+	case 1:
+		return multiHopAnswerPrompt
+	case 3:
 		return openDomainAnswerPrompt
+	default:
+		return answerSystemPrompt
 	}
-	return answerSystemPrompt
 }
 
 // queryRewriteSystemPrompt turns a failed question into an alternative retrieval

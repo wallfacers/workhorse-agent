@@ -36,6 +36,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,6 +60,11 @@ type options struct {
 	concurrency  int
 	chunks       bool
 	chunkQuota   int
+	filterPool   int
+	catTopKSpec  string
+	catQuotaSpec string
+	catTopK      map[int]int
+	catQuota     map[int]int
 }
 
 func main() {
@@ -80,6 +86,9 @@ func run() error {
 	flag.IntVar(&opt.concurrency, "concurrency", 24, "max concurrent in-flight LLM calls")
 	flag.BoolVar(&opt.chunks, "chunks", false, "union store: index verbatim session chunks alongside extracted facts (applies to every arm)")
 	flag.IntVar(&opt.chunkQuota, "chunk-quota", 0, "reserve this many top-k slots for verbatim chunks (0 = pure fused order)")
+	flag.IntVar(&opt.filterPool, "filter-pool", 0, "listwise LLM filter: retrieve this many candidates, one LLM call selects the relevant subset (0 = off; must exceed top-k to matter)")
+	flag.StringVar(&opt.catTopKSpec, "cat-top-k", "", `per-category top-k overrides, e.g. "1=150" — multi-hop enumeration questions need evidence from many sessions`)
+	flag.StringVar(&opt.catQuotaSpec, "cat-chunk-quota", "", `per-category chunk-quota overrides, e.g. "1=50,4=30"`)
 	flag.StringVar(&opt.storeDir, "store-dir", "", "persist per-conversation stores here and reuse their extraction on re-runs (default in-memory)")
 	flag.Parse()
 
@@ -90,6 +99,12 @@ func run() error {
 	arms, err := armsFor(opt.retrieval)
 	if err != nil {
 		return err
+	}
+	if opt.catTopK, err = parseCatOverrides(opt.catTopKSpec); err != nil {
+		return fmt.Errorf("--cat-top-k: %w", err)
+	}
+	if opt.catQuota, err = parseCatOverrides(opt.catQuotaSpec); err != nil {
+		return fmt.Errorf("--cat-chunk-quota: %w", err)
 	}
 	if opt.concurrency < 1 {
 		opt.concurrency = 1
@@ -303,7 +318,7 @@ func processConversation(ctx context.Context, opt options, conv conversation, ex
 			qwg.Add(1)
 			go func(s *armState, qa locomoQA, key resultKey) {
 				defer qwg.Done()
-				correct, predicted := answerAndJudge(ctx, retrievers[s.name], call, opt.topK, opt.chunkQuota, qa)
+				correct, predicted := answerAndJudge(ctx, retrievers[s.name], call, opt, qa, logger)
 				s.agg.add(qa.Category, correct)
 				s.journal.write(result{
 					Conv:      key.Conv,
@@ -343,33 +358,81 @@ func countExtracted(ctx context.Context, es *memory.EntryStore) (int, error) {
 // produces an alternative search query, its hits are unioned with the first
 // round's, and the question is answered again (EverMemOS-style second round,
 // paid only for the IDK tail). Returns (correct, predicted answer).
-func answerAndJudge(ctx context.Context, retriever *memory.Retriever, call modelCaller, topK, chunkQuota int, qa locomoQA) (bool, string) {
-	hits, err := retrieveWithQuota(ctx, retriever, qa.Question, topK, chunkQuota)
+func answerAndJudge(ctx context.Context, retriever *memory.Retriever, call modelCaller, opt options, qa locomoQA, logger *slog.Logger) (bool, string) {
+	topK, quota := opt.retrievalFor(qa.Category)
+	hits, err := retrieve(ctx, retriever, call, qa.Question, topK, quota, opt)
 	if err != nil {
+		logger.Warn("retrieve failed; question scored wrong", "err", err)
 		return false, ""
 	}
 	prompt := answerPromptFor(qa.Category)
 	predicted, err := call(ctx, prompt, buildAnswerPrompt(qa.Question, toMemories(hits)))
 	if err != nil {
+		logger.Warn("answer call failed; question scored wrong", "err", err)
 		return false, ""
 	}
 
 	if isIDK(predicted) {
-		if retry, ok := retryWithRewrite(ctx, retriever, call, topK, chunkQuota, qa, prompt, hits); ok {
+		if retry, ok := retryWithRewrite(ctx, retriever, call, opt, qa, prompt, hits); ok {
 			predicted = retry
 		}
 	}
 
 	verdict, err := call(ctx, judgeSystemPrompt, buildJudgePrompt(qa.Question, qa.AnswerText(), predicted))
 	if err != nil {
+		logger.Warn("judge call failed; question scored wrong", "err", err)
 		return false, predicted
 	}
 	return parseJudgeVerdict(verdict), predicted
 }
 
+// parseCatOverrides parses "cat=value" pairs ("1=150,4=30") into a map.
+func parseCatOverrides(spec string) (map[int]int, error) {
+	m := map[int]int{}
+	if spec == "" {
+		return m, nil
+	}
+	for _, part := range strings.Split(spec, ",") {
+		kv := strings.SplitN(strings.TrimSpace(part), "=", 2)
+		if len(kv) != 2 {
+			return nil, fmt.Errorf("expected cat=value, got %q", part)
+		}
+		c, err1 := strconv.Atoi(strings.TrimSpace(kv[0]))
+		v, err2 := strconv.Atoi(strings.TrimSpace(kv[1]))
+		if err1 != nil || err2 != nil || c < 1 || v < 1 {
+			return nil, fmt.Errorf("invalid pair %q", part)
+		}
+		m[c] = v
+	}
+	return m, nil
+}
+
+// retrievalFor resolves the per-question retrieval budget; categories with an
+// override (e.g. multi-hop enumeration needs breadth) diverge from the global
+// defaults.
+func (o options) retrievalFor(category int) (topK, quota int) {
+	topK, quota = o.topK, o.chunkQuota
+	if v, ok := o.catTopK[category]; ok {
+		topK = v
+	}
+	if v, ok := o.catQuota[category]; ok {
+		quota = v
+	}
+	return topK, quota
+}
+
+// retrieve is the per-question retrieval front door: quota'd top-k, optionally
+// widened + narrowed by the listwise LLM filter when --filter-pool is set.
+func retrieve(ctx context.Context, retriever *memory.Retriever, call modelCaller, query string, topK, quota int, opt options) ([]memory.Result, error) {
+	if opt.filterPool > topK {
+		return retrieveFiltered(ctx, retriever, call, query, topK, quota, opt.filterPool)
+	}
+	return retrieveWithQuota(ctx, retriever, query, topK, quota)
+}
+
 // retryWithRewrite runs the IDK second round. Returns (answer, true) only when
 // the retry produced a non-IDK answer worth keeping.
-func retryWithRewrite(ctx context.Context, retriever *memory.Retriever, call modelCaller, topK, chunkQuota int, qa locomoQA, prompt string, first []memory.Result) (string, bool) {
+func retryWithRewrite(ctx context.Context, retriever *memory.Retriever, call modelCaller, opt options, qa locomoQA, prompt string, first []memory.Result) (string, bool) {
 	rewritten, err := call(ctx, queryRewriteSystemPrompt, "QUESTION: "+qa.Question)
 	if err != nil {
 		return "", false
@@ -378,7 +441,8 @@ func retryWithRewrite(ctx context.Context, retriever *memory.Retriever, call mod
 	if rewritten == "" || rewritten == qa.Question {
 		return "", false
 	}
-	more, err := retrieveWithQuota(ctx, retriever, rewritten, topK, chunkQuota)
+	topK, quota := opt.retrievalFor(qa.Category)
+	more, err := retrieve(ctx, retriever, call, rewritten, topK, quota, opt)
 	if err != nil || len(more) == 0 {
 		return "", false
 	}

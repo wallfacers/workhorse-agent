@@ -197,7 +197,10 @@ func TestAnswerPromptFor(t *testing.T) {
 	if answerPromptFor(3) != openDomainAnswerPrompt {
 		t.Fatal("category 3 must use the open-domain prompt")
 	}
-	for _, c := range []int{1, 2, 4} {
+	if answerPromptFor(1) != multiHopAnswerPrompt {
+		t.Fatal("category 1 must use the multi-hop aggregation prompt")
+	}
+	for _, c := range []int{2, 4} {
 		if answerPromptFor(c) != answerSystemPrompt {
 			t.Fatalf("category %d must use the extraction prompt", c)
 		}

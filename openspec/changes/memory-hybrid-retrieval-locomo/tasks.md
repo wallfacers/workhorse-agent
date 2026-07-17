@@ -137,6 +137,32 @@
     filter, EviMem-style gap-driven iterative retrieval) and open-domain
     extraction coverage.
 
+  - **Tuning round 4 (per-category evidence budgets — 74.4%, stretch goal in
+    reach):** the v7 failure analysis reframed multi-hop: 95% of its misses
+    were PARTIAL answers (enumeration/count questions whose gold is a list
+    assembled across sessions), not retrieval IDKs. Two levers followed:
+
+    | run | config (single variable each) | hybrid J | verdict |
+    |-----|-------------------------------|----------|---------|
+    | v8  | category-1 enumeration prompt ("scan every memory, enumerate ALL items, count distinct events") + natural date format rule | 71.8% | every category up: multi-hop 47.2→52.1, temporal +3.2, single-hop +1.9; zero cost |
+    | v9  | + listwise LLM filter (pool 120 → select ≤50) | (smoke) −4.7 pp | NEGATIVE, like v4's pairwise rerank: any narrowing step evicts complementary facts our quota'd top-50 already retains; kept as opt-in `--filter-pool` (default off) |
+    | v10 | + completeness clause in the default prompt | (smoke) ±0 | no signal above the ±1 pp smoke noise floor; reverted |
+    | v11 | multi-hop-only breadth: `--cat-top-k 1=100 --cat-chunk-quota 1=30` | 73.6% | multi-hop 52.1→62.1 (+10) |
+    | v12 | multi-hop breadth k=150 / quota=50 | **74.4%** | multi-hop 66.0 — breadth optimum |
+    | v13 | multi-hop breadth k=250 / quota=120 (≈ full context) | 72.9% | multi-hop fell to 57.8: distractor overload / lost-in-the-middle; the curve peaks at ~150 |
+
+    **Final: hybrid J = 74.4%** (multi-hop 66.0 / temporal 79.8 /
+    open-domain 62.5 / single-hop 76.5), cumulative 41.2 → 74.4 (+33.2 pp).
+    Key findings: (1) aggregation questions need WIDE evidence, not filtered
+    evidence — a per-category retrieval budget (`--cat-top-k`,
+    `--cat-chunk-quota`) beats any second-stage selection we tried, and the
+    breadth-vs-noise curve is unimodal with a peak near k=150 for ~100-chunk
+    conversations; (2) the journal-strip resume trick (delete one category's
+    rows, re-run) makes a per-category ablation cost ~¥6, not ~¥28. Round
+    ended on an external blocker: API balance exhausted; next planned
+    single-variable runs are category-4 chunk-quota 30 (~¥15) and open-domain
+    extraction coverage.
+
 ## 6. Hardening & docs
 
 - [x] 6.1 `golangci-lint run` clean; `TestLocalToolDescriptionsAreEnglish` passes
