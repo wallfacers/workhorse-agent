@@ -10,6 +10,11 @@
 // costly extraction pass is paid once, not twice. Runs are resumable via a
 // per-arm JSONL artifact and parallelized with a global LLM-call semaphore.
 //
+// --chunks additionally indexes verbatim session chunks alongside the extracted
+// facts (a chunks ∪ artifacts union store; extraction alone is lossy
+// distillation — arXiv:2601.00821). --store-dir persists each conversation's
+// store so later runs reuse the paid extraction pass verbatim.
+//
 // Credentials come from the environment only and are never logged or written to
 // run artifacts:
 //
@@ -29,6 +34,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -44,12 +50,15 @@ import (
 type options struct {
 	dataPath     string
 	runDir       string
+	storeDir     string
 	retrieval    string
 	maxConvs     int
 	maxQuestions int
 	topK         int
 	maxTokens    int
 	concurrency  int
+	chunks       bool
+	chunkQuota   int
 }
 
 func main() {
@@ -69,6 +78,9 @@ func run() error {
 	flag.IntVar(&opt.topK, "top-k", 30, "retrieval budget per question")
 	flag.IntVar(&opt.maxTokens, "max-tokens", 8000, "max output tokens (reasoning models need headroom for thinking + answer)")
 	flag.IntVar(&opt.concurrency, "concurrency", 24, "max concurrent in-flight LLM calls")
+	flag.BoolVar(&opt.chunks, "chunks", false, "union store: index verbatim session chunks alongside extracted facts (applies to every arm)")
+	flag.IntVar(&opt.chunkQuota, "chunk-quota", 0, "reserve this many top-k slots for verbatim chunks (0 = pure fused order)")
+	flag.StringVar(&opt.storeDir, "store-dir", "", "persist per-conversation stores here and reuse their extraction on re-runs (default in-memory)")
 	flag.Parse()
 
 	if opt.dataPath == "" || opt.runDir == "" {
@@ -203,7 +215,14 @@ func gate(sem chan struct{}, c modelCaller) modelCaller {
 // sequential (the store is single-connection); questions run concurrently and
 // are bounded by the global LLM-call semaphore.
 func processConversation(ctx context.Context, opt options, conv conversation, extractCall pipeline.ModelCaller, call modelCaller, embClient embedding.Client, states []*armState, logger *slog.Logger) error {
-	st, err := sqlite.Open(ctx, sqlite.Options{DSN: ":memory:"})
+	dsn := ":memory:"
+	if opt.storeDir != "" {
+		if err := os.MkdirAll(opt.storeDir, 0o755); err != nil {
+			return fmt.Errorf("create store dir: %w", err)
+		}
+		dsn = filepath.Join(opt.storeDir, fmt.Sprintf("conv%d.db", conv.ID))
+	}
+	st, err := sqlite.Open(ctx, sqlite.Options{DSN: dsn})
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
@@ -220,14 +239,28 @@ func processConversation(ctx context.Context, opt options, conv conversation, ex
 		Budgets:  memory.DefaultBudgets(),
 	})
 
-	// Ingest each session with its date (extraction is the shared, once-paid pass).
-	for _, s := range conv.Sessions {
-		msgs := make([]pipeline.Message, 0, len(s.Turns))
-		for _, tn := range s.Turns {
-			msgs = append(msgs, pipeline.Message{Role: "user", Text: tn.Speaker + ": " + tn.Text})
+	// Ingest each session with its date (extraction is the shared, once-paid
+	// pass). A persisted store that already holds extracted facts skips it.
+	if n, err := countExtracted(ctx, es); err != nil {
+		return err
+	} else if n > 0 {
+		logger.Info("reusing persisted extraction", "conversation", conv.ID, "facts", n)
+	} else {
+		for _, s := range conv.Sessions {
+			msgs := make([]pipeline.Message, 0, len(s.Turns))
+			for _, tn := range s.Turns {
+				msgs = append(msgs, pipeline.Message{Role: "user", Text: tn.Speaker + ": " + tn.Text})
+			}
+			if _, err := pipe.Ingest(ctx, s.Date, fmt.Sprintf("conv%d-sess%d", conv.ID, s.Index), msgs); err != nil {
+				logger.Warn("ingest session failed", "conversation", conv.ID, "session", s.Index, "err", err)
+			}
 		}
-		if _, err := pipe.Ingest(ctx, s.Date, fmt.Sprintf("conv%d-sess%d", conv.ID, s.Index), msgs); err != nil {
-			logger.Warn("ingest session failed", "conversation", conv.ID, "session", s.Index, "err", err)
+	}
+	if opt.chunks {
+		if n, err := ingestChunks(ctx, es, conv); err != nil {
+			logger.Warn("chunk ingest failed", "conversation", conv.ID, "err", err)
+		} else {
+			logger.Info("verbatim chunks ingested", "conversation", conv.ID, "chunks", n)
 		}
 	}
 	// Drain embeddings synchronously before answering (only meaningful when a
@@ -270,7 +303,7 @@ func processConversation(ctx context.Context, opt options, conv conversation, ex
 			qwg.Add(1)
 			go func(s *armState, qa locomoQA, key resultKey) {
 				defer qwg.Done()
-				correct, predicted := answerAndJudge(ctx, retrievers[s.name], call, opt.topK, qa)
+				correct, predicted := answerAndJudge(ctx, retrievers[s.name], call, opt.topK, opt.chunkQuota, qa)
 				s.agg.add(qa.Category, correct)
 				s.journal.write(result{
 					Conv:      key.Conv,
@@ -289,13 +322,29 @@ func processConversation(ctx context.Context, opt options, conv conversation, ex
 	return nil
 }
 
+// countExtracted reports how many non-chunk entries the store already holds,
+// which signals that a persisted store's extraction pass can be reused.
+func countExtracted(ctx context.Context, es *memory.EntryStore) (int, error) {
+	entries, err := es.List(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("count extracted: %w", err)
+	}
+	n := 0
+	for _, e := range entries {
+		if e.FactSource != "verbatim_chunk" {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // answerAndJudge retrieves, answers, and grades one question. When the first
 // answer is an IDK bail-out, one rewrite-and-retry round runs: the model
 // produces an alternative search query, its hits are unioned with the first
 // round's, and the question is answered again (EverMemOS-style second round,
 // paid only for the IDK tail). Returns (correct, predicted answer).
-func answerAndJudge(ctx context.Context, retriever *memory.Retriever, call modelCaller, topK int, qa locomoQA) (bool, string) {
-	hits, err := retriever.Search(ctx, qa.Question, topK)
+func answerAndJudge(ctx context.Context, retriever *memory.Retriever, call modelCaller, topK, chunkQuota int, qa locomoQA) (bool, string) {
+	hits, err := retrieveWithQuota(ctx, retriever, qa.Question, topK, chunkQuota)
 	if err != nil {
 		return false, ""
 	}
@@ -306,7 +355,7 @@ func answerAndJudge(ctx context.Context, retriever *memory.Retriever, call model
 	}
 
 	if isIDK(predicted) {
-		if retry, ok := retryWithRewrite(ctx, retriever, call, topK, qa, prompt, hits); ok {
+		if retry, ok := retryWithRewrite(ctx, retriever, call, topK, chunkQuota, qa, prompt, hits); ok {
 			predicted = retry
 		}
 	}
@@ -320,7 +369,7 @@ func answerAndJudge(ctx context.Context, retriever *memory.Retriever, call model
 
 // retryWithRewrite runs the IDK second round. Returns (answer, true) only when
 // the retry produced a non-IDK answer worth keeping.
-func retryWithRewrite(ctx context.Context, retriever *memory.Retriever, call modelCaller, topK int, qa locomoQA, prompt string, first []memory.Result) (string, bool) {
+func retryWithRewrite(ctx context.Context, retriever *memory.Retriever, call modelCaller, topK, chunkQuota int, qa locomoQA, prompt string, first []memory.Result) (string, bool) {
 	rewritten, err := call(ctx, queryRewriteSystemPrompt, "QUESTION: "+qa.Question)
 	if err != nil {
 		return "", false
@@ -329,7 +378,7 @@ func retryWithRewrite(ctx context.Context, retriever *memory.Retriever, call mod
 	if rewritten == "" || rewritten == qa.Question {
 		return "", false
 	}
-	more, err := retriever.Search(ctx, rewritten, topK)
+	more, err := retrieveWithQuota(ctx, retriever, rewritten, topK, chunkQuota)
 	if err != nil || len(more) == 0 {
 		return "", false
 	}

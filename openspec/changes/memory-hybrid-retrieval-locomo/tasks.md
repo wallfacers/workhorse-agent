@@ -110,6 +110,33 @@
     workloads may still benefit; the 4.6 pp of unrealized stretch-goal gap is
     open-domain extraction work, not retrieval.
 
+  - **Tuning round 3 (verbatim-chunk union store — GOAL MET at 69.1%):**
+    literature review (arXiv:2601.00821 controlled ablation; ICLR 2026
+    2603.02473 3×3 factorial) established that extraction-only stores are lossy
+    distillation: verbatim chunks beat extracted facts by 15-33 pp on LoCoMo
+    within a fixed pipeline, and a chunks ∪ facts union store matches chunks.
+    Bench harness gained `--chunks` (each session's raw dialogue stored as
+    speaker-attributed ~900-char chunk entries in the SAME store — every
+    retrieval signal covers both representations automatically), `--store-dir`
+    (persist per-conversation stores; later runs reuse the paid extraction pass
+    verbatim, cutting a full-run to answer+judge cost only), and
+    `--chunk-quota N` (reserve N of the top-k slots for chunks).
+
+    | run | config | hybrid J | verdict |
+    |-----|--------|----------|---------|
+    | v6  | v5 + chunks (pure fused order) | 64.2% | single-hop +4.7, temporal +3.1; diagnostic showed chunks fill only 0-6% of top-50 (no entity signal; diffuse 900-char embeddings) — gain far from realized |
+    | v7  | v6 + chunk-quota 15/50 | **69.1%** | single-hop 65.9→74.6 (+8.7), temporal 76.6, open-domain 60.4; multi-hop 47.2 remains the laggard |
+
+    **Final: hybrid J = 69.1%** (multi-hop 47.2 / temporal 76.6 /
+    open-domain 60.4 / single-hop 74.6) — the J≥66% acceptance target is met
+    (69.1% vs the 41.2% pre-tuning baseline, +27.9 pp cumulative). Key finding:
+    the union store only pays off when chunks actually surface — RRF's signals
+    are biased toward facts, so a per-kind quota (not a reranker) is the
+    cheapest correct fix. Remaining stretch-goal (80+) work: multi-hop
+    (cross-session fact synthesis — candidates: recall-oriented listwise LLM
+    filter, EviMem-style gap-driven iterative retrieval) and open-domain
+    extraction coverage.
+
 ## 6. Hardening & docs
 
 - [x] 6.1 `golangci-lint run` clean; `TestLocalToolDescriptionsAreEnglish` passes
