@@ -81,6 +81,30 @@ type Store interface {
 	ListPermissions(ctx context.Context, sessionID string) ([]*Permission, error)
 	DeletePermission(ctx context.Context, id string) error
 
+	// --- Delegation CRUD (001-agent-orchestration US1) ---
+	CreateDelegation(ctx context.Context, d *Delegation) error
+	GetDelegation(ctx context.Context, id string) (*Delegation, error)
+	ListDelegations(ctx context.Context, sessionID string) ([]*Delegation, error)
+	// CountRunningDelegations returns the global count of status='running'
+	// delegations; used to enforce the fixed concurrency cap across sessions.
+	CountRunningDelegations(ctx context.Context) (int, error)
+	// CompleteDelegation transitions a delegation to 'complete', recording the
+	// derived title/summary, full result, and completion timestamp.
+	CompleteDelegation(ctx context.Context, id, title, summary, result string) error
+	// FailDelegation transitions a delegation to 'error', recording the reason
+	// and (optionally) a partial result detail.
+	FailDelegation(ctx context.Context, id, errMsg, result string) error
+	// ClaimPendingNotifications atomically selects every finished-but-unnotified
+	// delegation for the session and marks notified_at within one transaction,
+	// returning the claimed set. notified_at is set BEFORE the notice is injected
+	// into history, so a crash between claim and inject loses one notification
+	// rather than duplicating it (prefer-dropping-over-duplication).
+	ClaimPendingNotifications(ctx context.Context, sessionID string) ([]*Delegation, error)
+	// ReapRunningDelegations marks every still-running delegation as failed with
+	// error "server restarted". Called at startup so delegations orphaned by a
+	// server restart never stay 'running' forever.
+	ReapRunningDelegations(ctx context.Context) error
+
 	// Close releases the underlying handle. Calling Close more than once is
 	// safe; the second call is a no-op.
 	Close() error

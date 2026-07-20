@@ -80,7 +80,25 @@ func (f *fakeStore) ListPermissions(context.Context, string) ([]*store.Permissio
 	return nil, nil
 }
 func (f *fakeStore) DeletePermission(context.Context, string) error { return nil }
-func (f *fakeStore) Close() error                                   { return nil }
+func (f *fakeStore) GetDelegation(context.Context, string) (*store.Delegation, error) {
+	return nil, store.ErrNotFound
+}
+func (f *fakeStore) ListDelegations(context.Context, string) ([]*store.Delegation, error) {
+	return nil, nil
+}
+func (f *fakeStore) CreateDelegation(context.Context, *store.Delegation) error { return nil }
+func (f *fakeStore) CountRunningDelegations(context.Context) (int, error)      { return 0, nil }
+func (f *fakeStore) CompleteDelegation(context.Context, string, string, string, string) error {
+	return nil
+}
+func (f *fakeStore) FailDelegation(context.Context, string, string, string) error {
+	return nil
+}
+func (f *fakeStore) ClaimPendingNotifications(context.Context, string) ([]*store.Delegation, error) {
+	return nil, nil
+}
+func (f *fakeStore) ReapRunningDelegations(context.Context) error { return nil }
+func (f *fakeStore) Close() error                                 { return nil }
 
 func TestNew_DefaultsAndIDFormat(t *testing.T) {
 	s := New(Options{})

@@ -560,6 +560,160 @@ func (s *Store) DeletePermission(ctx context.Context, id string) error {
 	return ensureRowsAffected(res, store.ErrNotFound)
 }
 
+// ---- Delegation CRUD (001-agent-orchestration US1) ----
+
+const delegationColumns = `id, session_id, description, prompt, workdir, status,
+	title, summary, result, error, started_at, completed_at, notified_at`
+
+func (s *Store) CreateDelegation(ctx context.Context, d *store.Delegation) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO delegations(id, session_id, description, prompt, workdir, status,
+			title, summary, result, error, started_at, completed_at, notified_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		d.ID, d.SessionID, d.Description, d.Prompt, d.Workdir, string(d.Status),
+		d.Title, d.Summary, d.Result, d.Error,
+		toMicros(d.StartedAt), nullableMicros(d.CompletedAt), nullableMicros(d.NotifiedAt))
+	if err != nil {
+		return fmt.Errorf("sqlite: CreateDelegation: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) GetDelegation(ctx context.Context, id string) (*store.Delegation, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+delegationColumns+` FROM delegations WHERE id = ?`, id)
+	return scanDelegation(row)
+}
+
+func (s *Store) ListDelegations(ctx context.Context, sessionID string) ([]*store.Delegation, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+delegationColumns+`
+		 FROM delegations WHERE session_id = ? ORDER BY started_at DESC`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: ListDelegations: %w", err)
+	}
+	defer rows.Close() //nolint:errcheck
+
+	var out []*store.Delegation
+	for rows.Next() {
+		d, err := scanDelegation(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) CountRunningDelegations(ctx context.Context) (int, error) {
+	var n int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM delegations WHERE status = 'running'`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("sqlite: CountRunningDelegations: %w", err)
+	}
+	return n, nil
+}
+
+func (s *Store) CompleteDelegation(ctx context.Context, id, title, summary, result string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE delegations SET status='complete', title=?, summary=?, result=?, completed_at=?
+		 WHERE id=?`,
+		title, summary, result, toMicros(time.Now().UTC()), id)
+	if err != nil {
+		return fmt.Errorf("sqlite: CompleteDelegation: %w", err)
+	}
+	return ensureRowsAffected(res, store.ErrNotFound)
+}
+
+func (s *Store) FailDelegation(ctx context.Context, id, errMsg, result string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE delegations SET status='error', error=?, result=?, completed_at=? WHERE id=?`,
+		errMsg, result, toMicros(time.Now().UTC()), id)
+	if err != nil {
+		return fmt.Errorf("sqlite: FailDelegation: %w", err)
+	}
+	return ensureRowsAffected(res, store.ErrNotFound)
+}
+
+// ClaimPendingNotifications selects finished-but-unnotified delegations for the
+// session and stamps notified_at inside one transaction. The mark happens before
+// the caller injects the notice into history, so a crash between claim and
+// inject drops one notification instead of producing a duplicate on restart.
+func (s *Store) ClaimPendingNotifications(ctx context.Context, sessionID string) ([]*store.Delegation, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: ClaimPendingNotifications begin: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op once committed
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT `+delegationColumns+`
+		 FROM delegations
+		 WHERE session_id = ? AND status != 'running' AND notified_at IS NULL
+		 ORDER BY started_at ASC`, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: ClaimPendingNotifications select: %w", err)
+	}
+	var pending []*store.Delegation
+	for rows.Next() {
+		d, err := scanDelegation(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		pending = append(pending, d)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: ClaimPendingNotifications drain: %w", err)
+	}
+
+	if len(pending) == 0 {
+		return nil, tx.Commit()
+	}
+	now := toMicros(time.Now().UTC())
+	for _, d := range pending {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE delegations SET notified_at = ? WHERE id = ?`, now, d.ID); err != nil {
+			return nil, fmt.Errorf("sqlite: ClaimPendingNotifications mark: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("sqlite: ClaimPendingNotifications commit: %w", err)
+	}
+	return pending, nil
+}
+
+func (s *Store) ReapRunningDelegations(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE delegations SET status='error', error='server restarted', completed_at=?
+		 WHERE status='running'`, toMicros(time.Now().UTC()))
+	if err != nil {
+		return fmt.Errorf("sqlite: ReapRunningDelegations: %w", err)
+	}
+	return nil
+}
+
+func scanDelegation(sc scanner) (*store.Delegation, error) {
+	var d store.Delegation
+	var status string
+	var startedAt int64
+	var completedAt, notifiedAt sql.NullInt64
+	if err := sc.Scan(&d.ID, &d.SessionID, &d.Description, &d.Prompt, &d.Workdir,
+		&status, &d.Title, &d.Summary, &d.Result, &d.Error,
+		&startedAt, &completedAt, &notifiedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, store.ErrNotFound
+		}
+		return nil, fmt.Errorf("sqlite: scan delegation: %w", err)
+	}
+	d.Status = store.DelegationStatus(status)
+	d.StartedAt = fromMicros(startedAt)
+	d.CompletedAt = fromNullableMicros(completedAt)
+	d.NotifiedAt = fromNullableMicros(notifiedAt)
+	return &d, nil
+}
+
 // ---- small helpers ----
 
 func boolToInt(b bool) int {
