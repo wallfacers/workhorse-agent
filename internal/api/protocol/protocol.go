@@ -52,6 +52,7 @@ const (
 	EventPermissionRequest     ServerEventType = "permission_request"
 	EventPermissionResolved    ServerEventType = "permission_resolved"
 	EventSubagentEvent         ServerEventType = "subagent_event"
+	EventSubagentStatus        ServerEventType = "subagent_status"
 	EventCompaction            ServerEventType = "compaction"
 	EventProviderRetry         ServerEventType = "provider_retry"
 	EventError                 ServerEventType = "error"
@@ -72,7 +73,7 @@ var AllServerEventTypes = []ServerEventType{
 	EventAssistantTextDelta, EventAssistantTextDone,
 	EventReasoningStart, EventReasoningDelta, EventReasoningEnd,
 	EventToolCallStart, EventToolCallDone,
-	EventPermissionRequest, EventPermissionResolved, EventSubagentEvent,
+	EventPermissionRequest, EventPermissionResolved, EventSubagentEvent, EventSubagentStatus,
 	EventCompaction, EventProviderRetry,
 	EventError, EventInterrupted, EventPong,
 	EventAdapterApprovalReq, EventAdapterApprovalResolv, EventAdapterApprovalExp,
@@ -81,7 +82,7 @@ var AllServerEventTypes = []ServerEventType{
 	EventSessionTitleUpdated,
 }
 
-// IsKnown reports whether t matches one of the twenty-two spec-defined event types.
+// IsKnown reports whether t matches one of the twenty-three spec-defined event types.
 func (t ServerEventType) IsKnown() bool {
 	for _, k := range AllServerEventTypes {
 		if k == t {
