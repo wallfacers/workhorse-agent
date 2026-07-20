@@ -41,7 +41,15 @@ type CompactionResult struct {
 // more than it gains (≤ RecentKeep+1 entries), Compact returns the original
 // slice unchanged and ok=false.
 func (c *Compactor) Compact(ctx context.Context, history []provider.Message) ([]provider.Message, CompactionResult, bool, error) {
-	keep := c.RecentKeep
+	return c.CompactWithKeep(ctx, history, c.RecentKeep)
+}
+
+// CompactWithKeep runs one compaction pass with an explicit recent-keep count,
+// overriding the configured RecentKeep. Overflow self-healing (US2) forces a
+// tighter keep (max(2, RecentKeep/2)) on the recovery attempt. ok is false and
+// the history is returned unchanged when there is nothing worth summarising
+// (len(history) <= keep+1).
+func (c *Compactor) CompactWithKeep(ctx context.Context, history []provider.Message, keep int) ([]provider.Message, CompactionResult, bool, error) {
 	if keep <= 0 {
 		keep = 8
 	}
