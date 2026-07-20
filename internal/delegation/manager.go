@@ -195,6 +195,13 @@ func (m *Manager) Read(ctx context.Context, id string) (*store.Delegation, error
 	return m.Store.GetDelegation(ctx, id)
 }
 
+// ReapRunning marks every still-running delegation as failed. Called at serve
+// startup so delegations interrupted by a server restart never stay 'running'
+// forever (edge case: delegations across a restart).
+func (m *Manager) ReapRunning(ctx context.Context) error {
+	return m.Store.ReapRunningDelegations(ctx)
+}
+
 // List returns every delegation for a session, newest-started first.
 func (m *Manager) List(ctx context.Context, sessionID string) ([]*store.Delegation, error) {
 	return m.Store.ListDelegations(ctx, sessionID)

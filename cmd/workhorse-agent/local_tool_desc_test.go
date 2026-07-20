@@ -9,6 +9,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/tools/agentsetup"
 	"github.com/wallfacers/workhorse-agent/internal/tools/bash"
 	"github.com/wallfacers/workhorse-agent/internal/tools/builtin"
+	delegationtool "github.com/wallfacers/workhorse-agent/internal/tools/delegation"
 	"github.com/wallfacers/workhorse-agent/internal/tools/dispatch"
 	"github.com/wallfacers/workhorse-agent/internal/tools/extagent/drafttool"
 	"github.com/wallfacers/workhorse-agent/internal/tools/extagent/genbash"
@@ -40,6 +41,9 @@ func localStaticTools() []tools.Tool {
 		&sessionsearch.Tool{},
 		tasklist.TodoWrite{},
 		toolsearch.Tool{},
+		delegationtool.DelegateTool{},
+		delegationtool.DelegationReadTool{},
+		delegationtool.DelegationListTool{},
 		dispatch.Tool{},
 		agentsetup.Tool{},
 		genbash.Tool{},

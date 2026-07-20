@@ -23,6 +23,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/api/protocol"
 	"github.com/wallfacers/workhorse-agent/internal/config"
 	"github.com/wallfacers/workhorse-agent/internal/coord"
+	"github.com/wallfacers/workhorse-agent/internal/delegation"
 	"github.com/wallfacers/workhorse-agent/internal/embedding"
 	"github.com/wallfacers/workhorse-agent/internal/extagent"
 	"github.com/wallfacers/workhorse-agent/internal/extagent/approval"
@@ -49,6 +50,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/tools/agentsetup"
 	"github.com/wallfacers/workhorse-agent/internal/tools/bash"
 	"github.com/wallfacers/workhorse-agent/internal/tools/builtin"
+	delegationtool "github.com/wallfacers/workhorse-agent/internal/tools/delegation"
 	"github.com/wallfacers/workhorse-agent/internal/tools/dispatch"
 	extagenttool "github.com/wallfacers/workhorse-agent/internal/tools/extagent"
 	"github.com/wallfacers/workhorse-agent/internal/tools/extagent/drafttool"
@@ -281,13 +283,29 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 
+	// 5c. Delegation manager (background read-only sub-agents, US1). SessMgr is
+	// back-filled after the session manager exists (two-phase, mirroring
+	// dispatchHost). The three tools resolve it at runtime via Env.Delegations.
+	delegationMgr := delegation.NewManager(st, nil, logger)
+	for _, t := range delegationtool.Tools() {
+		if err := registry.Register(t); err != nil {
+			logger.Warn("delegation: register tool", "tool", t.Name(), "error", err)
+		}
+	}
+
 	// 6. Session manager with the agent-loop runner factory.
 	sessMgr = session.NewManager(session.ManagerOptions{
 		Store:         st,
 		MaxConcurrent: cfg.Sessions.MaxConcurrent,
-		RunnerFactory: newRunnerFactory(cfg, st, providers, fastProviders, registry, permMgr, skillCatalog, extReg, loader, memRT.ingestor, logger),
+		RunnerFactory: newRunnerFactory(cfg, st, providers, fastProviders, registry, permMgr, skillCatalog, extReg, loader, memRT.ingestor, delegationMgr, logger),
 	})
 	dispatchHost.Manager = sessMgr
+	delegationMgr.SessMgr = sessMgr
+	// Delegations interrupted by a previous run are reaped to 'error' so they
+	// surface a failure notice instead of staying 'running' forever.
+	if err := delegationMgr.ReapRunning(ctx); err != nil {
+		logger.Warn("delegation: reap running failed", "error", err)
+	}
 
 	// 6b. Late-wire the approval manager hooks that depend on sessMgr / the
 	// live external-agents dir.
@@ -783,6 +801,7 @@ func newRunnerFactory(
 	extReg *extagent.Registry,
 	agentLoader *coord.Loader,
 	ingestor *pipeline.SessionIngestor,
+	delegMgr *delegation.Manager,
 	logger *slog.Logger,
 ) session.RunnerFactory {
 	orch := &agent.Orchestrator{
@@ -880,6 +899,11 @@ func newRunnerFactory(
 				sessLoopCfg.ThinkingEnabled = false
 			}
 		}
+		// Top-level sessions receive one-shot delegation notices before each
+		// turn; child agents have no delegations of their own.
+		if sess.ParentID == "" {
+			sessLoopCfg.Notifications = delegMgr
+		}
 		loop := agent.NewLoop(sessLoopCfg)
 		loop.Session = sess
 		loop.Provider = prov
@@ -925,6 +949,7 @@ func newRunnerFactory(
 			ExtAgentRegistry:    extReg,
 			TaskList:            taskStore,
 			InstructionResolver: sess.InstructionResolver,
+			Delegations:         delegMgr,
 		}
 
 		// Build environment block for the system prompt. Always include the
