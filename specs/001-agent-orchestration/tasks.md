@@ -56,7 +56,7 @@
 - [x] T007 [US1] 在 `internal/agent/loop.go`：`LoopConfig` 新增 `Notifications NotificationSource` 接口字段（`ConsumePending(ctx, sessionID) []string`，接口定义放 agent 包避免反向依赖）；`runTurnSafe` 在追加用户消息（现 loop.go:253 附近的 `AppendMessage`）**之前**逐条以 `RoleSystem` 消息 AppendMessage 注入；nil 安全、错误仅 WARN 不阻塞本轮。验收：`internal/agent/` 下新增 loop 级测试——完成的委派在下一轮注入恰好一次、再下一轮不重复（对应 spec US1 场景 2）
 - [x] T008 [P] [US1] 新建 `internal/tools/delegation/`：三个工具 `delegate`（IsReadOnly=false、CanRunInParallel=true）、`delegation_read`、`delegation_list`（均 IsReadOnly=true、CanRunInParallel=true），输入 schema、输出文案、错误语义严格按 `contracts/tools.md`；Description 全英文；经 `Env` 类型断言获取 Manager（仿 `Env.TaskList` 的 any 挂载模式，新增 `Env.Delegations any`）。验收：工具单测覆盖三工具的成功与错误输出格式
 - [x] T009 [US1] 在 `cmd/workhorse-agent/cmd_serve.go` 接线：构造 `delegation.Manager`（在 `sessMgr` 创建后回填，仿 `dispatchHost.Manager` 两段式），启动时调 `ReapRunningDelegations`，`registerBuiltinTools` 注册三工具，`newRunnerFactory` 里把 Manager 挂到 `LoopConfig.Notifications` 与 `ToolEnv.Delegations`。验收：`go build ./...`；启动冒烟——serve 起动后三工具出现在注册表，`TestLocalToolDescriptionsAreEnglish` 通过
-- [ ] T010 [US1] US1 集成测试：在 `internal/delegation/` 或 `internal/agent/` 下，以真实 sqlite（临时目录）+ fake provider 走通「delegate → 后台完成 → 下轮通知 → delegation_read 取全文」全链路；断言子会话工具面不含 Write/Edit/Bash/Dispatch/delegate（spec US1 场景 5/6）。验收：`go test ./...` 全绿
+- [x] T010 [US1] US1 集成测试：在 `internal/delegation/` 或 `internal/agent/` 下，以真实 sqlite（临时目录）+ fake provider 走通「delegate → 后台完成 → 下轮通知 → delegation_read 取全文」全链路；断言子会话工具面不含 Write/Edit/Bash/Dispatch/delegate（spec US1 场景 5/6）。验收：`go test ./...` 全绿
 
 **Checkpoint**: US1 可独立交付（MVP）——quickstart「US1」手工路径可全部走通
 
