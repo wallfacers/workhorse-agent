@@ -38,7 +38,7 @@
 **Purpose**: 存储 schema 与共享类型——US1 与 US3 的共同前置
 
 - [x] T002 在 `internal/store/sqlite/migrations.go` 追加迁移 v9：按 `data-model.md` 建 `delegations`、`schedules`、`schedule_runs` 三表及全部索引（含 `idx_delegations_pending` 部分索引），提供 Down 语句；仿 v7/v8 的 `CREATE TABLE IF NOT EXISTS` + 单事务模式。验收：新库自动迁到 v9；既有迁移测试模式下 v9 up/down 均通过
-- [ ] T003 在 `internal/store/types.go` 新增 `Delegation`、`Schedule`、`ScheduleRun` 结构体（字段与 `data-model.md` 表列一一对应，含 status 常量：`DelegationRunning/Complete/Error`、`ScheduleRunRunning/Complete/Error`）。验收：`go build ./...` 通过
+- [x] T003 在 `internal/store/types.go` 新增 `Delegation`、`Schedule`、`ScheduleRun` 结构体（字段与 `data-model.md` 表列一一对应，含 status 常量：`DelegationRunning/Complete/Error`、`ScheduleRunRunning/Complete/Error`）。验收：`go build ./...` 通过
 
 **Checkpoint**: 迁移与类型就绪，US1-US4 可并行开工（US2/US4 不依赖本阶段，也可先行）
 

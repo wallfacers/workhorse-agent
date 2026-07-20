@@ -132,3 +132,73 @@ type Permission struct {
 	Scope     PermissionScope
 	CreatedAt time.Time
 }
+
+// DelegationStatus is the lifecycle state of a background delegation.
+type DelegationStatus string
+
+const (
+	DelegationRunning  DelegationStatus = "running"
+	DelegationComplete DelegationStatus = "complete"
+	DelegationError    DelegationStatus = "error"
+)
+
+// Delegation is one background read-only sub-agent task (001-agent-orchestration
+// US1). Result holds the sub-agent's final assistant text on success, or the
+// error detail when Status == error. NotifiedAt drives exactly-once completion
+// notice injection: nil means pending, a non-nil value means the notice has
+// already been appended to the parent session's history.
+type Delegation struct {
+	ID          string
+	SessionID   string
+	Description string
+	Prompt      string
+	Workdir     string
+	Status      DelegationStatus
+	Title       string
+	Summary     string
+	Result      string
+	Error       string
+	StartedAt   time.Time
+	CompletedAt *time.Time
+	NotifiedAt  *time.Time
+}
+
+// Schedule is one self-serve automation plan (001-agent-orchestration US3).
+// Exactly one of Cron (five-field repeating expression) or RunAt (one-shot
+// instant) is set. Enabled flips to false after a one-shot fires once (FR-019).
+// LastRunAt is the same-minute de-dupe key the scheduler tick checks.
+type Schedule struct {
+	ID          string
+	Name        string
+	Instruction string
+	Cron        string
+	RunAt       *time.Time
+	Workdir     string
+	Enabled     bool
+	CreatedAt   time.Time
+	LastRunAt   *time.Time
+}
+
+// ScheduleRunStatus is the lifecycle state of one schedule execution.
+type ScheduleRunStatus string
+
+const (
+	ScheduleRunRunning  ScheduleRunStatus = "running"
+	ScheduleRunComplete ScheduleRunStatus = "complete"
+	ScheduleRunError    ScheduleRunStatus = "error"
+)
+
+// ScheduleRun is one triggered execution of a Schedule (001-agent-orchestration
+// US3). SessionID is the persisted unattended session the run created (replayable
+// via the history API); OutputTail holds the final assistant text truncated to
+// 64 KiB.
+type ScheduleRun struct {
+	ID          int64
+	ScheduleID  string
+	SessionID   string
+	StartedAt   time.Time
+	CompletedAt *time.Time
+	Status      ScheduleRunStatus
+	OutputTail  string
+	Error       string
+}
