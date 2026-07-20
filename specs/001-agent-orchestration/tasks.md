@@ -69,7 +69,7 @@
 **Independent Test**: quickstart.md「US2 溢出自愈」；自动化为主。
 
 - [x] T011 [US2] 在 `internal/agent/compaction.go` 为 `Compactor` 增加带自定义 keep 的强制压缩入口（如 `CompactWithKeep(ctx, history, keep)`，现有 `Compact` 委托之）；无可压缩空间（`len(history) <= keep+1`）时返回明确的哨兵值/无变化标记。验收：compaction 单测覆盖 keep 覆写与无空间路径
-- [ ] T012 [US2] 在 `internal/agent/loop.go` 的 `runTurnLoop`：`streamWithRetry` 返回错误处（现 loop.go:505 附近）以 `provider.AsProviderError` 判定 `CodeContextLengthExceeded`；当「本迭代未向客户端发出任何 assistant/tool 输出」且「本轮未自愈过」时，置 `overflowRecovered` 标记，调 `runCompaction` 变体以 `keep = max(2, CompactRecentKeep/2)` 强制压缩（复用既有 Thinking→Compacting→Thinking 状态机与 `compaction` 事件发射），成功后 `continue` 重试本轮；压缩无空间或再次溢出 → 走既有 `emitProviderError`。中途流事件里的同类错误（loop.go:606 路径）同规则处理。验收：不改 `providerErrorCodeFor` 语义
+- [x] T012 [US2] 在 `internal/agent/loop.go` 的 `runTurnLoop`：`streamWithRetry` 返回错误处（现 loop.go:505 附近）以 `provider.AsProviderError` 判定 `CodeContextLengthExceeded`；当「本迭代未向客户端发出任何 assistant/tool 输出」且「本轮未自愈过」时，置 `overflowRecovered` 标记，调 `runCompaction` 变体以 `keep = max(2, CompactRecentKeep/2)` 强制压缩（复用既有 Thinking→Compacting→Thinking 状态机与 `compaction` 事件发射），成功后 `continue` 重试本轮；压缩无空间或再次溢出 → 走既有 `emitProviderError`。中途流事件里的同类错误（loop.go:606 路径）同规则处理。验收：不改 `providerErrorCodeFor` 语义
 - [ ] T013 [US2] `internal/agent/loop_test.go` 新增 fake provider 场景：①首次溢出→压缩事件→重试成功，客户端无 error 事件（spec US2 场景 1/4）；②压缩后再溢出→恰好一次压缩尝试+既有 error 事件（场景 2）；③已发出部分 text delta 后溢出→不重试直接 error（场景 3）；④历史过短无可压缩→不重试直接 error（edge case）。验收：四场景全绿
 
 **Checkpoint**: US2 独立交付——长会话撞墙自动恢复
