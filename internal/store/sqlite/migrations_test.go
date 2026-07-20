@@ -29,8 +29,8 @@ func TestMigration_IdempotentRerun(t *testing.T) {
 	if err := s.DB().QueryRowContext(ctx, "SELECT MAX(version) FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 8 {
-		t.Errorf("expected version 8 after first open, got %d", version)
+	if version != 9 {
+		t.Errorf("expected version 9 after first open, got %d", version)
 	}
 	s.Close()
 
@@ -289,5 +289,86 @@ func TestMigration_V8MemoryHybrid(t *testing.T) {
 	}
 	if cnt != 1 {
 		t.Fatalf("entity index count: got %d, want 1", cnt)
+	}
+}
+
+func TestMigration_V9Orchestration(t *testing.T) {
+	ctx := context.Background()
+	s, err := sqlite.Open(ctx, sqlite.Options{DSN: ":memory:"})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	db := s.DB()
+
+	for _, tbl := range []string{"delegations", "schedules", "schedule_runs"} {
+		var name string
+		if err := db.QueryRowContext(ctx,
+			"SELECT name FROM sqlite_master WHERE type='table' AND name=?", tbl).Scan(&name); err != nil {
+			t.Fatalf("table %s not found: %v", tbl, err)
+		}
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO delegations(id, session_id, description, prompt, workdir, status, started_at)
+		 VALUES ('brisk-amber-fox','sess1','Research auth','do it','/repo','running',123456)`); err != nil {
+		t.Fatalf("insert delegation: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE delegations SET status='complete', title='Auth Flow', summary='ok',
+		  result='full text', completed_at=234567, notified_at=345678 WHERE id='brisk-amber-fox'`); err != nil {
+		t.Fatalf("complete delegation: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO schedules(id, name, instruction, cron, workdir, enabled, created_at)
+		 VALUES ('dep-audit','dep-audit','audit','0 9 * * 1-5','/repo',1,123456)`); err != nil {
+		t.Fatalf("insert schedule: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO schedule_runs(schedule_id, session_id, started_at, status)
+		 VALUES ('dep-audit','sess2',123456,'complete')`); err != nil {
+		t.Fatalf("insert schedule_run: %v", err)
+	}
+}
+
+// TestMigration_V9Down applies the v9 down statements on a migrated database and
+// confirms the three tables and their indexes are gone. The down DDL is mirrored
+// here verbatim because migrations_test is a black-box package.
+func TestMigration_V9Down(t *testing.T) {
+	ctx := context.Background()
+	s, err := sqlite.Open(ctx, sqlite.Options{DSN: ":memory:"})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer s.Close()
+	db := s.DB()
+
+	downStmts := []string{
+		`DROP INDEX IF EXISTS idx_schedule_runs_schedule`,
+		`DROP TABLE IF EXISTS schedule_runs`,
+		`DROP TABLE IF EXISTS schedules`,
+		`DROP INDEX IF EXISTS idx_delegations_pending`,
+		`DROP INDEX IF EXISTS idx_delegations_session`,
+		`DROP TABLE IF EXISTS delegations`,
+	}
+	for _, stmt := range downStmts {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("down step failed %q: %v", stmt, err)
+		}
+	}
+	for _, name := range []string{
+		"delegations", "schedules", "schedule_runs",
+		"idx_delegations_session", "idx_delegations_pending", "idx_schedule_runs_schedule",
+	} {
+		var n int
+		if err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM sqlite_master WHERE name=?", name).Scan(&n); err != nil {
+			t.Fatalf("probe %s: %v", name, err)
+		}
+		if n != 0 {
+			t.Errorf("expected %s gone after down, still present", name)
+		}
 	}
 }
