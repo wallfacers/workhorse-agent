@@ -101,7 +101,7 @@
 **Independent Test**: quickstart.md「US4 活动上报」。
 
 - [x] T021 [P] [US4] 在 `internal/api/protocol/protocol.go` 新增 `EventSubagentStatus ServerEventType = "subagent_status"` 并加入 `AllServerEventTypes`。验收：protocol 既有测试通过
-- [ ] T022 [P] [US4] 新建 `internal/tools/dispatch/activity.go`：`FormatActivity(toolName string, input json.RawMessage) string` —— 按 `contracts/events.md` 的翻译表（Read/Grep/Bash/session_search/MemorySearch/其他），输出单行、≤80 码点、超长 `…` 截断、多行折叠；`activity_test.go` 表驱动（含 CJK 截断按码点不按字节）。验收：测试全绿
+- [x] T022 [P] [US4] 新建 `internal/tools/dispatch/activity.go`：`FormatActivity(toolName string, input json.RawMessage) string` —— 按 `contracts/events.md` 的翻译表（Read/Grep/Bash/session_search/MemorySearch/其他），输出单行、≤80 码点、超长 `…` 截断、多行折叠；`activity_test.go` 表驱动（含 CJK 截断按码点不按字节）。验收：测试全绿
 - [ ] T023 [US4] 在 `internal/tools/dispatch/pump.go` 的 forward 路径：子事件为 `tool_call_start` 时解析 tool/input，`parent.EmitNow("subagent_status", payload{agent_id, agent_type, description, activity})`；泵结束（isTurnEnd/ctx 取消/错误）时 EmitNow 一条 `activity: ""` 清空事件；EmitNow 返回 false 时静默丢弃（FR-022）。`agent_type`/`description` 从 Dispatch 调用参数传入 pump（扩展现有 pump 参数）。验收：dispatch 既有测试不回归
 - [ ] T024 [US4] dispatch 测试新增：子代理跑一次含 2+ 工具调用的任务，断言父会话 SSE 序列——每个 `tool_call_start` 对应一条 `subagent_status`（activity 非空单行）、结束恰好一条清空事件、既有 `subagent_event` 全量转发不受影响（spec US4 场景 1-3）。验收：`go test ./internal/tools/dispatch/...` 全绿
 
