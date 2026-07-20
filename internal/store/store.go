@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // ErrNotFound is returned by Get*/Update*/Delete* methods when no row matches
@@ -104,6 +105,28 @@ type Store interface {
 	// error "server restarted". Called at startup so delegations orphaned by a
 	// server restart never stay 'running' forever.
 	ReapRunningDelegations(ctx context.Context) error
+
+	// --- Schedule CRUD (001-agent-orchestration US3) ---
+	CreateSchedule(ctx context.Context, s *Schedule) error
+	GetSchedule(ctx context.Context, id string) (*Schedule, error)
+	ListSchedules(ctx context.Context) ([]*Schedule, error)
+	// DeleteSchedule removes a schedule and cascades its run log in one
+	// transaction. Returns ErrNotFound if the schedule does not exist.
+	DeleteSchedule(ctx context.Context, id string) error
+	// TouchScheduleRun stamps last_run_at; for a one-shot schedule (run_at set)
+	// it also flips enabled to 0 so it never fires again (FR-019).
+	TouchScheduleRun(ctx context.Context, id string, at time.Time) error
+	// CreateScheduleRun inserts a running run row, prunes the plan to the most
+	// recent 20 runs in the same transaction, and returns the new run id.
+	CreateScheduleRun(ctx context.Context, r *ScheduleRun) (int64, error)
+	// FinishScheduleRun records the terminal status, output tail, error, and
+	// completion timestamp for a run.
+	FinishScheduleRun(ctx context.Context, id int64, status ScheduleRunStatus, outputTail, errMsg string) error
+	// ListScheduleRuns returns the most recent runs for a plan (limit clamped
+	// to 1..20; <=0 means the default of 5).
+	ListScheduleRuns(ctx context.Context, scheduleID string, limit int) ([]*ScheduleRun, error)
+	// PruneScheduleRuns deletes all but the most recent `keep` runs for a plan.
+	PruneScheduleRuns(ctx context.Context, scheduleID string, keep int) error
 
 	// Close releases the underlying handle. Calling Close more than once is
 	// safe; the second call is a no-op.

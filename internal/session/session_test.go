@@ -97,8 +97,27 @@ func (f *fakeStore) FailDelegation(context.Context, string, string, string) erro
 func (f *fakeStore) ClaimPendingNotifications(context.Context, string) ([]*store.Delegation, error) {
 	return nil, nil
 }
-func (f *fakeStore) ReapRunningDelegations(context.Context) error { return nil }
-func (f *fakeStore) Close() error                                 { return nil }
+func (f *fakeStore) ReapRunningDelegations(context.Context) error          { return nil }
+func (f *fakeStore) CreateSchedule(context.Context, *store.Schedule) error { return nil }
+func (f *fakeStore) GetSchedule(context.Context, string) (*store.Schedule, error) {
+	return nil, store.ErrNotFound
+}
+func (f *fakeStore) ListSchedules(context.Context) ([]*store.Schedule, error) {
+	return nil, nil
+}
+func (f *fakeStore) DeleteSchedule(context.Context, string) error              { return nil }
+func (f *fakeStore) TouchScheduleRun(context.Context, string, time.Time) error { return nil }
+func (f *fakeStore) CreateScheduleRun(context.Context, *store.ScheduleRun) (int64, error) {
+	return 0, nil
+}
+func (f *fakeStore) FinishScheduleRun(context.Context, int64, store.ScheduleRunStatus, string, string) error {
+	return nil
+}
+func (f *fakeStore) ListScheduleRuns(context.Context, string, int) ([]*store.ScheduleRun, error) {
+	return nil, nil
+}
+func (f *fakeStore) PruneScheduleRuns(context.Context, string, int) error { return nil }
+func (f *fakeStore) Close() error                                         { return nil }
 
 func TestNew_DefaultsAndIDFormat(t *testing.T) {
 	s := New(Options{})
