@@ -88,7 +88,7 @@
 - [x] T017 [US3] 新建 `internal/schedule/worker.go`：仿 `internal/memory/curation/worker.go` 的 `Start(ctx)` + `for/select` 模式，分钟对齐 `time.Ticker`；每 tick 扫 `ListSchedules`，触发判定按 `data-model.md`（enabled、cron 匹配当前分钟或一次性 `run_at` 已到且从未运行、`last_run_at` 不在当前分钟），命中先 `TouchScheduleRun` 再 goroutine 跑 `RunOnce`；tick 内 recover + WARN；ctx 取消即停。验收：`worker_test.go` 用可注入时钟覆盖同分钟去重（spec SC-004）、一次性失效（FR-019）、错过不补跑、删除后不触发
 - [x] T018 [P] [US3] 新建 `internal/tools/scheduletool/`：四工具 `schedule_create`/`schedule_list`/`schedule_remove`/`schedule_read_log`，schema 与输出严格按 `contracts/tools.md`（含 cron XOR run_at 校验、run_at 用 RFC 3339 解析、workdir 默认取 `Env.Workdir`）；Description 全英文；经 `Env.Schedules any` 断言取依赖。验收：工具单测覆盖校验错误文案
 - [x] T019 [US3] 在 `cmd/workhorse-agent/cmd_serve.go` 接线：构造 store 支撑的 schedule 组件，`schedule.Worker` 用**可取消 ctx** 启动并在 shutdown 路径显式停止（注意：不要复制 curation 的 background-ctx 松散接线），注册四工具，`ToolEnv.Schedules` 挂载。验收：serve 启停无 goroutine 泄漏（测试用 `Start`+cancel 断言退出）
-- [ ] T020 [US3] US3 集成测试：真实 sqlite + fake provider + 注入时钟，走通「schedule_create（一次性）→ tick 触发 → 持久会话运行 → schedule_runs 落库 → schedule_read_log 可读 → enabled=0」（spec US3 场景 1-4）；权限场景断言无人值守下权限提示走超时拒绝且运行不挂起（场景 7，可用极短 timeout 配置）。验收：`go test ./...` 全绿
+- [x] T020 [US3] US3 集成测试：真实 sqlite + fake provider + 注入时钟，走通「schedule_create（一次性）→ tick 触发 → 持久会话运行 → schedule_runs 落库 → schedule_read_log 可读 → enabled=0」（spec US3 场景 1-4）；权限场景断言无人值守下权限提示走超时拒绝且运行不挂起（场景 7，可用极短 timeout 配置）。验收：`go test ./...` 全绿
 
 **Checkpoint**: US3 独立交付——quickstart「US3」手工路径可走通（含重启持久化）
 
