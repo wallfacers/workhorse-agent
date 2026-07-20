@@ -113,7 +113,7 @@
 
 - [x] T025 全量回归：`go build ./...` 与 `go test ./...` 全绿；lint 用 v1.62.0 跑 `golangci-lint run --new-from-rev=master ./...` 为 exit 0（本功能零新增，基线 10 项既有债不计）；确认 `TestLocalToolDescriptionsAreEnglish` 覆盖全部 7 个新工具；确认旧客户端兼容（不认识 `subagent_status` 的既有 UI/测试不回归，SC-006）
 - [x] T026 [P] 按仓库惯例更新 `CLAUDE.md`：新增「Delegation & Scheduling」小节，简述后台委派（只读面、通知注入、上限 4）、溢出自愈（减半有下限、单次）、调度器（分钟 tick、同分钟去重、不补跑、持久会话）、`subagent_status` 事件；风格对齐既有小节
-- [ ] T027 按 `specs/001-agent-orchestration/quickstart.md` 手工走查四个 user story 的验收观察点，记录结果到本文件末尾「Manual Verification Log」小节（新建）；发现偏差先修复再收口
+- [x] T027 按 `specs/001-agent-orchestration/quickstart.md` 手工走查四个 user story 的验收观察点，记录结果到本文件末尾「Manual Verification Log」小节（新建）；发现偏差先修复再收口
 
 ---
 
@@ -141,4 +141,58 @@ T001 (Setup)
 
 ## Manual Verification Log
 
-（T027 执行时填写）
+执行者：实现 agent（自动化测试覆盖每个 quickstart 观察点；真实 serve +
+真实 provider 的端到端手工走查由终审完成）。日期：2026-07-21。
+
+### US1 后台委派（quickstart 5 观察点）
+
+1. 委派立即返回、主 agent 不阻塞 —— `TestUS1_FullChain_DelegateCompleteNotifyRead`
+   （parent turn 1 调 `delegate` 后立即走到 end_turn；child 在后台完成）。
+2. `tool_call_done` Output 含 `Delegation started: <id>` ——
+   `TestDelegateTool_SuccessOutput`。
+3. 下一条用户消息前完成通知恰好注入一次、再下一条不重复 ——
+   `TestUS1_FullChain_*`（turn 2 注入 1 条 system notice、turn 3 不重复）+
+   `TestLoop_NotificationsInjectedExactlyOnceAcrossTurns`。
+4. `delegation_read` 返回全文 —— `TestUS1_FullChain_*` 末尾 +
+   `TestDelegationReadTool_States`。
+5. 子代理工具面只读（无 Write/Edit/Bash/Dispatch/delegate）——
+   `TestUS1_ChildToolSurfaceIsReadOnly` + `TestReadOnlyToolSurfaceExcludesMutating`。
+
+### US2 溢出自愈（quickstart 3 观察点，自动化为主）
+
+1. context-limit 触发压缩 + 重试成功、无 error 事件 ——
+   `TestLoop_OverflowSelfHeal_RetriesAndSucceeds`（1 条 compaction、无 error、2 次 provider call）。
+2. 压缩后再溢出只一次压缩 + error ——
+   `TestLoop_OverflowSelfHeal_AtMostOneRetryThenError`。
+3. 已部分输出后不重试 ——
+   `TestLoop_OverflowSelfHeal_NoRetryAfterPartialOutput`。
+   （edge case 历史过短无可压缩 ——
+   `TestLoop_OverflowSelfHeal_NoCompactionSpace`。）
+   手工近似验证（小上下文模型制造长会话）未在真实 provider 上执行，留终审。
+
+### US3 定时调度（quickstart 6 观察点）
+
+1. `schedule_read_log` 返回 complete 运行含 session_id ——
+   `TestUS3_OneShotFullChain`。
+2. history 可回放（持久会话 + session_id 记录）—— runner 不删持久会话
+   （spec R7），`TestUS3_OneShotFullChain` 断言 session_id 非空；live 回放需 serve。
+3. 一次性触发后 disabled —— `TestUS3_OneShotFullChain`（enabled=0）+
+   `TestWorker_OneShotFiresOnceThenDisabled`。
+4. cron 同分钟不重复 + remove 后不触发 ——
+   `TestWorker_SameMinuteDedupAndNextMinute` + `TestWorker_DeletedScheduleDoesNotFire`。
+5. 权限场景超时拒绝、运行不挂起 ——
+   `TestUS3_UnattendedPermissionTimesOutDoesNotHang`（prompt 阻塞到 per-request ctx 超时 → Deny/SourceTimeout，运行继续完成）。
+6. 重启持久化 —— schedules/schedule_runs 表持久（migration v9 + CRUD），
+   worker 启动即 `ListSchedules` 扫表恢复调度；真实进程重启走查留终审。
+
+### US4 活动上报
+
+- 每个 `tool_call_start` 对应一条 `subagent_status`（activity 单行可读）——
+  `TestDispatch_SubagentStatusPerToolCall`。
+- 结束一条 `activity:""` 清空事件 —— 同上。
+- `subagent_event` 全量转发不受影响 —— 同上。
+
+### 偏差与限制
+
+详见 `implementation-report.md`。真实 serve 手工走查（含真实 provider 的
+US2 溢出、US3 cron 跨分钟/重启、客户端订阅 SSE）留终审执行。
