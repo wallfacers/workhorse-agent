@@ -44,6 +44,11 @@ type LoopConfig struct {
 	// threshold percentage used in "auto" mode.
 	ToolSearchMode    string
 	ToolSearchPercent int
+
+	// Notifications, when non-nil, is consulted at the start of each turn to
+	// inject one-shot system messages (e.g. completed background delegations)
+	// before the user message is appended. See NotificationSource.
+	Notifications NotificationSource
 }
 
 // ApplyDefaults fills zero-valued fields with the configuration spec defaults.
@@ -140,6 +145,16 @@ func NewLoop(cfg LoopConfig) *Loop {
 // never block loop teardown. A nil ingestor disables extraction.
 type MemoryIngestor interface {
 	IngestSession(sessionID string, history []provider.Message)
+}
+
+// NotificationSource supplies one-shot notices (e.g. completed background
+// delegations) the loop injects as system messages at the start of each turn,
+// before the user message is appended. ConsumePending must be idempotent in the
+// sense that a second call for the same session returns nothing new — the
+// delegation store's ClaimPendingNotifications stamps notified_at to guarantee
+// exactly-once delivery. A nil LoopConfig.Notifications disables injection.
+type NotificationSource interface {
+	ConsumePending(ctx context.Context, sessionID string) []string
 }
 
 // Run is the session goroutine entry point. It selects on ctx.Done and
@@ -250,6 +265,7 @@ func (l *Loop) runTurnSafe(parent context.Context, msg session.ClientMessage) {
 			map[string]any{"state": string(l.Session.State())}, true)
 		return
 	}
+	l.injectNotifications(parent)
 	l.Session.AppendMessage(context.Background(), provider.Message{
 		Role:    provider.RoleUser,
 		Content: []provider.ContentBlock{{Type: provider.BlockText, Text: u.Content}},
@@ -320,6 +336,24 @@ func (l *Loop) runTurnSafe(parent context.Context, msg session.ClientMessage) {
 		_ = l.Session.ForceTransition(session.StateIdle)
 	}
 	_ = wedged // the wedged goroutine is orphaned by design (see comment above)
+}
+
+// injectNotifications drains pending one-shot notices from the configured
+// NotificationSource and appends each as a system message before the turn's
+// user message. Called after the Idle→Thinking transition succeeds, so the
+// model sees the notices as context for the upcoming turn. A nil source is a
+// no-op; the source is responsible for exactly-once delivery (it absorbs its
+// own errors and never blocks the turn).
+func (l *Loop) injectNotifications(ctx context.Context) {
+	if l.Config.Notifications == nil {
+		return
+	}
+	for _, notice := range l.Config.Notifications.ConsumePending(ctx, l.Session.ID) {
+		l.Session.AppendMessage(context.Background(), provider.Message{
+			Role:    provider.RoleSystem,
+			Content: []provider.ContentBlock{{Type: provider.BlockText, Text: notice}},
+		})
+	}
 }
 
 // finishCancelledTurn synthesises cancelled tool_results for every pending

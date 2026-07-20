@@ -250,7 +250,7 @@ func TestManager_ConsumeNotificationsExactlyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	first := h.dMgr.ConsumeNotifications(ctx, "sess1")
+	first := h.dMgr.ConsumePending(ctx, "sess1")
 	if len(first) != 1 {
 		t.Fatalf("first consume: want 1 notice, got %d", len(first))
 	}
@@ -261,7 +261,7 @@ func TestManager_ConsumeNotificationsExactlyOnce(t *testing.T) {
 		}
 	}
 
-	if second := h.dMgr.ConsumeNotifications(ctx, "sess1"); len(second) != 0 {
+	if second := h.dMgr.ConsumePending(ctx, "sess1"); len(second) != 0 {
 		t.Fatalf("second consume: want 0 (exactly-once), got %d", len(second))
 	}
 }

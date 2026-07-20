@@ -200,10 +200,12 @@ func (m *Manager) List(ctx context.Context, sessionID string) ([]*store.Delegati
 	return m.Store.ListDelegations(ctx, sessionID)
 }
 
-// ConsumeNotifications claims every finished-but-unnotified delegation for the
-// session and renders each as a one-shot completion notice. The agent loop
-// injects these as system messages at the start of the next turn.
-func (m *Manager) ConsumeNotifications(ctx context.Context, sessionID string) []string {
+// ConsumePending claims every finished-but-unnotified delegation for the session
+// and renders each as a one-shot completion notice. It implements
+// agent.NotificationSource so the loop injects these as system messages at the
+// start of the next turn. Errors are absorbed (WARN) — a failed claim yields no
+// notices rather than blocking the turn.
+func (m *Manager) ConsumePending(ctx context.Context, sessionID string) []string {
 	pending, err := m.Store.ClaimPendingNotifications(ctx, sessionID)
 	if err != nil {
 		m.Log.Warn("delegation: claim notifications", "session", sessionID, "err", err)
