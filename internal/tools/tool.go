@@ -90,6 +90,10 @@ type Env struct {
 	// ToolSearch tool. Typed as any to avoid import cycles; ToolSearch
 	// type-asserts this to ToolCatalog. nil when tool search is inactive.
 	ToolCatalog any
+	// Delegations holds the process-wide delegation manager. Typed as any to
+	// avoid import cycles; the delegate/delegation_read/delegation_list tools
+	// type-assert this to *delegation.Manager.
+	Delegations any
 }
 
 // Result is the outcome of one tool call. Output is the canonical string the
