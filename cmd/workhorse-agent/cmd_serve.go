@@ -310,8 +310,9 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	}
 
 	// 5d. Scheduler (US3). Runner drives one unattended trigger; Worker scans
-	// every minute on the serve ctx so shutdown cancels it cleanly (no
-	// background-ctx leak). The four tools resolve the store via Env.Schedules.
+	// every minute on a cancellable child of the serve ctx so shutdown stops it
+	// promptly (schedCancel below) instead of leaking until process exit. The
+	// four tools resolve the store via Env.Schedules.
 	scheduleRunner := schedule.NewRunner(st, sessMgr, logger)
 	for _, t := range scheduletool.Tools() {
 		if err := registry.Register(t); err != nil {
@@ -319,7 +320,9 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 	scheduleWorker := schedule.NewWorker(st, scheduleRunner, logger)
-	go scheduleWorker.Start(ctx)
+	schedCtx, schedCancel := context.WithCancel(ctx)
+	defer schedCancel()
+	go scheduleWorker.Start(schedCtx)
 
 	// 6b. Late-wire the approval manager hooks that depend on sessMgr / the
 	// live external-agents dir.
@@ -385,6 +388,9 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		}
 		break
 	}
+
+	// Stop the scheduler first so no new unattended run starts mid-shutdown.
+	schedCancel()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(),
 		time.Duration(cfg.Server.GracefulShutdownTimeoutSeconds)*time.Second)
