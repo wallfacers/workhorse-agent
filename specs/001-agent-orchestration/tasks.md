@@ -196,3 +196,21 @@ T001 (Setup)
 
 详见 `implementation-report.md`。真实 serve 手工走查（含真实 provider 的
 US2 溢出、US3 cron 跨分钟/重启、客户端订阅 SSE）留终审执行。
+
+### 终审记录（reviewer，2026-07-21）
+
+- 十个高风险不变量逐一读码复核通过：委派只读工具面、通知 exactly-once
+  （`ClaimPendingNotifications` 事务先盖 `notified_at` 后注入）、禁嵌套双防线、
+  溢出自愈单次且已有输出不重试、调度同分钟去重/一次性失效/不补跑、迁移 v9 可回滚、
+  无人值守权限超时拒绝、`subagent_status` 入 `AllServerEventTypes` 不破旧客户端、
+  活动行 80 码点上限、7 工具英文描述（`TestLocalToolDescriptionsAreEnglish` 绿）。
+- **终审期修复 1 处**（commit `c0656b9`）：`schedule.Worker` 原用永不取消的
+  `context.Background()` serve ctx 启动，shutdown 不会停它（违反 T019 验收，理论上
+  可在优雅关闭窗口再触发一次调度）。改为派生可取消 ctx 并在 shutdown 起始处
+  `schedCancel()`。curation worker 的同类松散接线属既有问题，不在本功能范围，未动。
+- 门禁最终状态：`go build ./...` exit 0；`go test ./...` exit 0（0 FAIL）；
+  `golangci-lint run --new-from-rev=master ./...`（v1.62.0）exit 0。
+- 已 `--no-ff` 合并到 master（merge commit `4f49a4a`），合并后 master 复验 build+test
+  全绿，已 `git push origin master`（`afe470b..4f49a4a`）。
+- 残留（已知、可接受）：持久调度会话累积无 forget 机制（见 report 风险 1，
+  单用户本地小规模可控）；真实 provider/真实 serve 的端到端手工走查仍建议后续补做。
