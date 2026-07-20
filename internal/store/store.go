@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // ErrNotFound is returned by Get*/Update*/Delete* methods when no row matches
@@ -80,6 +81,52 @@ type Store interface {
 	// rules (SessionID="") plus rules scoped to this session.
 	ListPermissions(ctx context.Context, sessionID string) ([]*Permission, error)
 	DeletePermission(ctx context.Context, id string) error
+
+	// --- Delegation CRUD (001-agent-orchestration US1) ---
+	CreateDelegation(ctx context.Context, d *Delegation) error
+	GetDelegation(ctx context.Context, id string) (*Delegation, error)
+	ListDelegations(ctx context.Context, sessionID string) ([]*Delegation, error)
+	// CountRunningDelegations returns the global count of status='running'
+	// delegations; used to enforce the fixed concurrency cap across sessions.
+	CountRunningDelegations(ctx context.Context) (int, error)
+	// CompleteDelegation transitions a delegation to 'complete', recording the
+	// derived title/summary, full result, and completion timestamp.
+	CompleteDelegation(ctx context.Context, id, title, summary, result string) error
+	// FailDelegation transitions a delegation to 'error', recording the reason
+	// and (optionally) a partial result detail.
+	FailDelegation(ctx context.Context, id, errMsg, result string) error
+	// ClaimPendingNotifications atomically selects every finished-but-unnotified
+	// delegation for the session and marks notified_at within one transaction,
+	// returning the claimed set. notified_at is set BEFORE the notice is injected
+	// into history, so a crash between claim and inject loses one notification
+	// rather than duplicating it (prefer-dropping-over-duplication).
+	ClaimPendingNotifications(ctx context.Context, sessionID string) ([]*Delegation, error)
+	// ReapRunningDelegations marks every still-running delegation as failed with
+	// error "server restarted". Called at startup so delegations orphaned by a
+	// server restart never stay 'running' forever.
+	ReapRunningDelegations(ctx context.Context) error
+
+	// --- Schedule CRUD (001-agent-orchestration US3) ---
+	CreateSchedule(ctx context.Context, s *Schedule) error
+	GetSchedule(ctx context.Context, id string) (*Schedule, error)
+	ListSchedules(ctx context.Context) ([]*Schedule, error)
+	// DeleteSchedule removes a schedule and cascades its run log in one
+	// transaction. Returns ErrNotFound if the schedule does not exist.
+	DeleteSchedule(ctx context.Context, id string) error
+	// TouchScheduleRun stamps last_run_at; for a one-shot schedule (run_at set)
+	// it also flips enabled to 0 so it never fires again (FR-019).
+	TouchScheduleRun(ctx context.Context, id string, at time.Time) error
+	// CreateScheduleRun inserts a running run row, prunes the plan to the most
+	// recent 20 runs in the same transaction, and returns the new run id.
+	CreateScheduleRun(ctx context.Context, r *ScheduleRun) (int64, error)
+	// FinishScheduleRun records the terminal status, output tail, error, and
+	// completion timestamp for a run.
+	FinishScheduleRun(ctx context.Context, id int64, status ScheduleRunStatus, outputTail, errMsg string) error
+	// ListScheduleRuns returns the most recent runs for a plan (limit clamped
+	// to 1..20; <=0 means the default of 5).
+	ListScheduleRuns(ctx context.Context, scheduleID string, limit int) ([]*ScheduleRun, error)
+	// PruneScheduleRuns deletes all but the most recent `keep` runs for a plan.
+	PruneScheduleRuns(ctx context.Context, scheduleID string, keep int) error
 
 	// Close releases the underlying handle. Calling Close more than once is
 	// safe; the second call is a no-op.

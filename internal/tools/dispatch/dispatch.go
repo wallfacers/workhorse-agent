@@ -178,7 +178,11 @@ func (t Tool) Run(ctx context.Context, env *tools.Env, raw json.RawMessage) (*to
 
 	collector := newCollector()
 	pumpDone := make(chan struct{})
-	go pump(ctx, childSess, parentSess, mode, collector, pumpDone)
+	agentType := at.Name
+	if agentType == "" {
+		agentType = "general"
+	}
+	go pump(ctx, childSess, parentSess, mode, agentType, foldAndCap(in.Prompt), collector, pumpDone)
 
 	watcherDone := make(chan struct{})
 	go func() {

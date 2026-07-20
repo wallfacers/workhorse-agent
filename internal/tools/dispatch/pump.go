@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -15,18 +16,30 @@ import (
 // complete inside a single ticker interval and be missed entirely.
 //
 // In streaming mode each child event is wrapped as a subagent_event on the
-// parent's outbox. In blocking mode events feed only the collector.
+// parent's outbox, and a tool_call_start also emits a human-readable
+// subagent_status summary (US4). In blocking mode events feed only the
+// collector.
+//
+// agentType/description are threaded through so every subagent_status event
+// carries the sub-agent's role and task description.
 //
 // After the end-of-turn signal we still drain a brief grace window so
-// trailing events (a late `pong` etc.) make it through before the pump exits.
+// trailing events (a late `pong` etc.) make it through before the pump exits,
+// and on exit we emit a final subagent_status with an empty activity so
+// clients can clear the status line.
 func pump(
 	ctx context.Context,
 	child, parent *session.Session,
-	mode string,
+	mode, agentType, description string,
 	c *collector,
 	done chan<- struct{},
 ) {
 	defer close(done)
+	defer func() {
+		if mode == modeStreaming {
+			emitStatusClear(parent, child.ID, agentType, description)
+		}
+	}()
 
 	const gracePeriod = 50 * time.Millisecond
 
@@ -39,7 +52,7 @@ func pump(
 		if turnEnded {
 			wait = time.Until(graceDeadline)
 			if wait <= 0 {
-				drainRemaining(parent, child, mode, c)
+				drainRemaining(parent, child, mode, agentType, description, c)
 				return
 			}
 		} else {
@@ -52,7 +65,7 @@ func pump(
 			timer.Stop()
 			c.observe(ev)
 			if mode == modeStreaming {
-				forward(ctx, parent, child.ID, ev)
+				forward(ctx, parent, child.ID, agentType, description, ev)
 			}
 			if !turnEnded && isTurnEnd(ev) {
 				turnEnded = true
@@ -60,11 +73,11 @@ func pump(
 			}
 		case <-ctx.Done():
 			timer.Stop()
-			drainRemaining(parent, child, mode, c)
+			drainRemaining(parent, child, mode, agentType, description, c)
 			return
 		case <-timer.C:
 			if turnEnded {
-				drainRemaining(parent, child, mode, c)
+				drainRemaining(parent, child, mode, agentType, description, c)
 				return
 			}
 			// No end-of-turn signal yet and no events arrived in a second —
@@ -98,9 +111,11 @@ func isTurnEnd(ev session.Event) bool {
 }
 
 // forward wraps a child event into a `subagent_event` payload on the parent's
-// outbox. EmitNow is used because the parent may be inside a write-heavy
-// turn — blocking the pump goroutine on a full outbox would stall the child.
-func forward(ctx context.Context, parent *session.Session, childID string, ev session.Event) {
+// outbox. When the child event is a tool_call_start it also emits a
+// `subagent_status` summary translating the tool call to one human-readable
+// line (US4). EmitNow is non-blocking; a full parent outbox silently drops the
+// status (best-effort, FR-022 — the sub-agent task itself is unaffected).
+func forward(ctx context.Context, parent *session.Session, childID, agentType, description string, ev session.Event) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -115,18 +130,39 @@ func forward(ctx context.Context, parent *session.Session, childID string, ev se
 		"agent_id": childID,
 		"event":    inner,
 	})
+	if ev.Type == "tool_call_start" {
+		toolName, _ := ev.Payload["tool"].(string)
+		input, _ := ev.Payload["input"].(json.RawMessage)
+		parent.EmitNow("subagent_status", map[string]any{
+			"agent_id":    childID,
+			"agent_type":  agentType,
+			"description": description,
+			"activity":    FormatActivity(toolName, input),
+		})
+	}
+}
+
+// emitStatusClear publishes a subagent_status with an empty activity so clients
+// can remove the sub-agent's status line when its turn ends (US4 scenario 2).
+func emitStatusClear(parent *session.Session, childID, agentType, description string) {
+	parent.EmitNow("subagent_status", map[string]any{
+		"agent_id":    childID,
+		"agent_type":  agentType,
+		"description": description,
+		"activity":    "",
+	})
 }
 
 // drainRemaining flushes whatever is still sitting in the child outbox before
 // the pump returns. Best-effort; if the parent's outbox is full the
-// subagent_event is dropped rather than blocked-on.
-func drainRemaining(parent, child *session.Session, mode string, c *collector) {
+// subagent_event/status is dropped rather than blocked-on.
+func drainRemaining(parent, child *session.Session, mode, agentType, description string, c *collector) {
 	for {
 		select {
 		case ev := <-child.Outbox:
 			c.observe(ev)
 			if mode == modeStreaming {
-				forward(context.Background(), parent, child.ID, ev)
+				forward(context.Background(), parent, child.ID, agentType, description, ev)
 			}
 		default:
 			return
@@ -182,8 +218,8 @@ func (c *collector) FinalText() string {
 	return c.curAccum
 }
 
-// ErrorMessage is non-empty when the child emitted an `error` event during
-// the turn (excluding recoverable provider_retry, which is its own event).
+// ErrorMessage is non-empty when the child emitted an `error` event during the
+// turn (excluding recoverable provider_retry, which is its own event).
 func (c *collector) ErrorMessage() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

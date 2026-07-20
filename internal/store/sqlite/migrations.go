@@ -267,6 +267,68 @@ var v8MemoryHybridDown = []string{
 	`ALTER TABLE memory_entries DROP COLUMN event_date`,
 }
 
+// v9Orchestration adds persistence for background read-only delegations and
+// the in-process cron scheduler (001-agent-orchestration). Three tables:
+// delegations holds sub-agent results plus the notified_at column that drives
+// exactly-once notification; schedules + schedule_runs back the self-serve
+// cron plans and their run logs. schedule_runs rows are removed by
+// DeleteSchedule in the same transaction (no FK cascade) so prune + delete stay
+// atomic. All timestamps remain INTEGER unix micros.
+var v9Orchestration = []string{
+	`CREATE TABLE IF NOT EXISTS delegations (
+		id           TEXT    PRIMARY KEY,
+		session_id   TEXT    NOT NULL,
+		description  TEXT    NOT NULL,
+		prompt       TEXT    NOT NULL,
+		workdir      TEXT    NOT NULL,
+		status       TEXT    NOT NULL,
+		title        TEXT,
+		summary      TEXT,
+		result       TEXT,
+		error        TEXT,
+		started_at   INTEGER NOT NULL,
+		completed_at INTEGER,
+		notified_at  INTEGER
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_delegations_session ON delegations(session_id, started_at DESC)`,
+	`CREATE INDEX IF NOT EXISTS idx_delegations_pending ON delegations(session_id) WHERE status != 'running' AND notified_at IS NULL`,
+
+	`CREATE TABLE IF NOT EXISTS schedules (
+		id          TEXT    PRIMARY KEY,
+		name        TEXT    NOT NULL,
+		instruction TEXT    NOT NULL,
+		cron        TEXT,
+		run_at      INTEGER,
+		workdir     TEXT    NOT NULL,
+		enabled     INTEGER NOT NULL DEFAULT 1,
+		created_at  INTEGER NOT NULL,
+		last_run_at INTEGER
+	)`,
+
+	`CREATE TABLE IF NOT EXISTS schedule_runs (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		schedule_id  TEXT    NOT NULL,
+		session_id   TEXT,
+		started_at   INTEGER NOT NULL,
+		completed_at INTEGER,
+		status       TEXT    NOT NULL,
+		output_tail  TEXT,
+		error        TEXT
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_schedule_runs_schedule ON schedule_runs(schedule_id, started_at DESC)`,
+}
+
+// v9OrchestrationDown reverses v9. Order drops the run-log + index before the
+// plan table, then the delegation indexes and table.
+var v9OrchestrationDown = []string{
+	`DROP INDEX IF EXISTS idx_schedule_runs_schedule`,
+	`DROP TABLE IF EXISTS schedule_runs`,
+	`DROP TABLE IF EXISTS schedules`,
+	`DROP INDEX IF EXISTS idx_delegations_pending`,
+	`DROP INDEX IF EXISTS idx_delegations_session`,
+	`DROP TABLE IF EXISTS delegations`,
+}
+
 // migrationsByVersion is the ordered list of all migrations. Each entry is
 // applied inside its own transaction; schema_version is bumped per step.
 var migrationsByVersion = []Migration{
@@ -278,6 +340,7 @@ var migrationsByVersion = []Migration{
 	{Version: 6, Up: v6SessionCustomization, Down: nil},
 	{Version: 7, Up: v7Memory, Down: v7MemoryDown},
 	{Version: 8, Up: v8MemoryHybrid, Down: v8MemoryHybridDown},
+	{Version: 9, Up: v9Orchestration, Down: v9OrchestrationDown},
 }
 
 func (s *Store) migrate(ctx context.Context) error {

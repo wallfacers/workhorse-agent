@@ -279,6 +279,55 @@ Legacy `MEMORY.md`/`USER.md` under `~/.workhorse-agent/memories/` are migrated
 once at startup into entries (idempotent, `.migrated_to_entries` marker; originals
 copied to `memories/legacy/`, design D7).
 
+## Delegation & Scheduling
+
+Four orchestration capabilities (`001-agent-orchestration`):
+
+- **Background read-only delegation** (US1): the `delegate` tool starts a
+  background sub-agent in an ephemeral session with a fixed read-only tool
+  surface (`Read, Grep, session_search, LoadMemory, memory_read, MemorySearch,
+  ToolSearch` — never Write/Edit/Bash/Dispatch/delegate). Nesting is refused
+  (`delegate` is absent from the child surface, and the manager rejects any
+  `Start` whose parent carries the `delegation_child` session-metadata marker).
+  At most 4 run concurrently (fixed cap, rejected over). Results persist in the
+  `delegations` table (migration v9); a completion notice is injected as a
+  system message **before** the next turn's user message, exactly once
+  (`notified_at` is stamped inside the claim transaction —
+  prefer-dropping-over-duplication). `delegation_read`/`delegation_list`
+  retrieve results; a running delegation returns a non-blocking status.
+- **Context-length overflow self-heal** (US2): when a provider returns
+  `context_length_exceeded` and the turn has not yet emitted any assistant/tool
+  output, the loop forces one aggressive compaction
+  (`keep = max(2, CompactRecentKeep/2)` via `Compactor.CompactWithKeep`) and
+  retries the same turn. A second overflow, partial output, a missing Compactor,
+  or nothing left to compact all fall through to the existing error path. At
+  most one self-heal per turn.
+- **In-process cron scheduler** (US3): `schedule_create/list/remove/read_log`
+  tools manage persisted plans (5-field cron or one-shot `run_at`, RFC 3339).
+  `internal/schedule.Worker` ticks every minute on the serve ctx (cancellable,
+  no leader lease — serve is the singleton) and fires due plans: cron matches
+  the current minute, or a one-shot's `run_at` minute has arrived and it never
+  ran; `last_run_at` in the current minute de-dupes; missed minutes are not
+  backfilled. `TouchScheduleRun` stamps `last_run_at` (and disables a one-shot)
+  before launching the run. Each trigger creates a **persistent** unattended
+  session (`metadata {scheduled: <id>}`, replayable via the history API) and
+  records a row in `schedule_runs` (output tail ≤64 KiB, pruned to the most
+  recent 20). A missing workdir fails the run and keeps the plan. Permission
+  requests in an unattended run time out to Deny (no one answers) — the run
+  continues instead of hanging.
+- **Sub-agent activity reporting** (US4): the dispatch pump emits a
+  `subagent_status` SSE event for every child `tool_call_start`, translating the
+  tool call to one ≤80-rune line (`Read <path>`, `Grep "<pattern>"`, the Bash
+  command, `Search "<query>"`, or the tool name). The turn ends with one clear
+  event (`activity: ""`); `EmitNow` is best-effort (a full parent outbox drops
+  the status without affecting the sub-agent task). Old clients ignore the
+  unknown event type; `protocol_version` stays `"2"`.
+
+The cron matcher is a self-contained five-field implementation (no third-party
+dependency); day-of-month and day-of-week combine with AND — a deliberate
+simplification from vixie-cron's OR that matches every common use case where at
+most one of them is restricted.
+
 ## Extended thinking & prompt cache
 
 **Anthropic extended thinking** is supported (Anthropic provider only). Config:

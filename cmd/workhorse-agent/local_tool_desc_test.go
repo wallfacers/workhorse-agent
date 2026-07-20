@@ -9,10 +9,12 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/tools/agentsetup"
 	"github.com/wallfacers/workhorse-agent/internal/tools/bash"
 	"github.com/wallfacers/workhorse-agent/internal/tools/builtin"
+	delegationtool "github.com/wallfacers/workhorse-agent/internal/tools/delegation"
 	"github.com/wallfacers/workhorse-agent/internal/tools/dispatch"
 	"github.com/wallfacers/workhorse-agent/internal/tools/extagent/drafttool"
 	"github.com/wallfacers/workhorse-agent/internal/tools/extagent/genbash"
 	"github.com/wallfacers/workhorse-agent/internal/tools/memorytool"
+	"github.com/wallfacers/workhorse-agent/internal/tools/scheduletool"
 	"github.com/wallfacers/workhorse-agent/internal/tools/sessionsearch"
 	"github.com/wallfacers/workhorse-agent/internal/tools/tasklist"
 	"github.com/wallfacers/workhorse-agent/internal/tools/toolsearch"
@@ -40,7 +42,14 @@ func localStaticTools() []tools.Tool {
 		&sessionsearch.Tool{},
 		tasklist.TodoWrite{},
 		toolsearch.Tool{},
+		delegationtool.DelegateTool{},
+		delegationtool.DelegationReadTool{},
+		delegationtool.DelegationListTool{},
 		dispatch.Tool{},
+		scheduletool.CreateTool{},
+		scheduletool.ListTool{},
+		scheduletool.RemoveTool{},
+		scheduletool.ReadLogTool{},
 		agentsetup.Tool{},
 		genbash.Tool{},
 		drafttool.Tool{},

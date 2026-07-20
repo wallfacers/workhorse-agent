@@ -44,6 +44,11 @@ type LoopConfig struct {
 	// threshold percentage used in "auto" mode.
 	ToolSearchMode    string
 	ToolSearchPercent int
+
+	// Notifications, when non-nil, is consulted at the start of each turn to
+	// inject one-shot system messages (e.g. completed background delegations)
+	// before the user message is appended. See NotificationSource.
+	Notifications NotificationSource
 }
 
 // ApplyDefaults fills zero-valued fields with the configuration spec defaults.
@@ -140,6 +145,16 @@ func NewLoop(cfg LoopConfig) *Loop {
 // never block loop teardown. A nil ingestor disables extraction.
 type MemoryIngestor interface {
 	IngestSession(sessionID string, history []provider.Message)
+}
+
+// NotificationSource supplies one-shot notices (e.g. completed background
+// delegations) the loop injects as system messages at the start of each turn,
+// before the user message is appended. ConsumePending must be idempotent in the
+// sense that a second call for the same session returns nothing new — the
+// delegation store's ClaimPendingNotifications stamps notified_at to guarantee
+// exactly-once delivery. A nil LoopConfig.Notifications disables injection.
+type NotificationSource interface {
+	ConsumePending(ctx context.Context, sessionID string) []string
 }
 
 // Run is the session goroutine entry point. It selects on ctx.Done and
@@ -250,6 +265,7 @@ func (l *Loop) runTurnSafe(parent context.Context, msg session.ClientMessage) {
 			map[string]any{"state": string(l.Session.State())}, true)
 		return
 	}
+	l.injectNotifications(parent)
 	l.Session.AppendMessage(context.Background(), provider.Message{
 		Role:    provider.RoleUser,
 		Content: []provider.ContentBlock{{Type: provider.BlockText, Text: u.Content}},
@@ -320,6 +336,24 @@ func (l *Loop) runTurnSafe(parent context.Context, msg session.ClientMessage) {
 		_ = l.Session.ForceTransition(session.StateIdle)
 	}
 	_ = wedged // the wedged goroutine is orphaned by design (see comment above)
+}
+
+// injectNotifications drains pending one-shot notices from the configured
+// NotificationSource and appends each as a system message before the turn's
+// user message. Called after the Idle→Thinking transition succeeds, so the
+// model sees the notices as context for the upcoming turn. A nil source is a
+// no-op; the source is responsible for exactly-once delivery (it absorbs its
+// own errors and never blocks the turn).
+func (l *Loop) injectNotifications(ctx context.Context) {
+	if l.Config.Notifications == nil {
+		return
+	}
+	for _, notice := range l.Config.Notifications.ConsumePending(ctx, l.Session.ID) {
+		l.Session.AppendMessage(context.Background(), provider.Message{
+			Role:    provider.RoleSystem,
+			Content: []provider.ContentBlock{{Type: provider.BlockText, Text: notice}},
+		})
+	}
 }
 
 // finishCancelledTurn synthesises cancelled tool_results for every pending
@@ -441,6 +475,10 @@ func (l *Loop) startInboxWatcher(turnCtx context.Context, cancelTurn context.Can
 // model signals end_turn (no tool_use), when ctx is cancelled, or when a
 // provider error terminates the turn.
 func (l *Loop) runTurnLoop(ctx context.Context) {
+	// Per-turn overflow self-heal bookkeeping (US2). overflowRecovered caps
+	// self-healing at one attempt per turn; producedOutput suppresses it once any
+	// assistant text or tool_use has reached the client (scenario 3).
+	var overflowRecovered, producedOutput bool
 	for {
 		if ctx.Err() != nil {
 			return
@@ -503,24 +541,37 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 			})
 		})
 		if err != nil {
+			if l.maybeOverflowRecover(ctx, err, &overflowRecovered, producedOutput) {
+				continue
+			}
 			l.emitProviderError(ctx, err)
 			return
 		}
 
-		toolCalls, terminate := l.consumeProviderStream(ctx, events)
-		if terminate || ctx.Err() != nil {
+		res := l.consumeProviderStream(ctx, events)
+		if res.produced {
+			producedOutput = true
+		}
+		if res.fatalErr != nil {
+			if l.maybeOverflowRecover(ctx, res.fatalErr, &overflowRecovered, producedOutput) {
+				continue
+			}
+			l.emitProviderError(ctx, res.fatalErr)
+			return
+		}
+		if res.terminate || ctx.Err() != nil {
 			if ctx.Err() == nil {
 				l.drainOrphanedPending()
 			}
 			return
 		}
 
-		if len(toolCalls) == 0 {
+		if len(res.toolCalls) == 0 {
 			// Turn naturally ended.
 			return
 		}
 
-		l.runToolBatch(ctx, toolCalls)
+		l.runToolBatch(ctx, res.toolCalls)
 		if ctx.Err() != nil {
 			return
 		}
@@ -536,20 +587,36 @@ func (l *Loop) runTurnLoop(ctx context.Context) {
 	}
 }
 
+// consumeResult is the outcome of draining one provider stream.
+type consumeResult struct {
+	toolCalls []ToolCall
+	// terminate is true when the stream ended the turn (end_turn / interrupted /
+	// a fatal error) so the loop should stop iterating.
+	terminate bool
+	// fatalErr carries a mid-stream provider error (EventError) up to runTurnLoop
+	// so it can decide whether overflow self-healing applies before surfacing it.
+	fatalErr error
+	// produced is true once any assistant text or tool_use reached the client
+	// this iteration; overflow self-healing is suppressed once output has begun
+	// (US2 scenario 3).
+	produced bool
+}
+
 // consumeProviderStream drains the provider's event channel. It emits
 // assistant_text_delta and reasoning events as they arrive, accumulates the
 // assistant turn's content blocks IN THEIR EMISSION ORDER (thinking, text, and
 // tool_use interleaved exactly as the model produced them — required for
-// interleaved-thinking round-trips), and appends the turn to history. Returns
-// the list of tool calls and a `terminate` flag that's true when the stream
-// ended the turn (no tools and end_turn) or hit an error already surfaced.
-func (l *Loop) consumeProviderStream(ctx context.Context, events <-chan provider.ProviderEvent) ([]ToolCall, bool) {
+// interleaved-thinking round-trips), and appends the turn to history. A
+// non-nil fatalErr means a provider EventError ended the stream; the caller
+// decides whether overflow self-healing applies before surfacing it.
+func (l *Loop) consumeProviderStream(ctx context.Context, events <-chan provider.ProviderEvent) consumeResult {
 	var (
 		blocks     []provider.ContentBlock // assistant content in emission order
 		toolCalls  []ToolCall
 		textLen    int // total accumulated assistant text (drives the done event)
 		stopReason string
 		fatal      bool
+		fatalErr   error // terminal provider error surfaced mid-stream (US2)
 	)
 	// appendText coalesces consecutive text deltas into the trailing text block
 	// so interleaving (thinking → text → tool_use) preserves block boundaries.
@@ -604,18 +671,19 @@ func (l *Loop) consumeProviderStream(ctx context.Context, events <-chan provider
 			stopReason = ev.StopReason
 		case provider.EventError:
 			if ev.Error != nil {
-				l.emitProviderError(ctx, ev.Error)
+				fatalErr = ev.Error
 				fatal = true
 			}
 		case provider.EventUsage:
 			// Group 9 will surface usage events to the client; for now drop.
 		}
 	}
+	produced := textLen > 0 || len(toolCalls) > 0
 	if ctx.Err() != nil {
-		return toolCalls, true
+		return consumeResult{toolCalls: toolCalls, terminate: true, produced: produced}
 	}
 	if fatal {
-		return toolCalls, true
+		return consumeResult{toolCalls: toolCalls, terminate: true, fatalErr: fatalErr, produced: produced}
 	}
 
 	// Append the assistant turn. Blocks are already in emission order; the
@@ -640,7 +708,7 @@ func (l *Loop) consumeProviderStream(ctx context.Context, events <-chan provider
 		})
 	}
 
-	return toolCalls, false
+	return consumeResult{toolCalls: toolCalls, produced: produced}
 }
 
 // ImplicitTriggerHook is the runner-factory-supplied hook for synthesising
@@ -924,27 +992,27 @@ func (l *Loop) shouldCompact() bool {
 	return float64(used) >= limit
 }
 
-// runCompaction transitions Thinking → Compacting → Thinking and asks the
-// Compactor to produce a fresh history. Errors are non-fatal; the loop falls
-// back to running with the un-compacted history.
-func (l *Loop) runCompaction(ctx context.Context) error {
+// compactAndSwap runs the Thinking→Compacting→Thinking state machine around one
+// compaction pass, emits the `compaction` event, and swaps the history. The
+// compact callback decides the keep policy (auto-compaction uses RecentKeep;
+// overflow self-healing uses a relaxed keep). Returns (ok, err): ok is false
+// (with nil err) when there was nothing worth compacting.
+func (l *Loop) compactAndSwap(ctx context.Context, compact func([]provider.Message) ([]provider.Message, CompactionResult, bool, error)) (bool, error) {
 	if err := l.Session.Transition(session.StateThinking, session.StateCompacting); err != nil {
-		return err
+		return false, err
 	}
 	defer func() {
-		// Restore Thinking so the loop can call the LLM again.
 		if l.Session.State() == session.StateCompacting {
 			_ = l.Session.Transition(session.StateCompacting, session.StateThinking)
 		}
 	}()
-
 	history := l.Session.History()
-	newHistory, result, ok, err := l.Compactor.Compact(ctx, history)
+	newHistory, result, ok, err := compact(history)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !ok {
-		return nil
+		return false, nil
 	}
 	l.Session.ReplaceHistory(context.Background(), newHistory)
 	_ = l.Session.Emit(ctx, "compaction", map[string]any{
@@ -953,7 +1021,53 @@ func (l *Loop) runCompaction(ctx context.Context) error {
 		"before_messages": result.BeforeMessages,
 		"after_messages":  result.AfterMessages,
 	})
-	return nil
+	return true, nil
+}
+
+// runCompaction is the auto-compaction path (driven by shouldCompact). Errors
+// are non-fatal; the loop falls back to running with the un-compacted history.
+func (l *Loop) runCompaction(ctx context.Context) error {
+	_, err := l.compactAndSwap(ctx, func(h []provider.Message) ([]provider.Message, CompactionResult, bool, error) {
+		return l.Compactor.Compact(ctx, h)
+	})
+	return err
+}
+
+// maybeOverflowRecover handles the context-length self-heal (US2): when a
+// provider reports CodeContextLengthExceeded before the turn has produced any
+// client-visible output and we have not already self-healed this turn, force
+// one aggressive compaction (keep = max(2, CompactRecentKeep/2)) and let the
+// loop retry the same turn. Returns true when the caller should continue
+// (retry); false when the error must be surfaced as-is — already recovered this
+// turn, output has begun (scenario 3), not a context-length error, no
+// Compactor, or nothing left to compact.
+func (l *Loop) maybeOverflowRecover(ctx context.Context, err error, recovered *bool, producedOutput bool) bool {
+	if *recovered || producedOutput {
+		return false
+	}
+	pe, ok := provider.AsProviderError(err)
+	if !ok || pe.Code != provider.CodeContextLengthExceeded {
+		return false
+	}
+	if l.Compactor == nil {
+		return false
+	}
+	keep := l.Config.CompactRecentKeep / 2
+	if keep < 2 {
+		keep = 2
+	}
+	did, compErr := l.compactAndSwap(ctx, func(h []provider.Message) ([]provider.Message, CompactionResult, bool, error) {
+		return l.Compactor.CompactWithKeep(ctx, h, keep)
+	})
+	if compErr != nil {
+		l.logger().Warn("agent: overflow self-heal compaction failed", "err", compErr)
+		return false
+	}
+	if !did {
+		return false
+	}
+	*recovered = true
+	return true
 }
 
 // handlePanic is the recovery path described by the session-management spec:

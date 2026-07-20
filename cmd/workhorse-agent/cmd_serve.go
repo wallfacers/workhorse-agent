@@ -23,6 +23,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/api/protocol"
 	"github.com/wallfacers/workhorse-agent/internal/config"
 	"github.com/wallfacers/workhorse-agent/internal/coord"
+	"github.com/wallfacers/workhorse-agent/internal/delegation"
 	"github.com/wallfacers/workhorse-agent/internal/embedding"
 	"github.com/wallfacers/workhorse-agent/internal/extagent"
 	"github.com/wallfacers/workhorse-agent/internal/extagent/approval"
@@ -41,6 +42,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/provider"
 	"github.com/wallfacers/workhorse-agent/internal/provider/anthropic"
 	"github.com/wallfacers/workhorse-agent/internal/provider/openai"
+	"github.com/wallfacers/workhorse-agent/internal/schedule"
 	"github.com/wallfacers/workhorse-agent/internal/session"
 	"github.com/wallfacers/workhorse-agent/internal/skills"
 	"github.com/wallfacers/workhorse-agent/internal/store"
@@ -49,11 +51,13 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/tools/agentsetup"
 	"github.com/wallfacers/workhorse-agent/internal/tools/bash"
 	"github.com/wallfacers/workhorse-agent/internal/tools/builtin"
+	delegationtool "github.com/wallfacers/workhorse-agent/internal/tools/delegation"
 	"github.com/wallfacers/workhorse-agent/internal/tools/dispatch"
 	extagenttool "github.com/wallfacers/workhorse-agent/internal/tools/extagent"
 	"github.com/wallfacers/workhorse-agent/internal/tools/extagent/drafttool"
 	"github.com/wallfacers/workhorse-agent/internal/tools/extagent/genbash"
 	"github.com/wallfacers/workhorse-agent/internal/tools/memorytool"
+	"github.com/wallfacers/workhorse-agent/internal/tools/scheduletool"
 	"github.com/wallfacers/workhorse-agent/internal/tools/sessionsearch"
 	"github.com/wallfacers/workhorse-agent/internal/tools/tasklist"
 	"github.com/wallfacers/workhorse-agent/internal/tools/toolsearch"
@@ -281,13 +285,44 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 
+	// 5c. Delegation manager (background read-only sub-agents, US1). SessMgr is
+	// back-filled after the session manager exists (two-phase, mirroring
+	// dispatchHost). The three tools resolve it at runtime via Env.Delegations.
+	delegationMgr := delegation.NewManager(st, nil, logger)
+	for _, t := range delegationtool.Tools() {
+		if err := registry.Register(t); err != nil {
+			logger.Warn("delegation: register tool", "tool", t.Name(), "error", err)
+		}
+	}
+
 	// 6. Session manager with the agent-loop runner factory.
 	sessMgr = session.NewManager(session.ManagerOptions{
 		Store:         st,
 		MaxConcurrent: cfg.Sessions.MaxConcurrent,
-		RunnerFactory: newRunnerFactory(cfg, st, providers, fastProviders, registry, permMgr, skillCatalog, extReg, loader, memRT.ingestor, logger),
+		RunnerFactory: newRunnerFactory(cfg, st, providers, fastProviders, registry, permMgr, skillCatalog, extReg, loader, memRT.ingestor, delegationMgr, logger),
 	})
 	dispatchHost.Manager = sessMgr
+	delegationMgr.SessMgr = sessMgr
+	// Delegations interrupted by a previous run are reaped to 'error' so they
+	// surface a failure notice instead of staying 'running' forever.
+	if err := delegationMgr.ReapRunning(ctx); err != nil {
+		logger.Warn("delegation: reap running failed", "error", err)
+	}
+
+	// 5d. Scheduler (US3). Runner drives one unattended trigger; Worker scans
+	// every minute on a cancellable child of the serve ctx so shutdown stops it
+	// promptly (schedCancel below) instead of leaking until process exit. The
+	// four tools resolve the store via Env.Schedules.
+	scheduleRunner := schedule.NewRunner(st, sessMgr, logger)
+	for _, t := range scheduletool.Tools() {
+		if err := registry.Register(t); err != nil {
+			logger.Warn("schedule: register tool", "tool", t.Name(), "error", err)
+		}
+	}
+	scheduleWorker := schedule.NewWorker(st, scheduleRunner, logger)
+	schedCtx, schedCancel := context.WithCancel(ctx)
+	defer schedCancel()
+	go scheduleWorker.Start(schedCtx)
 
 	// 6b. Late-wire the approval manager hooks that depend on sessMgr / the
 	// live external-agents dir.
@@ -353,6 +388,9 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 		}
 		break
 	}
+
+	// Stop the scheduler first so no new unattended run starts mid-shutdown.
+	schedCancel()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(),
 		time.Duration(cfg.Server.GracefulShutdownTimeoutSeconds)*time.Second)
@@ -783,6 +821,7 @@ func newRunnerFactory(
 	extReg *extagent.Registry,
 	agentLoader *coord.Loader,
 	ingestor *pipeline.SessionIngestor,
+	delegMgr *delegation.Manager,
 	logger *slog.Logger,
 ) session.RunnerFactory {
 	orch := &agent.Orchestrator{
@@ -880,6 +919,11 @@ func newRunnerFactory(
 				sessLoopCfg.ThinkingEnabled = false
 			}
 		}
+		// Top-level sessions receive one-shot delegation notices before each
+		// turn; child agents have no delegations of their own.
+		if sess.ParentID == "" {
+			sessLoopCfg.Notifications = delegMgr
+		}
 		loop := agent.NewLoop(sessLoopCfg)
 		loop.Session = sess
 		loop.Provider = prov
@@ -925,6 +969,8 @@ func newRunnerFactory(
 			ExtAgentRegistry:    extReg,
 			TaskList:            taskStore,
 			InstructionResolver: sess.InstructionResolver,
+			Delegations:         delegMgr,
+			Schedules:           st,
 		}
 
 		// Build environment block for the system prompt. Always include the
