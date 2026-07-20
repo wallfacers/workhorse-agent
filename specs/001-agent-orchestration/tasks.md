@@ -112,7 +112,7 @@
 ## Phase 7: Polish & Cross-Cutting
 
 - [x] T025 全量回归：`go build ./...` 与 `go test ./...` 全绿；lint 用 v1.62.0 跑 `golangci-lint run --new-from-rev=master ./...` 为 exit 0（本功能零新增，基线 10 项既有债不计）；确认 `TestLocalToolDescriptionsAreEnglish` 覆盖全部 7 个新工具；确认旧客户端兼容（不认识 `subagent_status` 的既有 UI/测试不回归，SC-006）
-- [ ] T026 [P] 按仓库惯例更新 `CLAUDE.md`：新增「Delegation & Scheduling」小节，简述后台委派（只读面、通知注入、上限 4）、溢出自愈（减半有下限、单次）、调度器（分钟 tick、同分钟去重、不补跑、持久会话）、`subagent_status` 事件；风格对齐既有小节
+- [x] T026 [P] 按仓库惯例更新 `CLAUDE.md`：新增「Delegation & Scheduling」小节，简述后台委派（只读面、通知注入、上限 4）、溢出自愈（减半有下限、单次）、调度器（分钟 tick、同分钟去重、不补跑、持久会话）、`subagent_status` 事件；风格对齐既有小节
 - [ ] T027 按 `specs/001-agent-orchestration/quickstart.md` 手工走查四个 user story 的验收观察点，记录结果到本文件末尾「Manual Verification Log」小节（新建）；发现偏差先修复再收口
 
 ---
