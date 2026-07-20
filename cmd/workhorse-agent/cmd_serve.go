@@ -42,6 +42,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/provider"
 	"github.com/wallfacers/workhorse-agent/internal/provider/anthropic"
 	"github.com/wallfacers/workhorse-agent/internal/provider/openai"
+	"github.com/wallfacers/workhorse-agent/internal/schedule"
 	"github.com/wallfacers/workhorse-agent/internal/session"
 	"github.com/wallfacers/workhorse-agent/internal/skills"
 	"github.com/wallfacers/workhorse-agent/internal/store"
@@ -56,6 +57,7 @@ import (
 	"github.com/wallfacers/workhorse-agent/internal/tools/extagent/drafttool"
 	"github.com/wallfacers/workhorse-agent/internal/tools/extagent/genbash"
 	"github.com/wallfacers/workhorse-agent/internal/tools/memorytool"
+	"github.com/wallfacers/workhorse-agent/internal/tools/scheduletool"
 	"github.com/wallfacers/workhorse-agent/internal/tools/sessionsearch"
 	"github.com/wallfacers/workhorse-agent/internal/tools/tasklist"
 	"github.com/wallfacers/workhorse-agent/internal/tools/toolsearch"
@@ -306,6 +308,18 @@ func runServe(args []string, stdout, stderr io.Writer) error {
 	if err := delegationMgr.ReapRunning(ctx); err != nil {
 		logger.Warn("delegation: reap running failed", "error", err)
 	}
+
+	// 5d. Scheduler (US3). Runner drives one unattended trigger; Worker scans
+	// every minute on the serve ctx so shutdown cancels it cleanly (no
+	// background-ctx leak). The four tools resolve the store via Env.Schedules.
+	scheduleRunner := schedule.NewRunner(st, sessMgr, logger)
+	for _, t := range scheduletool.Tools() {
+		if err := registry.Register(t); err != nil {
+			logger.Warn("schedule: register tool", "tool", t.Name(), "error", err)
+		}
+	}
+	scheduleWorker := schedule.NewWorker(st, scheduleRunner, logger)
+	go scheduleWorker.Start(ctx)
 
 	// 6b. Late-wire the approval manager hooks that depend on sessMgr / the
 	// live external-agents dir.
@@ -950,6 +964,7 @@ func newRunnerFactory(
 			TaskList:            taskStore,
 			InstructionResolver: sess.InstructionResolver,
 			Delegations:         delegMgr,
+			Schedules:           st,
 		}
 
 		// Build environment block for the system prompt. Always include the
