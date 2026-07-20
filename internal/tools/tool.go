@@ -94,6 +94,9 @@ type Env struct {
 	// avoid import cycles; the delegate/delegation_read/delegation_list tools
 	// type-assert this to *delegation.Manager.
 	Delegations any
+	// Schedules holds the store for schedule management. Typed as any to avoid
+	// import cycles; the schedule_* tools type-assert this to store.Store.
+	Schedules any
 }
 
 // Result is the outcome of one tool call. Output is the canonical string the

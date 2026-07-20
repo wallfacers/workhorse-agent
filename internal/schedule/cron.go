@@ -130,3 +130,24 @@ func Matches(expr string, t time.Time) bool {
 		sched.fields[fieldDayOfMonth][t.Day()] &&
 		sched.fields[fieldDayOfWeek][int(t.Weekday())]
 }
+
+// nextMatchLimit caps how far ahead NextMatch scans (7 days).
+const nextMatchLimit = 7 * 24 * time.Hour
+
+// NextMatch returns the first local time at or after `from` (truncated to the
+// minute) that the cron expression matches. It returns an error if no match
+// falls within nextMatchLimit. Used to render the "Next run" hint.
+func NextMatch(expr string, from time.Time) (time.Time, error) {
+	if err := Validate(expr); err != nil {
+		return time.Time{}, err
+	}
+	limit := from.Add(nextMatchLimit)
+	t := from.Truncate(time.Minute)
+	for t.Before(limit) {
+		if Matches(expr, t) {
+			return t, nil
+		}
+		t = t.Add(time.Minute)
+	}
+	return time.Time{}, fmt.Errorf("cron %q has no match within %s", expr, nextMatchLimit)
+}
