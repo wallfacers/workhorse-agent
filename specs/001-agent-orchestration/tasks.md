@@ -18,9 +18,10 @@
 
 - 工作分支：`001-agent-orchestration`（已存在，勿新建）。
 - 每完成一个任务：立即把本文件中对应复选框改为 `[x]`，并做一次独立 commit（`feat(...)`/`test(...)` 风格，消息说清做了什么）。
-- 仓库硬约束（违反即返工）：默认不写代码注释（仅在"为什么"会让未来读者意外时写）；`gofumpt` 格式；`golangci-lint run` 干净；`panic` 不出 main/init；本地工具 `Description()` 必须全英文；SQLite 仅 `modernc.org/sqlite`。
+- 仓库硬约束（违反即返工）：默认不写代码注释（仅在"为什么"会让未来读者意外时写）；`gofumpt` 格式；`panic` 不出 main/init；本地工具 `Description()` 必须全英文；SQLite 仅 `modernc.org/sqlite`。
 - 时间戳一律 unix 微秒（`toMicros`/`fromMicros`）；ID 用 `idgen.NewULID()`（除非任务另有说明）。
 - 契约以 `contracts/` 与 `data-model.md` 为准；与本文件冲突时以契约文档为准并在 commit message 里注明。
+- **Lint 门禁（重要）**：必须用 CI 锁定的版本 **golangci-lint v1.62.0**（`.github/workflows/ci.yml` 所固定；勿用系统里的其他版本，v1.64.x 会因默认规则更严而产生额外噪音）。基线 master 有 **10 项既有 lint 问题**（集中在 `internal/extagent/`、`internal/tools/{sessionsearch,agentsetup}`、`test/e2e`、`test/real_e2e` —— 均与本功能文件无交集，属已知技术债，**不归本功能修**）。因此本功能的 lint 门禁是"**不新增**"而非"全仓零问题"：判定命令为 `golangci-lint run --new-from-rev=master ./...`（基线上为 exit 0）。此外，本功能触碰/新建的每个 Go 文件必须自身零 lint 问题。安装 CI 版本：`go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.62.0`（装到 `$(go env GOPATH)/bin`，确保在 PATH）。
 
 ---
 
@@ -28,7 +29,7 @@
 
 **Purpose**: 基线确认
 
-- [ ] T001 在分支 `001-agent-orchestration` 上确认基线绿色：`go build ./... && go test ./... && golangci-lint run` 全部通过；记录基线状态（如有既有失败，停止并上报，不要继续）
+- [ ] T001 在分支 `001-agent-orchestration` 上确认基线可用：`go build ./...` 与 `go test ./...` 通过；lint 用 CI 锁定的 v1.62.0 跑 `golangci-lint run --new-from-rev=master ./...`，结果必须为 **exit 0（零新增）**——注意全仓 `golangci-lint run ./...` 会报 10 项既有债（见执行约定，非本功能引入，可忽略）。三者达标即勾选并继续；若 `go build`/`go test` 失败或增量 lint 非零，才停止上报
 
 ---
 
@@ -110,7 +111,7 @@
 
 ## Phase 7: Polish & Cross-Cutting
 
-- [ ] T025 全量回归：`go build ./... && go test ./... && golangci-lint run` 三绿；确认 `TestLocalToolDescriptionsAreEnglish` 覆盖全部 7 个新工具；确认旧客户端兼容（不认识 `subagent_status` 的既有 UI/测试不回归，SC-006）
+- [ ] T025 全量回归：`go build ./...` 与 `go test ./...` 全绿；lint 用 v1.62.0 跑 `golangci-lint run --new-from-rev=master ./...` 为 exit 0（本功能零新增，基线 10 项既有债不计）；确认 `TestLocalToolDescriptionsAreEnglish` 覆盖全部 7 个新工具；确认旧客户端兼容（不认识 `subagent_status` 的既有 UI/测试不回归，SC-006）
 - [ ] T026 [P] 按仓库惯例更新 `CLAUDE.md`：新增「Delegation & Scheduling」小节，简述后台委派（只读面、通知注入、上限 4）、溢出自愈（减半有下限、单次）、调度器（分钟 tick、同分钟去重、不补跑、持久会话）、`subagent_status` 事件；风格对齐既有小节
 - [ ] T027 按 `specs/001-agent-orchestration/quickstart.md` 手工走查四个 user story 的验收观察点，记录结果到本文件末尾「Manual Verification Log」小节（新建）；发现偏差先修复再收口
 
