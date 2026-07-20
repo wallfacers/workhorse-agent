@@ -29,7 +29,7 @@
 
 **Purpose**: 基线确认
 
-- [ ] T001 在分支 `001-agent-orchestration` 上确认基线可用：`go build ./...` 与 `go test ./...` 通过；lint 用 CI 锁定的 v1.62.0 跑 `golangci-lint run --new-from-rev=master ./...`，结果必须为 **exit 0（零新增）**——注意全仓 `golangci-lint run ./...` 会报 10 项既有债（见执行约定，非本功能引入，可忽略）。三者达标即勾选并继续；若 `go build`/`go test` 失败或增量 lint 非零，才停止上报
+- [x] T001 在分支 `001-agent-orchestration` 上确认基线可用：`go build ./...` 与 `go test ./...` 通过；lint 用 CI 锁定的 v1.62.0 跑 `golangci-lint run --new-from-rev=master ./...`，结果必须为 **exit 0（零新增）**——注意全仓 `golangci-lint run ./...` 会报 10 项既有债（见执行约定，非本功能引入，可忽略）。三者达标即勾选并继续；若 `go build`/`go test` 失败或增量 lint 非零，才停止上报
 
 ---
 
