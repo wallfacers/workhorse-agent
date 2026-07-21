@@ -288,8 +288,12 @@ func (l *Loop) runTurnSafe(parent context.Context, msg session.ClientMessage) {
 	defer l.activeTurnCancel.Store(nil)
 
 	watcherDone := l.startInboxWatcher(turnCtx, cancelTurn)
+	// Panic-safety fallback only. The happy path tears the watcher down
+	// explicitly below, before the session goes Idle. Cancelling an
+	// already-cancelled context and receiving from a closed channel are both
+	// no-ops, so the two teardown sites never conflict.
 	defer func() {
-		cancelTurn() // ensure watcher exits
+		cancelTurn()
 		<-watcherDone
 	}()
 
@@ -326,7 +330,19 @@ func (l *Loop) runTurnSafe(parent context.Context, msg session.ClientMessage) {
 		}
 	}
 
-	if turnCtx.Err() != nil {
+	// Whether the turn was cancelled must be read before cancelTurn() below,
+	// which would otherwise make turnCtx.Err() non-nil unconditionally.
+	cancelled := turnCtx.Err() != nil
+
+	// Tear the inbox watcher down and join it *before* the session transitions
+	// to Idle. Otherwise a second user_message — accepted because the session
+	// already looks Idle — can be pulled off the Inbox by the still-draining
+	// watcher of the turn that just ended and dropped as an "active turn"
+	// message, so the next turn never runs.
+	cancelTurn()
+	<-watcherDone
+
+	if cancelled {
 		l.finishCancelledTurn(parent)
 	}
 
